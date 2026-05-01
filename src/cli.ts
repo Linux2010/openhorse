@@ -14,6 +14,8 @@ import figlet from 'figlet';
 import { init, ReinRuntime } from './init';
 import { Task } from './core/agent';
 import { LLMService, Message, LLMResponse } from './services/llm';
+import { AgentRunner } from './services/agent-runner';
+import { TaskManager, CreateTaskOptions } from './services/task-manager';
 import { loadConfig, ReinCLIConfig, isConfigured, getConfigSummary, getConfigErrors } from './services/config';
 
 // ============================================================================
@@ -44,6 +46,7 @@ If asked about your capabilities, explain that you are an AI assistant that can 
 let llm: LLMService | null = null;
 let cliConfig: ReinCLIConfig | null = null;
 let conversationHistory: Message[] = [];
+let taskManager: TaskManager | null = null;
 
 // ============================================================================
 // 欢迎界面
@@ -110,7 +113,8 @@ async function interactiveMode(runtime: ReinRuntime): Promise<void> {
     memory: () => printMemory(runtime),
     safety: () => printSafety(runtime),
     harness: () => printHarness(runtime),
-    task: (args) => submitTask(runtime, args),
+    task: (args) => handleTaskCommand(runtime, args),
+    run: (args) => handleRun(runtime, args),
     chat: (args) => handleChat(args),
     model: (args) => handleModel(args),
     config: () => printConfig(),
@@ -276,6 +280,8 @@ function printHelp(): void {
     ['safety',    'Show safety checker status and audit summary'],
     ['harness',   'Show harness configuration'],
     ['task <n>',  'Submit a demo task (e.g., "task code" or "task review")'],
+    ['task list', 'List all tasks and show statistics'],
+    ['run <m>',   'Create and run a task through Agent + LLM'],
     ['chat <m>',  'Send a message to the LLM (also works as free text)'],
     ['model [m]', 'Show or change the current model (e.g., "model gpt-4o")'],
     ['config',    'Show current configuration'],
@@ -414,6 +420,140 @@ function submitTask(runtime: ReinRuntime, name: string): void {
   console.log();
 }
 
+/** 处理 task 子命令 (list, submit) */
+function handleTaskCommand(runtime: ReinRuntime, args: string): void {
+  const [sub, ...rest] = args.trim().split(/\s+/);
+
+  if (sub === 'list' || sub === 'ls') {
+    printTaskList();
+    return;
+  }
+
+  // 默认行为: 作为任务名提交
+  const taskName = args.trim() || 'demo-task';
+  const task: Task = {
+    id: `cli-${Date.now()}`,
+    name: taskName,
+    description: `Task submitted from CLI: ${taskName}`,
+    priority: 'P1',
+    assignedTo: 'leader',
+    status: 'pending',
+  };
+
+  console.log();
+  runtime.brain.submitTask(task);
+  console.log(SUCCESS(`✔ Task "${taskName}" submitted`));
+  console.log();
+}
+
+/** 打印任务列表 */
+function printTaskList(): void {
+  if (!taskManager) {
+    console.log(WARN('⚠ Task manager not initialized'));
+    return;
+  }
+
+  console.log();
+  console.log(HEADER('Task List'));
+  console.log(DIM('─'.repeat(40)));
+
+  const stats = taskManager.getStats();
+  console.log(`  Total      ${stats.total}`);
+  console.log(`  Pending    ${stats.pending}`);
+  console.log(`  Running    ${stats.running}`);
+  console.log(`  Completed  ${SUCCESS(stats.completed)}`);
+  console.log(`  Failed     ${ERROR(stats.failed)}`);
+  console.log(`  Cancelled  ${DIM(stats.cancelled)}`);
+
+  const tasks = taskManager.list();
+  if (tasks.length > 0) {
+    console.log();
+    for (const t of tasks) {
+      const statusIcon = t.status === 'completed' ? SUCCESS('✓')
+        : t.status === 'failed' ? ERROR('✗')
+        : t.status === 'running' ? WARN('◌')
+        : t.status === 'cancelled' ? DIM('⊘')
+        : DIM('○');
+      console.log(`  ${statusIcon} ${ACCENT(t.name)} ${DIM(`(${t.id.slice(0, 8)})`)}`);
+      console.log(`    ${DIM(`[${t.priority}]`)} ${t.description.slice(0, 60)}`);
+    }
+  }
+
+  console.log();
+}
+
+/** 通过 Agent + LLM 创建并执行任务 */
+async function handleRun(runtime: ReinRuntime, description: string): Promise<void> {
+  if (!description.trim()) {
+    console.log(ERROR('Usage: run <task description>'));
+    console.log(DIM('  Creates a task and executes it through the Agent + LLM pipeline.'));
+    return;
+  }
+
+  if (!llm || !isConfigured(cliConfig!)) {
+    console.log(WARN('⚠ LLM not configured. Set REIN_API_KEY in .env to enable run mode.'));
+    return;
+  }
+
+  // 初始化 TaskManager（如果尚未初始化）
+  if (!taskManager) {
+    taskManager = new TaskManager();
+  }
+
+  // 创建任务
+  const taskOptions: CreateTaskOptions = {
+    name: description.slice(0, 80),
+    description,
+    priority: 'P1',
+    assignedTo: 'leader',
+    tags: ['cli', 'interactive'],
+  };
+
+  const record = taskManager.create(taskOptions);
+  console.log();
+  console.log(SUCCESS(`✔ Task created: ${ACCENT(record.name)}`));
+  console.log(DIM(`  ID: ${record.id} | Tags: ${record.tags.join(', ')}`));
+
+  // 启动任务
+  taskManager.start(record.id);
+  console.log(WARN('◌ Running task through Agent + LLM...'));
+
+  try {
+    // 找到第一个 Agent 来执行
+    const agent = runtime.agents[0];
+    if (!agent) {
+      throw new Error('No agents registered');
+    }
+
+    // 创建 AgentRunner 并执行
+    const runner = new AgentRunner(agent, llm);
+    const task = taskManager.toTask(record);
+    const result = await runner.run(task);
+
+    // 更新任务结果
+    if (result.success) {
+      taskManager.complete(record.id, result);
+      console.log(SUCCESS(`✓ Task completed in ${result.duration}ms`));
+      if (result.tokenUsage) {
+        console.log(DIM(`  Tokens: ${result.tokenUsage.promptTokens} in / ${result.tokenUsage.completionTokens} out`));
+      }
+      if (result.data?.summary) {
+        console.log();
+        console.log(ACCENT('  Summary:'));
+        console.log(`  ${result.data.summary}`);
+      }
+    } else {
+      taskManager.fail(record.id, result.error, result);
+      console.log(ERROR(`✗ Task failed: ${result.error}`));
+    }
+  } catch (error: any) {
+    taskManager.fail(record.id, error.message);
+    console.log(ERROR(`✗ Task error: ${error.message}`));
+  }
+
+  console.log();
+}
+
 async function handleExit(runtime: ReinRuntime): Promise<void> {
   console.log();
   console.log(DIM('Shutting down...'));
@@ -465,6 +605,17 @@ async function commandMode(runtime: ReinRuntime): Promise<void> {
     .description('Submit a demo task')
     .action((name: string) => {
       submitTask(runtime, name);
+      process.exit(0);
+    });
+
+  program
+    .command('run <description>')
+    .description('Create and run a task through Agent + LLM')
+    .action(async (description: string) => {
+      if (!taskManager) {
+        taskManager = new TaskManager();
+      }
+      await handleRun(runtime, description);
       process.exit(0);
     });
 
@@ -527,7 +678,7 @@ async function main(): Promise<void> {
 
   // 判断模式：如果有命令行参数，走命令模式；否则走交互模式
   const hasCommandArgs = process.argv.some(arg =>
-    ['status', 'agents', 'safety', 'task'].includes(arg),
+    ['status', 'agents', 'safety', 'task', 'run'].includes(arg),
   );
 
   if (hasCommandArgs) {

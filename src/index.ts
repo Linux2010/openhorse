@@ -51,6 +51,34 @@ export type {
   StreamCallback,
 } from './services/llm';
 
+// Agent Runner 模块
+export { AgentRunner } from './services/agent-runner';
+export type {
+  AgentRunnerConfig,
+  AgentRunnerResult,
+} from './services/agent-runner';
+
+// Harness Engine 模块
+export { HarnessEngine } from './harness/harness';
+export type {
+  HarnessConfig as HarnessEngineConfig,
+  HarnessVerdict as HarnessEngineVerdict,
+  HarnessContext,
+  HarnessExecutionResult,
+} from './harness/harness';
+
+// Task Manager 模块
+export { TaskManager } from './services/task-manager';
+export type {
+  TaskRecord,
+  CreateTaskOptions,
+  UpdateTaskOptions,
+  TaskFilter,
+  TaskStats,
+  TaskStatus,
+  Priority,
+} from './services/task-manager';
+
 // 配置模块
 export { loadConfig, isConfigured, getConfigErrors, getConfigSummary } from './services/config';
 export type { ReinCLIConfig } from './services/config';
