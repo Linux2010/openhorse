@@ -4,6 +4,9 @@
   "description": "通用 Agent 智能体框架 - Universal Agent Intelligence Framework",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "rein": "bin/rein"
+  },
   "scripts": {
     "start": "ts-node src/cli.ts",
     "dev": "nodemon src/cli.ts",
