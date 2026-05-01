@@ -16,7 +16,10 @@ import { Task } from './core/agent';
 import { LLMService, Message, LLMResponse } from './services/llm';
 import { AgentRunner } from './services/agent-runner';
 import { TaskManager, CreateTaskOptions } from './services/task-manager';
+import { getTools, executeTool, getToolNames } from './tools';
 import { loadConfig, ReinCLIConfig, isConfigured, getConfigSummary, getConfigErrors } from './services/config';
+import { userBox, createSpinner, toolBlock } from './ui/box';
+import { renderMarkdown } from './ui/markdown';
 
 // ============================================================================
 // 颜色常量
@@ -34,10 +37,17 @@ const HEADER = chalk.cyan.bold;
 // 系统提示词
 // ============================================================================
 
-const SYSTEM_PROMPT = `You are Rein, an AI assistant powered by the Rein Agent Framework.
+const SYSTEM_PROMPT = `You are Rein, an AI agent powered by the Rein Agent Framework.
 You are helpful, concise, and accurate.
+You can read files, write files, list directories, and execute shell commands.
+
+When a user asks you to do something:
+1. If you need file information, use read_file, list_files, or exec_command first
+2. If the user wants you to create or modify files, use write_file
+3. Provide a clear summary of what you found or did
+
 Respond in the same language as the user.
-If asked about your capabilities, explain that you are an AI assistant that can help with various tasks.`;
+Keep responses concise and structured.`;
 
 // ============================================================================
 // LLM 状态
@@ -91,11 +101,12 @@ async function interactiveMode(runtime: ReinRuntime): Promise<void> {
   });
 
   const prompt = () => {
-    process.stdout.write(`${ACCENT('rein')}${DIM(' > ')} `);
+    process.stdout.write(`${ACCENT('❯ ')} `);
   };
 
   console.log(SUCCESS('✔ System initialized successfully'));
   console.log(DIM('  Type "help" for available commands, "exit" to quit'));
+  console.log(DIM(`  Tools available: ${getToolNames()}`));
   if (!isConfigured(cliConfig!)) {
     console.log(WARN('  ⚠ LLM not configured — chat mode unavailable'));
     console.log(DIM('  Set REIN_API_KEY in .env to enable chat'));
@@ -160,8 +171,7 @@ async function interactiveMode(runtime: ReinRuntime): Promise<void> {
   // 处理 Ctrl+C
   readline.on('SIGINT', () => {
     console.log();
-    console.log(WARN('⚠ Type "exit" to quit'));
-    printPrompt();
+    handleExit(runtime);
   });
 }
 
@@ -169,7 +179,7 @@ async function interactiveMode(runtime: ReinRuntime): Promise<void> {
 // 命令实现
 // ============================================================================
 
-/** 处理对话消息（流式输出） */
+/** 处理对话消息（工具调用循环 + markdown 渲染） */
 async function handleChat(input: string): Promise<void> {
   if (!llm || !isConfigured(cliConfig!)) {
     console.log(WARN('⚠ LLM not configured. Set REIN_API_KEY in .env to enable chat.'));
@@ -181,41 +191,81 @@ async function handleChat(input: string): Promise<void> {
     return;
   }
 
-  // 添加到对话历史
-  conversationHistory.push({ role: 'user', content: input });
-
   // 初始化 system prompt
-  if (conversationHistory.length === 1) {
-    conversationHistory.unshift({ role: 'system', content: SYSTEM_PROMPT });
+  if (conversationHistory.length === 0) {
+    conversationHistory.push({ role: 'system', content: SYSTEM_PROMPT });
   }
 
-  // 流式输出
+  // 添加用户消息
+  conversationHistory.push({ role: 'user', content: input });
+
+  // 显示用户消息框（Claude Code 风格）
   console.log();
-  let currentLine = '';
+  console.log(userBox(input));
+
+  // 创建 thinking spinner
+  const spinner = createSpinner();
+  spinner.start('Thinking');
+
+  const tools = getTools();
+  let hasTools = false;
+  const toolCallResults: Array<{ name: string; args: Record<string, unknown>; success: boolean; duration: number }> = [];
 
   try {
-    const response = await llm.chatStream(conversationHistory, (chunk: string) => {
-      process.stdout.write(chunk);
-      currentLine += chunk;
-    });
+    const response = await llm.chatWithTools(
+      conversationHistory,
+      tools,
+      async (name: string, args: Record<string, unknown>) => {
+        const toolStart = Date.now();
 
-    // 保存助手回复到历史
-    conversationHistory.push({ role: 'assistant', content: response.content });
+        // 停止 spinner 显示工具调用
+        spinner.stop();
+        if (!hasTools) {
+          hasTools = true;
+        }
 
+        const result = await executeTool(name, args);
+        const parsed = JSON.parse(result);
+        const duration = Date.now() - toolStart;
+
+        console.log(toolBlock(name, args, parsed.success !== false, duration));
+        toolCallResults.push({ name, args, success: parsed.success !== false, duration });
+
+        return result;
+      },
+      {
+        onThinking: () => {
+          // spinner 已在启动时处理
+        },
+        onChunk: () => {
+          // 收集内容，完成后统一渲染
+        },
+      },
+    );
+
+    // 停止 spinner
+    spinner.stop();
+
+    // 用 markdown 渲染 AI 回复
+    console.log();
+    console.log(renderMarkdown(response.content));
     console.log();
 
-    // 显示 token 用量
+    // 显示 token 用量和统计
+    const stats = toolCallResults.length > 0
+      ? ` | ${toolCallResults.length} tool(s)`
+      : '';
     if (response.usage) {
       console.log(
         DIM(
-          `  └─ tokens: ${response.usage.promptTokens} in / ${response.usage.completionTokens} out | model: ${response.model}`,
+          `  tokens: ${response.usage.promptTokens} in / ${response.usage.completionTokens} out | model: ${response.model}${stats}`,
         ),
       );
     }
   } catch (error: any) {
+    spinner.stop();
     console.log();
     console.log(ERROR(`✗ Error: ${error.message || String(error)}`));
-    // 移除用户消息（因为没有收到回复）
     conversationHistory.pop();
   }
 

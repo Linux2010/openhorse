@@ -1,0 +1,312 @@
+/**
+ * rein-agent - 工具集
+ *
+ * 定义 Agent 可用的工具：
+ *   - read_file: 读取文件内容
+ *   - write_file: 写入文件
+ *   - list_files: 列出目录
+ *   - exec_command: 执行 shell 命令
+ */
+
+import { execFile } from 'child_process';
+import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'fs';
+import { join, resolve, relative, normalize } from 'path';
+
+// ============================================================================
+// 类型定义
+// ============================================================================
+
+/** 工具参数 */
+export interface ToolCall {
+  name: string;
+  args: Record<string, unknown>;
+}
+
+/** 工具结果 */
+export interface ToolResult {
+  /** 是否成功 */
+  success: boolean;
+  /** 输出内容 */
+  output: string;
+  /** 错误信息 */
+  error?: string;
+}
+
+/** 工具定义（OpenAI function calling 格式） */
+export function getTools(): Array<{
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}> {
+  return TOOLS.map(tool => ({
+    type: 'function',
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    },
+  }));
+}
+
+// ============================================================================
+// 工具定义
+// ============================================================================
+
+interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  execute: (args: Record<string, unknown>) => Promise<ToolResult>;
+}
+
+const TOOLS: ToolDefinition[] = [
+  {
+    name: 'read_file',
+    description: '读取文件的全部内容。返回文件内容字符串。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: '文件路径（绝对路径或相对路径）',
+        },
+        maxLines: {
+          type: 'number',
+          description: '最大读取行数（可选，默认 500 行）',
+        },
+      },
+      required: ['path'],
+    },
+    execute: async (args) => {
+      return readFileSync_(args.path as string, args.maxLines as number | undefined);
+    },
+  },
+  {
+    name: 'write_file',
+    description: '将内容写入文件。如果文件不存在则创建，存在则覆盖。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: '文件路径（绝对路径或相对路径）',
+        },
+        content: {
+          type: 'string',
+          description: '要写入的文件内容',
+        },
+      },
+      required: ['path', 'content'],
+    },
+    execute: async (args) => {
+      return writeFileSync_(args.path as string, args.content as string);
+    },
+  },
+  {
+    name: 'list_files',
+    description: '列出指定目录中的文件和子目录。支持控制递归深度。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: '目录路径（绝对路径或相对路径）',
+        },
+        maxDepth: {
+          type: 'number',
+          description: '最大递归深度（可选，默认 2）',
+        },
+      },
+      required: ['path'],
+    },
+    execute: async (args) => {
+      return listFiles_(args.path as string, args.maxDepth as number | undefined);
+    },
+  },
+  {
+    name: 'exec_command',
+    description: '执行一个 shell 命令。返回 stdout 和 stderr。',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: {
+          type: 'string',
+          description: '要执行的 shell 命令',
+        },
+        cwd: {
+          type: 'string',
+          description: '工作目录（可选，默认当前目录）',
+        },
+        timeout: {
+          type: 'number',
+          description: '超时时间 ms（可选，默认 30000）',
+        },
+      },
+      required: ['command'],
+    },
+    execute: async (args) => {
+      return execCommand_(args.command as string, args.cwd as string | undefined, args.timeout as number | undefined);
+    },
+  },
+];
+
+// ============================================================================
+// 工具实现
+// ============================================================================
+
+/** 安全路径解析 — 防止路径遍历攻击 */
+function safePath(input: string): string {
+  const resolved = resolve(input);
+  // 限制只能访问当前工作目录及其子目录
+  const cwd = process.cwd();
+  if (relative(cwd, resolved).startsWith('..')) {
+    return cwd; // 超出范围则回退到 CWD
+  }
+  return resolved;
+}
+
+async function readFileSync_(path: string, maxLines?: number): Promise<ToolResult> {
+  try {
+    const resolved = safePath(path);
+    if (!existsSync(resolved)) {
+      return { success: false, output: '', error: `File not found: ${path}` };
+    }
+    if (statSync(resolved).isDirectory()) {
+      return { success: false, output: '', error: `Path is a directory, not a file: ${path}` };
+    }
+
+    const content = readFileSync(resolved, 'utf-8');
+    const lines = content.split('\n');
+    const limit = maxLines ?? 500;
+
+    if (lines.length > limit) {
+      return {
+        success: true,
+        output: lines.slice(0, limit).join('\n') + `\n\n[... truncated, ${lines.length - limit} more lines]`,
+      };
+    }
+
+    return { success: true, output: content };
+  } catch (err: any) {
+    return { success: false, output: '', error: String(err.message) };
+  }
+}
+
+async function writeFileSync_(path: string, content: string): Promise<ToolResult> {
+  try {
+    const resolved = safePath(path);
+    writeFileSync(resolved, content, 'utf-8');
+    return { success: true, output: `Wrote ${content.split('\n').length} lines to ${path}` };
+  } catch (err: any) {
+    return { success: false, output: '', error: String(err.message) };
+  }
+}
+
+async function listFiles_(path: string, maxDepth?: number): Promise<ToolResult> {
+  const resolved = safePath(path);
+  if (!existsSync(resolved)) {
+    return { success: false, output: '', error: `Path not found: ${path}` };
+  }
+  if (!statSync(resolved).isDirectory()) {
+    return { success: true, output: path };
+  }
+
+  const depth = maxDepth ?? 2;
+  const results: string[] = [];
+
+  function walk(dir: string, currentDepth: number, prefix: string) {
+    if (currentDepth > depth) return;
+    try {
+      const entries = readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.name.startsWith('.') && entry.name !== '.') continue; // skip hidden files except '.'
+        const fullPath = join(dir, entry.name);
+        const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+
+        if (entry.isDirectory()) {
+          results.push(`${relPath}/`);
+          walk(fullPath, currentDepth + 1, relPath);
+        } else {
+          results.push(relPath);
+        }
+      }
+    } catch {
+      // skip unreadable directories
+    }
+  }
+
+  walk(resolved, 1, '');
+  return { success: true, output: results.join('\n') };
+}
+
+async function execCommand_(command: string, cwd?: string, timeout?: number): Promise<ToolResult> {
+  return new Promise((resolve) => {
+    const workdir = cwd ? safePath(cwd) : process.cwd();
+    const timeoutMs = timeout ?? 30000;
+
+    execFile('sh', ['-c', command], {
+      cwd: workdir,
+      timeout: timeoutMs,
+      maxBuffer: 1024 * 1024, // 1MB output buffer
+    }, (error, stdout, stderr) => {
+      const output = stdout.toString().trim();
+      const errOutput = stderr.toString().trim();
+
+      if (error) {
+        resolve({
+          success: false,
+          output: output || errOutput,
+          error: error.message || `Command exited with code ${error.code}`,
+        });
+      } else {
+        resolve({
+          success: true,
+          output: output || '(no output)',
+          error: errOutput || undefined,
+        });
+      }
+    });
+  });
+}
+
+// ============================================================================
+// 统一执行入口
+// ============================================================================
+
+/**
+ * 执行一个工具调用，返回结构化结果字符串
+ */
+export async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
+  const tool = TOOLS.find(t => t.name === name);
+  if (!tool) {
+    return JSON.stringify({
+      success: false,
+      error: `Unknown tool: ${name}. Available tools: ${TOOLS.map(t => t.name).join(', ')}`,
+    });
+  }
+
+  const result = await tool.execute(args);
+
+  if (!result.success) {
+    return JSON.stringify({
+      success: false,
+      error: result.error,
+      output: result.output,
+    });
+  }
+
+  return JSON.stringify({
+    success: true,
+    output: result.output,
+  });
+}
+
+/**
+ * 获取可用工具名称列表
+ */
+export function getToolNames(): string {
+  return TOOLS.map(t => t.name).join(', ');
+}
