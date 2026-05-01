@@ -1,5 +1,5 @@
 /**
- * rein-agent - Agent 执行器
+ * openhorse - Agent 执行器
  *
  * 将 LLM 集成到 Agent 执行流程中：
  *   - 构建系统提示词与任务上下文

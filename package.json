@@ -1,11 +1,11 @@
 {
-  "name": "rein-agent",
+  "name": "openhorse",
   "version": "0.1.0",
-  "description": "通用 Agent 智能体框架 - Universal Agent Intelligence Framework",
+  "description": "OpenHorse - Universal Agent Harness Framework",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "rein": "bin/rein"
+    "openhorse": "bin/openhorse"
   },
   "scripts": {
     "start": "ts-node src/cli.ts",

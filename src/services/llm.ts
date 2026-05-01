@@ -1,5 +1,5 @@
 /**
- * rein-agent - LLM 服务层
+ * openhorse - LLM 服务层
  *
  * 封装 OpenAI 兼容 API，支持流式和非流式调用。
  * 兼容 OpenAI、Claude (via proxy)、本地 Ollama 等。

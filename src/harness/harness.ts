@@ -1,5 +1,5 @@
 /**
- * rein-agent - Harness 引擎（模块化）
+ * openhorse - Harness 引擎（模块化）
  *
  * 为 Agent 执行提供完整的约束、检查与验证：
  *   - preCheck: 执行前安全检查（安全策略 + 目标约束）
