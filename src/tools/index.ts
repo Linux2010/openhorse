@@ -1,5 +1,5 @@
 /**
- * rein-agent - 工具集
+ * openhorse - 工具集
  *
  * 定义 Agent 可用的工具：
  *   - read_file: 读取文件内容

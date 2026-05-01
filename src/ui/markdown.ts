@@ -1,5 +1,5 @@
 /**
- * rein-agent - 轻量级终端 Markdown 渲染器
+ * openhorse - 轻量级终端 Markdown 渲染器
  *
  * 不依赖外部 markdown 库，纯 chalk + 正则实现。
  * 支持：标题、粗体、斜体、行内代码、代码块、列表、引用、分隔线。

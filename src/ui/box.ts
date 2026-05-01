@@ -1,5 +1,5 @@
 /**
- * rein-agent - UI 组件
+ * openhorse - UI 组件
  *
  * 参考 Claude Code 风格的 CLI 界面：
  *   - 用户消息框（带圆角边框）

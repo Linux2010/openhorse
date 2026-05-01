@@ -1,5 +1,5 @@
 /**
- * rein-agent - 命令行交互入口
+ * openhorse - 命令行交互入口
  *
  * 提供交互式终端体验：
  *   - 欢迎界面（ASCII Art）
@@ -11,13 +11,13 @@
 import 'dotenv/config';
 import chalk from 'chalk';
 import figlet from 'figlet';
-import { init, ReinRuntime } from './init';
+import { init, OpenHorseRuntime } from './init';
 import { Task } from './core/agent';
 import { LLMService, Message, LLMResponse } from './services/llm';
 import { AgentRunner } from './services/agent-runner';
 import { TaskManager, CreateTaskOptions } from './services/task-manager';
 import { getTools, executeTool, getToolNames } from './tools';
-import { loadConfig, ReinCLIConfig, isConfigured, getConfigSummary, getConfigErrors } from './services/config';
+import { loadConfig, OpenHorseCLIConfig, isConfigured, getConfigSummary, getConfigErrors } from './services/config';
 import { userBox, createSpinner, toolBlock } from './ui/box';
 import { renderMarkdown } from './ui/markdown';
 
@@ -37,7 +37,7 @@ const HEADER = chalk.cyan.bold;
 // 系统提示词
 // ============================================================================
 
-const SYSTEM_PROMPT = `You are Rein, an AI agent powered by the Rein Agent Framework.
+const SYSTEM_PROMPT = `You are OpenHorse, an AI agent powered by the OpenHorse Framework.
 You are helpful, concise, and accurate.
 You can read files, write files, list directories, and execute shell commands.
 
@@ -54,7 +54,7 @@ Keep responses concise and structured.`;
 // ============================================================================
 
 let llm: LLMService | null = null;
-let cliConfig: ReinCLIConfig | null = null;
+let cliConfig: OpenHorseCLIConfig | null = null;
 let conversationHistory: Message[] = [];
 let taskManager: TaskManager | null = null;
 
@@ -63,7 +63,7 @@ let taskManager: TaskManager | null = null;
 // ============================================================================
 
 function printBanner(): void {
-  const art = figlet.textSync('REIN', {
+  const art = figlet.textSync('OPENHORSE', {
     font: 'standard',
     horizontalLayout: 'default',
     verticalLayout: 'default',
@@ -71,7 +71,7 @@ function printBanner(): void {
 
   console.log(BRAND(art));
   console.log();
-  console.log(`${ACCENT('Rein the AI, Unleash the Potential.')}`);
+  console.log(`${ACCENT('OpenHorse, Unleash the Potential.')}`);
   console.log(DIM('  通用 Agent 驾驭框架  |  Universal Agent Harness Framework'));
   console.log();
   console.log(`${DIM('├')} ${DIM('v')} ${chalk.bold('0.1.0')}  ${DIM('│')}  Node ${process.version}  ${DIM('│')}  ${process.platform} ${process.arch}`);
@@ -81,7 +81,7 @@ function printBanner(): void {
 /** 打印 LLM 状态 */
 function printLLMStatus(): void {
   if (!cliConfig || !isConfigured(cliConfig)) {
-    console.log(`${DIM('├')} ${WARN('LLM not configured')} ${DIM('| Set REIN_API_KEY in .env')}`);
+    console.log(`${DIM('├')} ${WARN('LLM not configured')} ${DIM('| Set OPENHORSE_API_KEY in .env')}`);
   } else if (llm) {
     console.log(`${DIM('├')} ${SUCCESS('LLM ready')} ${DIM('|')} ${BRAND(llm.getModel())}`);
   }
@@ -92,7 +92,7 @@ function printLLMStatus(): void {
 // 交互模式
 // ============================================================================
 
-async function interactiveMode(runtime: ReinRuntime): Promise<void> {
+async function interactiveMode(runtime: OpenHorseRuntime): Promise<void> {
   const rl = await import('readline');
 
   const readline = rl.createInterface({
@@ -109,7 +109,7 @@ async function interactiveMode(runtime: ReinRuntime): Promise<void> {
   console.log(DIM(`  Tools available: ${getToolNames()}`));
   if (!isConfigured(cliConfig!)) {
     console.log(WARN('  ⚠ LLM not configured — chat mode unavailable'));
-    console.log(DIM('  Set REIN_API_KEY in .env to enable chat'));
+    console.log(DIM('  Set OPENHORSE_API_KEY in .env to enable chat'));
   }
   console.log();
 
@@ -182,7 +182,7 @@ async function interactiveMode(runtime: ReinRuntime): Promise<void> {
 /** 处理对话消息（工具调用循环 + markdown 渲染） */
 async function handleChat(input: string): Promise<void> {
   if (!llm || !isConfigured(cliConfig!)) {
-    console.log(WARN('⚠ LLM not configured. Set REIN_API_KEY in .env to enable chat.'));
+    console.log(WARN('⚠ LLM not configured. Set OPENHORSE_API_KEY in .env to enable chat.'));
     return;
   }
 
@@ -278,13 +278,13 @@ function handleModel(modelName: string): void {
     if (llm) {
       console.log(DIM(`Current model: ${BRAND(llm.getModel())}`));
     } else {
-      console.log(ERROR('LLM not initialized. Set REIN_API_KEY first.'));
+      console.log(ERROR('LLM not initialized. Set OPENHORSE_API_KEY first.'));
     }
     return;
   }
 
   if (!llm) {
-    console.log(ERROR('LLM not initialized. Set REIN_API_KEY first.'));
+    console.log(ERROR('LLM not initialized. Set OPENHORSE_API_KEY first.'));
     return;
   }
 
@@ -344,7 +344,7 @@ function printHelp(): void {
   console.log();
 }
 
-function printStatus(runtime: ReinRuntime): void {
+function printStatus(runtime: OpenHorseRuntime): void {
   console.log();
   console.log(HEADER('System Status'));
   console.log(DIM('─'.repeat(40)));
@@ -371,7 +371,7 @@ function printStatus(runtime: ReinRuntime): void {
   console.log();
 }
 
-function printAgents(runtime: ReinRuntime): void {
+function printAgents(runtime: OpenHorseRuntime): void {
   console.log();
   console.log(HEADER('Registered Agents'));
   console.log(DIM('─'.repeat(40)));
@@ -387,7 +387,7 @@ function printAgents(runtime: ReinRuntime): void {
   console.log();
 }
 
-function printMemory(runtime: ReinRuntime): void {
+function printMemory(runtime: OpenHorseRuntime): void {
   console.log();
   console.log(HEADER('Memory Status'));
   console.log(DIM('─'.repeat(40)));
@@ -409,7 +409,7 @@ function printMemory(runtime: ReinRuntime): void {
   console.log();
 }
 
-function printSafety(runtime: ReinRuntime): void {
+function printSafety(runtime: OpenHorseRuntime): void {
   console.log();
   console.log(HEADER('Safety Checker'));
   console.log(DIM('─'.repeat(40)));
@@ -435,7 +435,7 @@ function printSafety(runtime: ReinRuntime): void {
   console.log();
 }
 
-function printHarness(runtime: ReinRuntime): void {
+function printHarness(runtime: OpenHorseRuntime): void {
   console.log();
   console.log(HEADER('Harness Config'));
   console.log(DIM('─'.repeat(40)));
@@ -453,7 +453,7 @@ function printHarness(runtime: ReinRuntime): void {
   console.log();
 }
 
-function submitTask(runtime: ReinRuntime, name: string): void {
+function submitTask(runtime: OpenHorseRuntime, name: string): void {
   const taskName = name.trim() || 'demo-task';
   const task: Task = {
     id: `cli-${Date.now()}`,
@@ -471,7 +471,7 @@ function submitTask(runtime: ReinRuntime, name: string): void {
 }
 
 /** 处理 task 子命令 (list, submit) */
-function handleTaskCommand(runtime: ReinRuntime, args: string): void {
+function handleTaskCommand(runtime: OpenHorseRuntime, args: string): void {
   const [sub, ...rest] = args.trim().split(/\s+/);
 
   if (sub === 'list' || sub === 'ls') {
@@ -533,7 +533,7 @@ function printTaskList(): void {
 }
 
 /** 通过 Agent + LLM 创建并执行任务 */
-async function handleRun(runtime: ReinRuntime, description: string): Promise<void> {
+async function handleRun(runtime: OpenHorseRuntime, description: string): Promise<void> {
   if (!description.trim()) {
     console.log(ERROR('Usage: run <task description>'));
     console.log(DIM('  Creates a task and executes it through the Agent + LLM pipeline.'));
@@ -541,7 +541,7 @@ async function handleRun(runtime: ReinRuntime, description: string): Promise<voi
   }
 
   if (!llm || !isConfigured(cliConfig!)) {
-    console.log(WARN('⚠ LLM not configured. Set REIN_API_KEY in .env to enable run mode.'));
+    console.log(WARN('⚠ LLM not configured. Set OPENHORSE_API_KEY in .env to enable run mode.'));
     return;
   }
 
@@ -604,7 +604,7 @@ async function handleRun(runtime: ReinRuntime, description: string): Promise<voi
   console.log();
 }
 
-async function handleExit(runtime: ReinRuntime): Promise<void> {
+async function handleExit(runtime: OpenHorseRuntime): Promise<void> {
   console.log();
   console.log(DIM('Shutting down...'));
   await runtime.shutdown();
@@ -616,14 +616,14 @@ async function handleExit(runtime: ReinRuntime): Promise<void> {
 // Commander 子命令模式
 // ============================================================================
 
-async function commandMode(runtime: ReinRuntime): Promise<void> {
+async function commandMode(runtime: OpenHorseRuntime): Promise<void> {
   const { Command } = await import('commander');
 
   const program = new Command();
 
   program
-    .name('rein')
-    .description('Rein Agent Framework - Universal Agent Harness')
+    .name('openhorse')
+    .description('OpenHorse Framework - Universal Agent Harness')
     .version('0.1.0');
 
   program
@@ -740,6 +740,6 @@ async function main(): Promise<void> {
 
 // 执行主入口
 main().catch(err => {
-  console.error(ERROR('[Rein] Fatal error:'), err);
+  console.error(ERROR('[OpenHorse] Fatal error:'), err);
   process.exit(1);
 });

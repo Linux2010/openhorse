@@ -1,5 +1,5 @@
 /**
- * rein-agent - 配置加载
+ * openhorse - 配置加载
  *
  * 配置加载优先级：
  *   1. 命令行参数
@@ -12,8 +12,8 @@
 // 类型定义
 // ============================================================================
 
-/** Rein 全局配置 */
-export interface ReinCLIConfig {
+/** OpenHorse 全局配置 */
+export interface OpenHorseCLIConfig {
   /** LLM API Key */
   apiKey: string;
   /** LLM API Base URL */
@@ -36,11 +36,11 @@ export interface ReinCLIConfig {
 // 默认配置
 // ============================================================================
 
-const DEFAULTS: Partial<ReinCLIConfig> = {
+const DEFAULTS: Partial<OpenHorseCLIConfig> = {
   model: 'gpt-4o',
   maxTokens: 4096,
   temperature: 0.7,
-  name: 'rein-agent',
+  name: 'openhorse',
   mode: 'development',
   logLevel: 'info',
 };
@@ -52,19 +52,19 @@ const DEFAULTS: Partial<ReinCLIConfig> = {
 /**
  * 从环境变量加载配置
  */
-export function loadConfig(overrides: Partial<ReinCLIConfig> = {}): ReinCLIConfig {
-  const config: ReinCLIConfig = {
-    apiKey: overrides.apiKey ?? process.env.REIN_API_KEY ?? '',
-    apiBaseUrl: overrides.apiBaseUrl ?? process.env.REIN_API_BASE_URL ?? undefined,
-    model: overrides.model ?? process.env.REIN_MODEL ?? DEFAULTS.model!,
-    maxTokens: overrides.maxTokens ?? parseNum(process.env.REIN_MAX_TOKENS) ?? DEFAULTS.maxTokens!,
+export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHorseCLIConfig {
+  const config: OpenHorseCLIConfig = {
+    apiKey: overrides.apiKey ?? process.env.OPENHORSE_API_KEY ?? '',
+    apiBaseUrl: overrides.apiBaseUrl ?? process.env.OPENHORSE_BASE_URL ?? undefined,
+    model: overrides.model ?? process.env.OPENHORSE_MODEL ?? DEFAULTS.model!,
+    maxTokens: overrides.maxTokens ?? parseNum(process.env.OPENHORSE_MAX_TOKENS) ?? DEFAULTS.maxTokens!,
     temperature:
       overrides.temperature ??
-      parseNum(process.env.REIN_TEMPERATURE) ??
+      parseNum(process.env.OPENHORSE_TEMPERATURE) ??
       DEFAULTS.temperature!,
-    name: overrides.name ?? process.env.REIN_NAME ?? DEFAULTS.name!,
-    mode: (overrides.mode ?? process.env.REIN_MODE ?? DEFAULTS.mode!) as 'development' | 'production',
-    logLevel: (overrides.logLevel ?? process.env.REIN_LOG_LEVEL ?? DEFAULTS.logLevel!) as ReinCLIConfig['logLevel'],
+    name: overrides.name ?? process.env.OPENHORSE_NAME ?? DEFAULTS.name!,
+    mode: (overrides.mode ?? process.env.OPENHORSE_MODE ?? DEFAULTS.mode!) as 'development' | 'production',
+    logLevel: (overrides.logLevel ?? process.env.OPENHORSE_LOG_LEVEL ?? DEFAULTS.logLevel!) as OpenHorseCLIConfig['logLevel'],
   };
 
   return config;
@@ -73,17 +73,17 @@ export function loadConfig(overrides: Partial<ReinCLIConfig> = {}): ReinCLIConfi
 /**
  * 检查 API Key 是否已配置
  */
-export function isConfigured(config: ReinCLIConfig): boolean {
+export function isConfigured(config: OpenHorseCLIConfig): boolean {
   return Boolean(config.apiKey);
 }
 
 /**
  * 获取缺失配置的提示信息
  */
-export function getConfigErrors(config: ReinCLIConfig): string[] {
+export function getConfigErrors(config: OpenHorseCLIConfig): string[] {
   const errors: string[] = [];
   if (!config.apiKey) {
-    errors.push('Missing REIN_API_KEY. Set it in .env file or environment variable.');
+    errors.push('Missing OPENHORSE_API_KEY. Set it in .env file or environment variable.');
   }
   return errors;
 }
@@ -91,7 +91,7 @@ export function getConfigErrors(config: ReinCLIConfig): string[] {
 /**
  * 获取配置摘要（隐藏 Key 值）
  */
-export function getConfigSummary(config: ReinCLIConfig): Record<string, string> {
+export function getConfigSummary(config: OpenHorseCLIConfig): Record<string, string> {
   return {
     name: config.name,
     model: config.model,

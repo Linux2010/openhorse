@@ -8,7 +8,7 @@ const fs = require('fs');
 // Multi-path .env loading
 //
 // Load order (later files do NOT override already-set variables):
-//   1. ~/.rein.env  (global config, works from any directory)
+//   1. ~/.openhorse.env (global config, works from any directory)
 //   2. ./.env       (project-local override)
 //   3. <package>/.env (fallback for development only)
 // ============================================================================
@@ -23,8 +23,8 @@ function loadEnvFile(filePath) {
 
 const envFilesLoaded = [];
 
-// 1. Global config: ~/.rein.env
-const globalEnv = path.join(os.homedir(), '.rein.env');
+// 1. Global config: ~/.openhorse.env
+const globalEnv = path.join(os.homedir(), '.openhorse.env');
 if (loadEnvFile(globalEnv)) {
   envFilesLoaded.push(globalEnv);
 }

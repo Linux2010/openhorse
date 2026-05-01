@@ -1,5 +1,5 @@
 /**
- * rein-agent - 初始化配置与启动入口
+ * openhorse - 初始化配置与启动入口
  *
  * 统一初始化入口：配置加载 → Harness 驾驭系统 → Memory 记忆系统
  *              → Agent 注册 → Brain 决策引擎 → 启动
@@ -18,8 +18,8 @@ import { MemoryStore, MemoryStoreConfig } from './memory/store';
 // 1. 配置类型定义
 // ============================================================================
 
-/** Rein 全局配置 */
-export interface ReinConfig {
+/** OpenHorse 全局配置 */
+export interface OpenHorseConfig {
   /** 实例名称 */
   name: string;
   /** 运行模式 */
@@ -352,10 +352,10 @@ export class MemorySystem extends EventEmitter {
 // 4. 默认配置
 // ============================================================================
 
-const DEFAULT_CONFIG: ReinConfig = {
-  name: 'rein-agent',
-  mode: (process.env.REIN_MODE as ReinConfig['mode']) || 'development',
-  logLevel: (process.env.REIN_LOG_LEVEL as ReinConfig['logLevel']) || 'info',
+const DEFAULT_CONFIG: OpenHorseConfig = {
+  name: 'openhorse',
+  mode: (process.env.OPENHORSE_MODE as OpenHorseConfig['mode']) || 'development',
+  logLevel: (process.env.OPENHORSE_LOG_LEVEL as OpenHorseConfig['logLevel']) || 'info',
   brain: {
     strategy: 'priority',
     maxConcurrent: 5,
@@ -393,7 +393,7 @@ const DEFAULT_CONFIG: ReinConfig = {
 // ============================================================================
 
 /** 初始化结果 */
-export interface ReinRuntime {
+export interface OpenHorseRuntime {
   /** Brain 决策引擎 */
   brain: Brain;
   /** Harness 驾驭系统 */
@@ -407,7 +407,7 @@ export interface ReinRuntime {
   /** 已注册的 Agent 列表 */
   agents: BaseAgent[];
   /** 当前配置 */
-  config: ReinConfig;
+  config: OpenHorseConfig;
   /** 启动系统 */
   start: () => Promise<void>;
   /** 优雅关闭 */
@@ -415,7 +415,7 @@ export interface ReinRuntime {
 }
 
 /**
- * 初始化 Rein Agent 系统
+ * 初始化 OpenHorse 系统
  *
  * 初始化流程：
  * 1. 合并配置（默认 + 用户覆盖）
@@ -425,46 +425,46 @@ export interface ReinRuntime {
  * 5. 建立 Harness ↔ Agent ↔ Memory 连接
  * 6. 返回运行时
  */
-export async function init(userConfig: Partial<ReinConfig> = {}): Promise<ReinRuntime> {
+export async function init(userConfig: Partial<OpenHorseConfig> = {}): Promise<OpenHorseRuntime> {
   const logger = createLogger(userConfig.logLevel ?? DEFAULT_CONFIG.logLevel);
 
   // --- Step 1: 合并配置 ---
-  logger.info('[Rein] Merging configuration...');
-  const config: ReinConfig = mergeConfig(DEFAULT_CONFIG, userConfig);
-  logger.info(`[Rein] Mode: ${config.mode} | Log: ${config.logLevel}`);
+  logger.info('[OpenHorse] Merging configuration...');
+  const config: OpenHorseConfig = mergeConfig(DEFAULT_CONFIG, userConfig);
+  logger.info(`[OpenHorse] Mode: ${config.mode} | Log: ${config.logLevel}`);
 
   // --- Step 2: 创建 Harness 驾驭系统 ---
-  logger.info('[Rein] Initializing Harness...');
+  logger.info('[OpenHorse] Initializing Harness...');
   const harness = new Harness(config.harness);
-  logger.info(`[Rein] Harness: maxSteps=${config.harness.maxSteps}, ` +
+  logger.info(`[OpenHorse] Harness: maxSteps=${config.harness.maxSteps}, ` +
     `boundaryCheck=${config.harness.boundaryCheck}, ` +
     `sandbox=${config.harness.sandbox}`);
 
   // --- Step 3: 创建 Memory 记忆系统 ---
-  logger.info('[Rein] Initializing Memory system...');
+  logger.info('[OpenHorse] Initializing Memory system...');
   const memory = new MemorySystem(config.memory);
-  logger.info(`[Rein] Memory: working=${config.memory.workingCapacity}, ` +
+  logger.info(`[OpenHorse] Memory: working=${config.memory.workingCapacity}, ` +
     `shortTerm=${config.memory.shortTermCapacity}, ` +
     `backend=${config.memory.longTermBackend}`);
 
   // --- Step 3.5: 创建 Safety 安全检查器 ---
-  logger.info('[Rein] Initializing Safety checker...');
+  logger.info('[OpenHorse] Initializing Safety checker...');
   const safety = new SafetyChecker(config.safety?.policy);
-  logger.info(`[Rein] Safety: enabled=${config.safety.enabled}`);
+  logger.info(`[OpenHorse] Safety: enabled=${config.safety.enabled}`);
 
   // --- Step 3.6: 创建 Memory Store ---
-  logger.info('[Rein] Initializing Memory store...');
+  logger.info('[OpenHorse] Initializing Memory store...');
   const store = new MemoryStore({
     workingCapacity: config.memory.workingCapacity,
     shortTermCapacity: config.memory.shortTermCapacity,
   });
 
   // --- Step 4: 创建 Brain 决策引擎 ---
-  logger.info('[Rein] Initializing Brain...');
+  logger.info('[OpenHorse] Initializing Brain...');
   const brain = new Brain(config.brain);
 
   // --- Step 5: 注册 Agent ---
-  logger.info('[Rein] Registering agents...');
+  logger.info('[OpenHorse] Registering agents...');
   const agents = await registerAgents(brain, config.agents, harness, memory, logger);
 
   // --- Step 6: 写入启动记忆 ---
@@ -475,10 +475,10 @@ export async function init(userConfig: Partial<ReinConfig> = {}): Promise<ReinRu
     agentCount: agents.length,
   }, ['system', 'startup']);
 
-  logger.info(`[Rein] ${agents.length} agent(s) registered`);
+  logger.info(`[OpenHorse] ${agents.length} agent(s) registered`);
 
   // --- 构建运行时 ---
-  const runtime: ReinRuntime = {
+  const runtime: OpenHorseRuntime = {
     brain,
     harness,
     memory,
@@ -488,7 +488,7 @@ export async function init(userConfig: Partial<ReinConfig> = {}): Promise<ReinRu
     config,
 
     async start() {
-      logger.info('[Rein] System starting...');
+      logger.info('[OpenHorse] System starting...');
       memory.writeToWorking({
         event: 'system-started',
         timestamp: new Date().toISOString(),
@@ -497,7 +497,7 @@ export async function init(userConfig: Partial<ReinConfig> = {}): Promise<ReinRu
       // 监听未处理的 Agent 错误
       agents.forEach(agent => {
         agent.on('task-failed', ({ task, error }) => {
-          logger.error(`[Rein] Task "${task.name}" failed on ${agent.name}: ${error}`);
+          logger.error(`[OpenHorse] Task "${task.name}" failed on ${agent.name}: ${error}`);
           memory.writeToShortTerm({
             event: 'task-failed',
             taskId: task.id,
@@ -507,11 +507,11 @@ export async function init(userConfig: Partial<ReinConfig> = {}): Promise<ReinRu
         });
       });
 
-      logger.info('[Rein] System ready.');
+      logger.info('[OpenHorse] System ready.');
     },
 
     async shutdown() {
-      logger.info('[Rein] Shutting down...');
+      logger.info('[OpenHorse] Shutting down...');
 
       // 停止所有 Agent
       agents.forEach(agent => agent.stop());
@@ -523,7 +523,7 @@ export async function init(userConfig: Partial<ReinConfig> = {}): Promise<ReinRu
       });
       memory.clearWorking();
 
-      logger.info('[Rein] System stopped.');
+      logger.info('[OpenHorse] System stopped.');
     },
   };
 
@@ -535,7 +535,7 @@ export async function init(userConfig: Partial<ReinConfig> = {}): Promise<ReinRu
 // ============================================================================
 
 /** 简易日志器 */
-function createLogger(level: ReinConfig['logLevel']) {
+function createLogger(level: OpenHorseConfig['logLevel']) {
   const levels = { debug: 0, info: 1, warn: 2, error: 3 };
   const current = levels[level];
 
@@ -548,7 +548,7 @@ function createLogger(level: ReinConfig['logLevel']) {
 }
 
 /** 深度合并配置 */
-function mergeConfig(defaults: ReinConfig, override: Partial<ReinConfig>): ReinConfig {
+function mergeConfig(defaults: OpenHorseConfig, override: Partial<OpenHorseConfig>): OpenHorseConfig {
   const result = { ...defaults };
 
   if (override.name !== undefined) result.name = override.name;
@@ -595,7 +595,7 @@ async function registerAgents(
   for (const entry of entries) {
     const factory = AGENT_FACTORY[entry.type];
     if (!factory) {
-      logger.warn(`[Rein] Unknown agent type: ${entry.type}, skipping.`);
+      logger.warn(`[OpenHorse] Unknown agent type: ${entry.type}, skipping.`);
       continue;
     }
 
@@ -605,7 +605,7 @@ async function registerAgents(
     agent.on('task-started', (task: Task) => {
       const verdict = harness.preCheck(task);
       if (!verdict.passed) {
-        logger.warn(`[Rein] Harness blocked task "${task.name}": ${verdict.reason}`);
+        logger.warn(`[OpenHorse] Harness blocked task "${task.name}": ${verdict.reason}`);
         agent.emit('task-blocked', { task, verdict });
       }
     });
@@ -614,7 +614,7 @@ async function registerAgents(
     agent.on('task-completed', ({ task, result }: { task: Task; result: TaskResult }) => {
       const verdict = harness.postValidate(result, task);
       if (!verdict.passed) {
-        logger.warn(`[Rein] Harness validation failed for "${task.name}": ${verdict.reason}`);
+        logger.warn(`[OpenHorse] Harness validation failed for "${task.name}": ${verdict.reason}`);
       }
       // 记录执行结果到记忆
       memory.writeToShortTerm({
@@ -640,8 +640,8 @@ async function registerAgents(
 /** 主启动函数 */
 async function main(): Promise<void> {
   console.log('╔══════════════════════════════════════════════════╗');
-  console.log('║          Rein Agent Framework                    ║');
-  console.log('║  "Rein the AI, Unleash the Potential."           ║');
+  console.log('║          OpenHorse Framework                    ║');
+  console.log('║  "OpenHorse, Unleash the Potential."           ║');
   console.log('╚══════════════════════════════════════════════════╝');
   console.log('');
 
@@ -663,15 +663,15 @@ async function main(): Promise<void> {
   await runtime.start();
 
   // 输出系统状态
-  console.log('\n[Rein] System Status:');
+  console.log('\n[OpenHorse] System Status:');
   console.log(JSON.stringify(runtime.brain.getStatus(), null, 2));
-  console.log('\n[Rein] Memory Status:');
+  console.log('\n[OpenHorse] Memory Status:');
   console.log(JSON.stringify(runtime.memory.getStatus(), null, 2));
-  console.log('\n[Rein] Harness Config:');
+  console.log('\n[OpenHorse] Harness Config:');
   console.log(JSON.stringify(runtime.harness.getConfig(), null, 2));
 
   // 提交示例任务
-  console.log('\n[Rein] Submitting demo task...');
+  console.log('\n[OpenHorse] Submitting demo task...');
   runtime.brain.submitTask({
     id: 'init-task-001',
     name: '初始化验证任务',
@@ -685,7 +685,7 @@ async function main(): Promise<void> {
 // 直接运行入口（仅作为入口文件时执行，被 import 时不执行）
 if (require.main === module) {
   main().catch(err => {
-    console.error('[Rein] Fatal error:', err);
+    console.error('[OpenHorse] Fatal error:', err);
     process.exit(1);
   });
 }

@@ -1,5 +1,5 @@
 /**
- * rein-agent - 通用 Agent 智能体框架
+ * openhorse - 通用 Agent 智能体框架
  *
  * 公共 API 导出入口
  */
@@ -18,8 +18,8 @@ export { CoderAgent } from './agents/coder';
 // 初始化与运行时
 export { init, Harness, MemorySystem } from './init';
 export type {
-  ReinConfig,
-  ReinRuntime,
+  OpenHorseConfig,
+  OpenHorseRuntime,
   HarnessConfig,
   MemoryConfig,
   SafetyConfig,
@@ -81,4 +81,4 @@ export type {
 
 // 配置模块
 export { loadConfig, isConfigured, getConfigErrors, getConfigSummary } from './services/config';
-export type { ReinCLIConfig } from './services/config';
+export type { OpenHorseCLIConfig } from './services/config';
