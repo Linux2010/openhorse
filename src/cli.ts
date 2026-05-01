@@ -16,6 +16,7 @@ import { Task } from './core/agent';
 import { LLMService, Message, LLMResponse } from './services/llm';
 import { AgentRunner } from './services/agent-runner';
 import { TaskManager, CreateTaskOptions } from './services/task-manager';
+import { getTools, executeTool, getToolNames } from './tools';
 import { loadConfig, ReinCLIConfig, isConfigured, getConfigSummary, getConfigErrors } from './services/config';
 
 // ============================================================================
@@ -34,10 +35,17 @@ const HEADER = chalk.cyan.bold;
 // 系统提示词
 // ============================================================================
 
-const SYSTEM_PROMPT = `You are Rein, an AI assistant powered by the Rein Agent Framework.
+const SYSTEM_PROMPT = `You are Rein, an AI agent powered by the Rein Agent Framework.
 You are helpful, concise, and accurate.
+You can read files, write files, list directories, and execute shell commands.
+
+When a user asks you to do something:
+1. If you need file information, use read_file, list_files, or exec_command first
+2. If the user wants you to create or modify files, use write_file
+3. Provide a clear summary of what you found or did
+
 Respond in the same language as the user.
-If asked about your capabilities, explain that you are an AI assistant that can help with various tasks.`;
+Keep responses concise and structured.`;
 
 // ============================================================================
 // LLM 状态
@@ -96,6 +104,7 @@ async function interactiveMode(runtime: ReinRuntime): Promise<void> {
 
   console.log(SUCCESS('✔ System initialized successfully'));
   console.log(DIM('  Type "help" for available commands, "exit" to quit'));
+  console.log(DIM(`  Tools available: ${getToolNames()}`));
   if (!isConfigured(cliConfig!)) {
     console.log(WARN('  ⚠ LLM not configured — chat mode unavailable'));
     console.log(DIM('  Set REIN_API_KEY in .env to enable chat'));
@@ -160,8 +169,7 @@ async function interactiveMode(runtime: ReinRuntime): Promise<void> {
   // 处理 Ctrl+C
   readline.on('SIGINT', () => {
     console.log();
-    console.log(WARN('⚠ Type "exit" to quit'));
-    printPrompt();
+    handleExit(runtime);
   });
 }
 
@@ -169,7 +177,7 @@ async function interactiveMode(runtime: ReinRuntime): Promise<void> {
 // 命令实现
 // ============================================================================
 
-/** 处理对话消息（流式输出） */
+/** 处理对话消息（工具调用循环 + 流式输出） */
 async function handleChat(input: string): Promise<void> {
   if (!llm || !isConfigured(cliConfig!)) {
     console.log(WARN('⚠ LLM not configured. Set REIN_API_KEY in .env to enable chat.'));
@@ -181,26 +189,60 @@ async function handleChat(input: string): Promise<void> {
     return;
   }
 
-  // 添加到对话历史
-  conversationHistory.push({ role: 'user', content: input });
-
   // 初始化 system prompt
-  if (conversationHistory.length === 1) {
-    conversationHistory.unshift({ role: 'system', content: SYSTEM_PROMPT });
+  if (conversationHistory.length === 0) {
+    conversationHistory.push({ role: 'system', content: SYSTEM_PROMPT });
   }
 
-  // 流式输出
+  // 添加用户消息
+  conversationHistory.push({ role: 'user', content: input });
+
+  // 消息分隔
   console.log();
-  let currentLine = '';
+  console.log(DIM('─'.repeat(40)));
+
+  const tools = getTools();
+  let hasOutputStarted = false;
 
   try {
-    const response = await llm.chatStream(conversationHistory, (chunk: string) => {
-      process.stdout.write(chunk);
-      currentLine += chunk;
-    });
+    const response = await llm.chatWithTools(
+      conversationHistory,
+      tools,
+      async (name: string, args: Record<string, unknown>) => {
+        // 显示工具调用信息
+        const argSummary = Object.entries(args)
+          .map(([k, v]) => `${k}="${String(v).slice(0, 60)}"`)
+          .join(', ');
+        console.log(DIM(`  → tool: ${name}(${argSummary})`));
 
-    // 保存助手回复到历史
-    conversationHistory.push({ role: 'assistant', content: response.content });
+        const result = await executeTool(name, args);
+        const parsed = JSON.parse(result);
+
+        if (parsed.success) {
+          console.log(DIM(`  ✓ ${name} OK`));
+        } else {
+          console.log(DIM(`  ✗ ${name} error: ${parsed.error}`));
+        }
+
+        return result;
+      },
+      {
+        onThinking: () => {
+          if (!hasOutputStarted) {
+            process.stdout.write('  🤔 ');
+          }
+        },
+        onChunk: (chunk: string) => {
+          if (!hasOutputStarted) {
+            // 移除 thinking 提示
+            const lines = 1;
+            hasOutputStarted = true;
+            process.stdout.write('\r' + ' '.repeat(60) + '\r  ');
+          }
+          process.stdout.write(chunk);
+        },
+      },
+    );
 
     console.log();
 
@@ -214,7 +256,7 @@ async function handleChat(input: string): Promise<void> {
     }
   } catch (error: any) {
     console.log();
-    console.log(ERROR(`✗ Error: ${error.message || String(error)}`));
+    console.log(ERROR(`  ✗ Error: ${error.message || String(error)}`));
     // 移除用户消息（因为没有收到回复）
     conversationHistory.pop();
   }
