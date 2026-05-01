@@ -1,16 +1,56 @@
 #!/usr/bin/env node
 
 const path = require('path');
+const os = require('os');
 const fs = require('fs');
 
-// Try compiled dist first, fall back to ts-node for development
+// ============================================================================
+// Multi-path .env loading
+//
+// Load order (later files do NOT override already-set variables):
+//   1. ~/.rein.env  (global config, works from any directory)
+//   2. ./.env       (project-local override)
+//   3. <package>/.env (fallback for development only)
+// ============================================================================
+
+function loadEnvFile(filePath) {
+  if (fs.existsSync(filePath)) {
+    require('dotenv').config({ path: filePath });
+    return true;
+  }
+  return false;
+}
+
+const envFilesLoaded = [];
+
+// 1. Global config: ~/.rein.env
+const globalEnv = path.join(os.homedir(), '.rein.env');
+if (loadEnvFile(globalEnv)) {
+  envFilesLoaded.push(globalEnv);
+}
+
+// 2. Current working directory: ./.env
+const localEnv = path.join(process.cwd(), '.env');
+if (loadEnvFile(localEnv)) {
+  envFilesLoaded.push(localEnv);
+}
+
+// 3. Package directory (development fallback)
+const packageEnv = path.join(__dirname, '..', '.env');
+if (loadEnvFile(packageEnv)) {
+  envFilesLoaded.push(packageEnv);
+}
+
+// ============================================================================
+// Load CLI
+// ============================================================================
+
 const distCli = path.join(__dirname, '..', 'dist', 'cli.js');
 const srcCli = path.join(__dirname, '..', 'src', 'cli.ts');
 
 if (fs.existsSync(distCli)) {
   require(distCli);
 } else {
-  // Development mode: use ts-node
   require('ts-node').register({ transpileOnly: true });
   require(srcCli);
 }
