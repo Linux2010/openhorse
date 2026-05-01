@@ -117,6 +117,17 @@ npm start -- task "我的任务"
 
 ---
 
+## 📚 文档
+
+| 文档 | 说明 |
+|------|------|
+| [整体架构设计](docs/architecture.md) | 6 层架构、模块职责、技术选型、MVP 范围 |
+| [Harness 驾驭系统](docs/harness-design.md) | 四层防御：目标约束/边界检查/结果验证/安全沙箱 |
+| [记忆系统设计](docs/memory-system.md) | 三层记忆：Working/Short-term/Long-term |
+| [Agent 生命周期](docs/agent-lifecycle.md) | 5 状态状态机、Brain 调度、多 Agent 协作 |
+
+---
+
 ## 📁 项目结构
 
 ```
