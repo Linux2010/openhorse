@@ -18,6 +18,8 @@ import { AgentRunner } from './services/agent-runner';
 import { TaskManager, CreateTaskOptions } from './services/task-manager';
 import { getTools, executeTool, getToolNames } from './tools';
 import { loadConfig, ReinCLIConfig, isConfigured, getConfigSummary, getConfigErrors } from './services/config';
+import { userBox, createSpinner, toolBlock } from './ui/box';
+import { renderMarkdown } from './ui/markdown';
 
 // ============================================================================
 // 颜色常量
@@ -99,7 +101,7 @@ async function interactiveMode(runtime: ReinRuntime): Promise<void> {
   });
 
   const prompt = () => {
-    process.stdout.write(`${ACCENT('rein')}${DIM(' > ')} `);
+    process.stdout.write(`${ACCENT('❯ ')} `);
   };
 
   console.log(SUCCESS('✔ System initialized successfully'));
@@ -177,7 +179,7 @@ async function interactiveMode(runtime: ReinRuntime): Promise<void> {
 // 命令实现
 // ============================================================================
 
-/** 处理对话消息（工具调用循环 + 流式输出） */
+/** 处理对话消息（工具调用循环 + markdown 渲染） */
 async function handleChat(input: string): Promise<void> {
   if (!llm || !isConfigured(cliConfig!)) {
     console.log(WARN('⚠ LLM not configured. Set REIN_API_KEY in .env to enable chat.'));
@@ -197,67 +199,73 @@ async function handleChat(input: string): Promise<void> {
   // 添加用户消息
   conversationHistory.push({ role: 'user', content: input });
 
-  // 消息分隔
+  // 显示用户消息框（Claude Code 风格）
   console.log();
-  console.log(DIM('─'.repeat(40)));
+  console.log(userBox(input));
+
+  // 创建 thinking spinner
+  const spinner = createSpinner();
+  spinner.start('Thinking');
 
   const tools = getTools();
-  let hasOutputStarted = false;
+  let hasTools = false;
+  const toolCallResults: Array<{ name: string; args: Record<string, unknown>; success: boolean; duration: number }> = [];
 
   try {
     const response = await llm.chatWithTools(
       conversationHistory,
       tools,
       async (name: string, args: Record<string, unknown>) => {
-        // 显示工具调用信息
-        const argSummary = Object.entries(args)
-          .map(([k, v]) => `${k}="${String(v).slice(0, 60)}"`)
-          .join(', ');
-        console.log(DIM(`  → tool: ${name}(${argSummary})`));
+        const toolStart = Date.now();
+
+        // 停止 spinner 显示工具调用
+        spinner.stop();
+        if (!hasTools) {
+          hasTools = true;
+        }
 
         const result = await executeTool(name, args);
         const parsed = JSON.parse(result);
+        const duration = Date.now() - toolStart;
 
-        if (parsed.success) {
-          console.log(DIM(`  ✓ ${name} OK`));
-        } else {
-          console.log(DIM(`  ✗ ${name} error: ${parsed.error}`));
-        }
+        console.log(toolBlock(name, args, parsed.success !== false, duration));
+        toolCallResults.push({ name, args, success: parsed.success !== false, duration });
 
         return result;
       },
       {
         onThinking: () => {
-          if (!hasOutputStarted) {
-            process.stdout.write('  🤔 ');
-          }
+          // spinner 已在启动时处理
         },
-        onChunk: (chunk: string) => {
-          if (!hasOutputStarted) {
-            // 移除 thinking 提示
-            const lines = 1;
-            hasOutputStarted = true;
-            process.stdout.write('\r' + ' '.repeat(60) + '\r  ');
-          }
-          process.stdout.write(chunk);
+        onChunk: () => {
+          // 收集内容，完成后统一渲染
         },
       },
     );
 
+    // 停止 spinner
+    spinner.stop();
+
+    // 用 markdown 渲染 AI 回复
+    console.log();
+    console.log(renderMarkdown(response.content));
     console.log();
 
-    // 显示 token 用量
+    // 显示 token 用量和统计
+    const stats = toolCallResults.length > 0
+      ? ` | ${toolCallResults.length} tool(s)`
+      : '';
     if (response.usage) {
       console.log(
         DIM(
-          `  └─ tokens: ${response.usage.promptTokens} in / ${response.usage.completionTokens} out | model: ${response.model}`,
+          `  tokens: ${response.usage.promptTokens} in / ${response.usage.completionTokens} out | model: ${response.model}${stats}`,
         ),
       );
     }
   } catch (error: any) {
+    spinner.stop();
     console.log();
-    console.log(ERROR(`  ✗ Error: ${error.message || String(error)}`));
-    // 移除用户消息（因为没有收到回复）
+    console.log(ERROR(`✗ Error: ${error.message || String(error)}`));
     conversationHistory.pop();
   }
 
