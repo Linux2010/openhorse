@@ -13,12 +13,14 @@ import chalk from 'chalk';
 import figlet from 'figlet';
 import { init, OpenHorseRuntime } from './init';
 import { Task } from './core/agent';
-import { LLMService, Message, LLMResponse } from './services/llm';
+import { LLMService, Message } from './services/llm';
 import { AgentRunner } from './services/agent-runner';
 import { TaskManager, CreateTaskOptions } from './services/task-manager';
-import { getTools, executeTool, getToolNames } from './tools';
+import { TOOLS, executeTool, getToolNames } from './tools';
 import { loadConfig, OpenHorseCLIConfig, isConfigured, getConfigSummary, getConfigErrors } from './services/config';
 import { createSpinner, toolLine } from './ui/box';
+import { Store, query, getSystemPrompt, type QueryEvent, type PromptContext } from './framework';
+import type { StreamCallbacks } from './services/llm';
 
 // ============================================================================
 // 颜色常量
@@ -33,28 +35,11 @@ const SUCCESS = chalk.green;
 const HEADER = chalk.cyan.bold;
 
 // ============================================================================
-// 系统提示词
-// ============================================================================
-
-const SYSTEM_PROMPT = `You are OpenHorse, an AI agent powered by the OpenHorse Framework.
-You are helpful, concise, and accurate.
-You can read files, write files, list directories, and execute shell commands.
-
-When a user asks you to do something:
-1. If you need file information, use read_file, list_files, or exec_command first
-2. If the user wants you to create or modify files, use write_file
-3. Provide a clear summary of what you found or did
-
-Respond in the same language as the user.
-Keep responses concise and structured.`;
-
-// ============================================================================
-// LLM 状态
+// 全局状态（Store 管理）
 // ============================================================================
 
 let llm: LLMService | null = null;
-let cliConfig: OpenHorseCLIConfig | null = null;
-let conversationHistory: Message[] = [];
+let store: Store;
 let taskManager: TaskManager | null = null;
 
 // ============================================================================
@@ -79,7 +64,8 @@ function printBanner(): void {
 
 /** 打印 LLM 状态 */
 function printLLMStatus(): void {
-  if (!cliConfig || !isConfigured(cliConfig)) {
+  const config = store.getSnapshot().config;
+  if (!isConfigured(config)) {
     console.log(`${DIM('├')} ${WARN('LLM not configured')} ${DIM('| Set OPENHORSE_API_KEY in .env')}`);
   } else if (llm) {
     console.log(`${DIM('├')} ${SUCCESS('LLM ready')} ${DIM('|')} ${BRAND(llm.getModel())}`);
@@ -99,6 +85,9 @@ async function interactiveMode(runtime: OpenHorseRuntime): Promise<void> {
     output: process.stdout,
   });
 
+  // Prevent double-processing while async commands run
+  let busy = false;
+
   const prompt = () => {
     process.stdout.write(ACCENT('❯ '));
   };
@@ -106,7 +95,8 @@ async function interactiveMode(runtime: OpenHorseRuntime): Promise<void> {
   console.log(SUCCESS('✔ System initialized successfully'));
   console.log(DIM('  Type "help" for available commands, "exit" to quit'));
   console.log(DIM(`  Tools available: ${getToolNames()}`));
-  if (!isConfigured(cliConfig!)) {
+  const config = store.getSnapshot().config;
+  if (!isConfigured(config)) {
     console.log(WARN('  ⚠ LLM not configured — chat mode unavailable'));
     console.log(DIM('  Set OPENHORSE_API_KEY in .env to enable chat'));
   }
@@ -116,7 +106,7 @@ async function interactiveMode(runtime: OpenHorseRuntime): Promise<void> {
 
   // --- 命令映射 ---
 
-  const commands: Record<string, (args: string) => void> = {
+  const commands: Record<string, (args: string) => void | Promise<void>> = {
     help: () => printHelp(),
     status: () => printStatus(runtime),
     agents: () => printAgents(runtime),
@@ -128,7 +118,7 @@ async function interactiveMode(runtime: OpenHorseRuntime): Promise<void> {
     chat: (args) => handleChat(args),
     model: (args) => handleModel(args),
     config: () => printConfig(),
-    clear: () => process.stdout.write('\x1Bc'),
+    clear: () => { process.stdout.write('\x1Bc'); },
     exit: () => handleExit(runtime),
     quit: () => handleExit(runtime),
   };
@@ -142,6 +132,26 @@ async function interactiveMode(runtime: OpenHorseRuntime): Promise<void> {
     prompt();
   }
 
+  /** Run handler and re-enable prompt after completion */
+  async function runHandler(cmd: string, args: string): Promise<void> {
+    if (busy) return;
+    busy = true;
+
+    const handler = commands[cmd];
+    if (handler) {
+      await handler(args);
+    } else {
+      // 非命令输入 → 作为对话消息
+      await handleChat(cmd + (args ? ' ' + args : ''));
+    }
+
+    busy = false;
+    // exit/quit 命令会调用 process.exit，不需要再打印 prompt
+    if (cmd !== 'exit' && cmd !== 'quit') {
+      printPrompt();
+    }
+  }
+
   readline.on('line', (line: string) => {
     const trimmed = line.trim();
     if (!trimmed) {
@@ -151,16 +161,13 @@ async function interactiveMode(runtime: OpenHorseRuntime): Promise<void> {
 
     const [cmd, ...rest] = trimmed.split(/\s+/);
     const args = rest.join(' ');
-    const handler = commands[cmd.toLowerCase()];
 
-    if (handler) {
-      handler(args);
-    } else {
-      // 非命令输入 → 作为对话消息
-      handleChat(trimmed);
+    if (busy) {
+      // 正在处理中，忽略输入（不排队）
+      return;
     }
 
-    printPrompt();
+    runHandler(cmd, args);
   });
 
   readline.on('close', () => {
@@ -178,70 +185,110 @@ async function interactiveMode(runtime: OpenHorseRuntime): Promise<void> {
 // 命令实现
 // ============================================================================
 
-/** 处理对话消息（工具调用循环 + 流式输出） */
+/** 处理对话消息（query generator 循环 + 流式输出） */
 async function handleChat(input: string): Promise<void> {
-  if (!llm || !isConfigured(cliConfig!)) {
-    console.log(WARN('⚠ LLM not configured. Set OPENHORSE_API_KEY in .env to enable chat.'));
-    return;
-  }
-
   if (!input) {
     console.log(ERROR('Usage: chat <message>'));
     return;
   }
 
-  // 初始化 system prompt
-  if (conversationHistory.length === 0) {
-    conversationHistory.push({ role: 'system', content: SYSTEM_PROMPT });
+  // 检查 LLM 配置
+  const config = store.getSnapshot().config;
+  if (!llm || !isConfigured(config)) {
+    console.log(WARN('⚠ LLM not configured. Set OPENHORSE_API_KEY in .env to enable chat.'));
+    return;
   }
 
-  // 添加用户消息
-  conversationHistory.push({ role: 'user', content: input });
+  // 先添加用户消息到历史
+  store.addMessage({ role: 'user', content: input });
 
-  // 用户消息 — 内联显示（不带 ❯ 前缀，readline 已有）
-  console.log(input);
+  // 再获取快照（包含刚添加的用户消息）
+  const snapshot = store.getSnapshot();
+
+  // 构建系统提示词
+  const promptCtx: PromptContext = {
+    cwd: process.cwd(),
+    platform: process.platform,
+    nodeVersion: process.version,
+    tools: TOOLS,
+  };
+  const systemPrompt = getSystemPrompt(promptCtx);
 
   // Thinking spinner
   const spinner = createSpinner();
   spinner.start('Thinking');
 
-  const tools = getTools();
+  let finalContent = '';
+  let finalModel = '';
+  let finalUsage: { promptTokens: number; completionTokens: number } | undefined;
+  let responseStarted = false;
+
+  const toolExecutor = async (name: string, args: Record<string, unknown>) => {
+    const start = Date.now();
+    const result = await executeTool(name, args);
+    const duration = Date.now() - start;
+    const parsed = JSON.parse(result);
+    spinner.stop();
+    console.log(toolLine(name, args, parsed.success !== false, duration));
+    return result;
+  };
+
+  const streamCallbacks: StreamCallbacks = {
+    onChunk: (chunk: string) => {
+      // 第一个 chunk 到来：清除 spinner，直接开始输出响应（不换行）
+      if (!responseStarted) {
+        responseStarted = true;
+        spinner.stop();
+      }
+      process.stdout.write(chunk);
+    },
+  };
 
   try {
-    const response = await llm.chatWithTools(
-      conversationHistory,
-      tools,
-      async (name: string, args: Record<string, unknown>) => {
-        const toolStart = Date.now();
+    const messages: Message[] = [{ role: 'system', content: systemPrompt }, ...snapshot.conversationHistory];
 
-        const result = await executeTool(name, args);
-        const parsed = JSON.parse(result);
-        const duration = Date.now() - toolStart;
+    for await (const event of query({
+      messages,
+      tools: TOOLS,
+      toolExecutor,
+      llm,
+      streamCallbacks,
+    })) {
+      switch (event.type) {
+        case 'request_start':
+          spinner.update(`Turn ${event.turn}...`);
+          break;
 
-        // 紧凑工具行：▸ name  args  ✓ 234ms
-        console.log(toolLine(name, args, parsed.success !== false, duration));
+        case 'tool_result':
+          spinner.start('Thinking');
+          break;
 
-        return result;
-      },
-      {
-        onThinking: () => {
-          spinner.update('Thinking...');
-        },
-        onChunk: (chunk: string) => {
-          // 收到第一个 token 后停止 spinner，直接流式输出
+        case 'complete':
           spinner.stop();
-          process.stdout.write(chunk);
-        },
-      },
-    );
+          finalContent = event.content;
+          finalModel = event.model;
+          finalUsage = event.usage;
+          break;
+      }
+    }
 
-    // 确保 spinner 停止
-    spinner.stop();
+    // 保存助手回复到历史（spinner 可能已由 onChunk/toolExecutor 停止）
+    if (finalContent) {
+      store.addMessage({ role: 'assistant', content: finalContent });
+    }
 
-    // 紧凑统计
+    // 更新 token 用量
+    if (finalUsage) {
+      store.setTokenUsage(finalUsage);
+    }
+
+    // 响应结束后换行，打印统计
+    if (responseStarted) {
+      console.log(); // 响应文本末尾换行
+    }
     const stats = [
-      response.usage ? `tokens: ${response.usage.promptTokens}+${response.usage.completionTokens}` : '',
-      response.model ? response.model : '',
+      finalUsage ? `tokens: ${finalUsage.promptTokens}+${finalUsage.completionTokens}` : '',
+      finalModel ? finalModel : '',
     ].filter(Boolean).join('  ');
     if (stats) {
       console.log(DIM(stats));
@@ -250,10 +297,11 @@ async function handleChat(input: string): Promise<void> {
     spinner.stop();
     console.log();
     console.log(ERROR(`✗ ${error.message || String(error)}`));
-    conversationHistory.pop();
+    const hist = store.getSnapshot().conversationHistory;
+    if (hist.length > 0) {
+      store.setState({ conversationHistory: hist.slice(0, -1) });
+    }
   }
-
-  console.log();
 }
 
 /** 切换模型 */
@@ -273,6 +321,7 @@ function handleModel(modelName: string): void {
   }
 
   llm.setModel(modelName);
+  store.setState({ currentModel: modelName });
   console.log(SUCCESS(`✔ Model changed to ${BRAND(modelName)}`));
   console.log();
 }
@@ -283,20 +332,17 @@ function printConfig(): void {
   console.log(HEADER('Configuration'));
   console.log(DIM('─'.repeat(40)));
 
-  if (cliConfig) {
-    const summary = getConfigSummary(cliConfig);
-    const llmSummary = llm?.getConfigSummary() ?? {};
+  const config = store.getSnapshot().config;
+  const summary = getConfigSummary(config);
+  const llmSummary = llm?.getConfigSummary() ?? {};
 
-    for (const [key, val] of Object.entries(summary)) {
-      console.log(`  ${ACCENT(key.padEnd(16))} ${DIM(val)}`);
-    }
-    console.log();
-    console.log(HEADER('  LLM Settings:'));
-    for (const [key, val] of Object.entries(llmSummary)) {
-      console.log(`  ${ACCENT(key.padEnd(16))} ${DIM(val)}`);
-    }
-  } else {
-    console.log(ERROR('  Config not loaded'));
+  for (const [key, val] of Object.entries(summary)) {
+    console.log(`  ${ACCENT(key.padEnd(16))} ${DIM(val)}`);
+  }
+  console.log();
+  console.log(HEADER('  LLM Settings:'));
+  for (const [key, val] of Object.entries(llmSummary)) {
+    console.log(`  ${ACCENT(key.padEnd(16))} ${DIM(val)}`);
   }
 
   console.log();
@@ -524,7 +570,8 @@ async function handleRun(runtime: OpenHorseRuntime, description: string): Promis
     return;
   }
 
-  if (!llm || !isConfigured(cliConfig!)) {
+  const snapshot = store.getSnapshot();
+  if (!llm || !isConfigured(snapshot.config)) {
     console.log(WARN('⚠ LLM not configured. Set OPENHORSE_API_KEY in .env to enable run mode.'));
     return;
   }
@@ -671,7 +718,14 @@ async function main(): Promise<void> {
   printBanner();
 
   // 加载环境变量
-  cliConfig = loadConfig();
+  const cliConfig = loadConfig();
+
+  // 创建 Store
+  store = new Store({
+    config: cliConfig,
+    tools: TOOLS,
+    currentModel: cliConfig.model,
+  });
 
   // 检查 LLM 配置
   if (isConfigured(cliConfig)) {
@@ -692,10 +746,11 @@ async function main(): Promise<void> {
   printLLMStatus();
 
   // 初始化系统
+  const config = store.getSnapshot().config;
   const runtime = await init({
-    name: cliConfig.name,
-    mode: cliConfig.mode,
-    logLevel: cliConfig.logLevel,
+    name: config.name,
+    mode: config.mode as any,
+    logLevel: config.logLevel,
   });
 
   // 注册优雅关闭

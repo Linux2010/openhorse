@@ -1,6 +1,6 @@
 /**
  * x-agent - 决策引擎
- * 
+ *
  * 负责 Agent 的任务分配、优先级排序和调度
  */
 
@@ -28,7 +28,6 @@ export class Brain {
    */
   registerAgent(agent: BaseAgent): void {
     this.agents.set(agent.id, agent);
-    console.log(`[Brain] Agent registered: ${agent.name} (${agent.id})`);
   }
 
   /**
@@ -36,7 +35,6 @@ export class Brain {
    */
   submitTask(task: Task): void {
     this.taskQueue.push(task);
-    console.log(`[Brain] Task submitted: ${task.name} (priority: ${task.priority})`);
     this.dispatch();
   }
 
@@ -63,17 +61,13 @@ export class Brain {
 
     // 执行任务
     this.taskQueue = this.taskQueue.filter(t => t.id !== task.id);
-    
-    console.log(`[Brain] Dispatching task "${task.name}" to ${agent.name}`);
-    
+
     try {
       task.status = 'running';
       const result = await agent.execute(task);
       task.status = result.success ? 'completed' : 'failed';
-      console.log(`[Brain] Task completed: ${task.name} (${result.success ? '✓' : '✗'})`);
     } catch (error) {
       task.status = 'failed';
-      console.error(`[Brain] Task failed: ${task.name}`, error);
     }
   }
 

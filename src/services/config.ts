@@ -55,7 +55,7 @@ const DEFAULTS: Partial<OpenHorseCLIConfig> = {
 export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHorseCLIConfig {
   const config: OpenHorseCLIConfig = {
     apiKey: overrides.apiKey ?? process.env.OPENHORSE_API_KEY ?? '',
-    apiBaseUrl: overrides.apiBaseUrl ?? process.env.OPENHORSE_BASE_URL ?? undefined,
+    apiBaseUrl: overrides.apiBaseUrl ?? process.env.OPENHORSE_API_BASE_URL ?? process.env.OPENHORSE_BASE_URL ?? undefined,
     model: overrides.model ?? process.env.OPENHORSE_MODEL ?? DEFAULTS.model!,
     maxTokens: overrides.maxTokens ?? parseNum(process.env.OPENHORSE_MAX_TOKENS) ?? DEFAULTS.maxTokens!,
     temperature:
