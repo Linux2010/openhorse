@@ -429,42 +429,27 @@ export async function init(userConfig: Partial<OpenHorseConfig> = {}): Promise<O
   const logger = createLogger(userConfig.logLevel ?? DEFAULT_CONFIG.logLevel);
 
   // --- Step 1: 合并配置 ---
-  logger.info('[OpenHorse] Merging configuration...');
   const config: OpenHorseConfig = mergeConfig(DEFAULT_CONFIG, userConfig);
-  logger.info(`[OpenHorse] Mode: ${config.mode} | Log: ${config.logLevel}`);
 
   // --- Step 2: 创建 Harness 驾驭系统 ---
-  logger.info('[OpenHorse] Initializing Harness...');
   const harness = new Harness(config.harness);
-  logger.info(`[OpenHorse] Harness: maxSteps=${config.harness.maxSteps}, ` +
-    `boundaryCheck=${config.harness.boundaryCheck}, ` +
-    `sandbox=${config.harness.sandbox}`);
 
   // --- Step 3: 创建 Memory 记忆系统 ---
-  logger.info('[OpenHorse] Initializing Memory system...');
   const memory = new MemorySystem(config.memory);
-  logger.info(`[OpenHorse] Memory: working=${config.memory.workingCapacity}, ` +
-    `shortTerm=${config.memory.shortTermCapacity}, ` +
-    `backend=${config.memory.longTermBackend}`);
 
   // --- Step 3.5: 创建 Safety 安全检查器 ---
-  logger.info('[OpenHorse] Initializing Safety checker...');
   const safety = new SafetyChecker(config.safety?.policy);
-  logger.info(`[OpenHorse] Safety: enabled=${config.safety.enabled}`);
 
   // --- Step 3.6: 创建 Memory Store ---
-  logger.info('[OpenHorse] Initializing Memory store...');
   const store = new MemoryStore({
     workingCapacity: config.memory.workingCapacity,
     shortTermCapacity: config.memory.shortTermCapacity,
   });
 
   // --- Step 4: 创建 Brain 决策引擎 ---
-  logger.info('[OpenHorse] Initializing Brain...');
   const brain = new Brain(config.brain);
 
   // --- Step 5: 注册 Agent ---
-  logger.info('[OpenHorse] Registering agents...');
   const agents = await registerAgents(brain, config.agents, harness, memory, logger);
 
   // --- Step 6: 写入启动记忆 ---
@@ -474,8 +459,6 @@ export async function init(userConfig: Partial<OpenHorseConfig> = {}): Promise<O
     mode: config.mode,
     agentCount: agents.length,
   }, ['system', 'startup']);
-
-  logger.info(`[OpenHorse] ${agents.length} agent(s) registered`);
 
   // --- 构建运行时 ---
   const runtime: OpenHorseRuntime = {
@@ -488,7 +471,6 @@ export async function init(userConfig: Partial<OpenHorseConfig> = {}): Promise<O
     config,
 
     async start() {
-      logger.info('[OpenHorse] System starting...');
       memory.writeToWorking({
         event: 'system-started',
         timestamp: new Date().toISOString(),
@@ -506,13 +488,9 @@ export async function init(userConfig: Partial<OpenHorseConfig> = {}): Promise<O
           }, ['error', task.id]);
         });
       });
-
-      logger.info('[OpenHorse] System ready.');
     },
 
     async shutdown() {
-      logger.info('[OpenHorse] Shutting down...');
-
       // 停止所有 Agent
       agents.forEach(agent => agent.stop());
 
@@ -522,8 +500,6 @@ export async function init(userConfig: Partial<OpenHorseConfig> = {}): Promise<O
         memory.writeToLongTerm(entry.content, entry.tags);
       });
       memory.clearWorking();
-
-      logger.info('[OpenHorse] System stopped.');
     },
   };
 

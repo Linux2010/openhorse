@@ -1,69 +1,26 @@
 /**
  * openhorse - 工具集
  *
- * 定义 Agent 可用的工具：
+ * 定义 Agent 可用的工具（Tool System v2）：
  *   - read_file: 读取文件内容
  *   - write_file: 写入文件
  *   - list_files: 列出目录
  *   - exec_command: 执行 shell 命令
+ *
+ * 使用 buildTool() 工厂模式。
  */
 
 import { execFile } from 'child_process';
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'fs';
-import { join, resolve, relative, normalize } from 'path';
+import { join, resolve, relative } from 'path';
+import { buildTool, type OpenHorseTool, type ToolResult, type ToolContext } from '../framework/tool';
 
 // ============================================================================
-// 类型定义
+// 工具集
 // ============================================================================
 
-/** 工具参数 */
-export interface ToolCall {
-  name: string;
-  args: Record<string, unknown>;
-}
-
-/** 工具结果 */
-export interface ToolResult {
-  /** 是否成功 */
-  success: boolean;
-  /** 输出内容 */
-  output: string;
-  /** 错误信息 */
-  error?: string;
-}
-
-/** 工具定义（OpenAI function calling 格式） */
-export function getTools(): Array<{
-  type: 'function';
-  function: {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-  };
-}> {
-  return TOOLS.map(tool => ({
-    type: 'function',
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters,
-    },
-  }));
-}
-
-// ============================================================================
-// 工具定义
-// ============================================================================
-
-interface ToolDefinition {
-  name: string;
-  description: string;
-  parameters: Record<string, unknown>;
-  execute: (args: Record<string, unknown>) => Promise<ToolResult>;
-}
-
-const TOOLS: ToolDefinition[] = [
-  {
+export const TOOLS: OpenHorseTool[] = [
+  buildTool({
     name: 'read_file',
     description: '读取文件的全部内容。返回文件内容字符串。',
     parameters: {
@@ -83,8 +40,11 @@ const TOOLS: ToolDefinition[] = [
     execute: async (args) => {
       return readFileSync_(args.path as string, args.maxLines as number | undefined);
     },
-  },
-  {
+    isReadOnly: () => true,
+    userFacingName: (args) => `Read ${args.path as string}`,
+  }),
+
+  buildTool({
     name: 'write_file',
     description: '将内容写入文件。如果文件不存在则创建，存在则覆盖。',
     parameters: {
@@ -104,8 +64,11 @@ const TOOLS: ToolDefinition[] = [
     execute: async (args) => {
       return writeFileSync_(args.path as string, args.content as string);
     },
-  },
-  {
+    isDestructive: () => true,
+    userFacingName: (args) => `Write ${args.path as string}`,
+  }),
+
+  buildTool({
     name: 'list_files',
     description: '列出指定目录中的文件和子目录。支持控制递归深度。',
     parameters: {
@@ -125,8 +88,12 @@ const TOOLS: ToolDefinition[] = [
     execute: async (args) => {
       return listFiles_(args.path as string, args.maxDepth as number | undefined);
     },
-  },
-  {
+    isReadOnly: () => true,
+    isConcurrencySafe: () => true,
+    userFacingName: (args) => `List ${args.path as string}`,
+  }),
+
+  buildTool({
     name: 'exec_command',
     description: '执行一个 shell 命令。返回 stdout 和 stderr。',
     parameters: {
@@ -150,7 +117,12 @@ const TOOLS: ToolDefinition[] = [
     execute: async (args) => {
       return execCommand_(args.command as string, args.cwd as string | undefined, args.timeout as number | undefined);
     },
-  },
+    isDestructive: (args) => {
+      const cmd = (args.command as string) || '';
+      return /(rm\s+-rf|mkfs|dd\s)/.test(cmd);
+    },
+    userFacingName: (args) => `Exec ${(args.command as string)?.slice(0, 60) || ''}`,
+  }),
 ];
 
 // ============================================================================
@@ -160,10 +132,9 @@ const TOOLS: ToolDefinition[] = [
 /** 安全路径解析 — 防止路径遍历攻击 */
 function safePath(input: string): string {
   const resolved = resolve(input);
-  // 限制只能访问当前工作目录及其子目录
   const cwd = process.cwd();
   if (relative(cwd, resolved).startsWith('..')) {
-    return cwd; // 超出范围则回退到 CWD
+    return cwd;
   }
   return resolved;
 }
@@ -222,7 +193,7 @@ async function listFiles_(path: string, maxDepth?: number): Promise<ToolResult> 
     try {
       const entries = readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
-        if (entry.name.startsWith('.') && entry.name !== '.') continue; // skip hidden files except '.'
+        if (entry.name.startsWith('.') && entry.name !== '.') continue;
         const fullPath = join(dir, entry.name);
         const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
 
@@ -250,7 +221,7 @@ async function execCommand_(command: string, cwd?: string, timeout?: number): Pr
     execFile('sh', ['-c', command], {
       cwd: workdir,
       timeout: timeoutMs,
-      maxBuffer: 1024 * 1024, // 1MB output buffer
+      maxBuffer: 1024 * 1024,
     }, (error, stdout, stderr) => {
       const output = stdout.toString().trim();
       const errOutput = stderr.toString().trim();
@@ -288,7 +259,15 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
     });
   }
 
-  const result = await tool.execute(args);
+  const context: ToolContext = {
+    cwd: process.cwd(),
+    config: {
+      name: 'openhorse',
+      mode: 'development',
+    },
+  };
+
+  const result = await tool.execute(args, context);
 
   if (!result.success) {
     return JSON.stringify({

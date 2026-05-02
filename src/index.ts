@@ -82,3 +82,17 @@ export type {
 // 配置模块
 export { loadConfig, isConfigured, getConfigErrors, getConfigSummary } from './services/config';
 export type { OpenHorseCLIConfig } from './services/config';
+
+// Framework 模块
+export {
+  buildTool, toOpenAITool, toOpenAITools,
+  query,
+  buildSystemPrompt, getSystemPrompt,
+  Store,
+} from './framework';
+export type {
+  OpenHorseTool, ToolResult, ToolContext, ToolConfig, PermissionResult, ToolInputJSONSchema, OpenAITool,
+  QueryEvent, QueryParams,
+  PromptContext, PromptSection,
+  AppState,
+} from './framework';

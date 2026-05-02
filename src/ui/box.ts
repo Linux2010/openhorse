@@ -1,10 +1,12 @@
 /**
  * openhorse - UI 组件
  *
- * 参考 Claude Code 风格的 CLI 界面：
- *   - 用户消息直接内联显示（❯ 前缀）
- *   - Thinking 动画（ASCII spinner）
- *   - 工具调用紧凑单行显示（▸ name  args  ✓ 123ms）
+ * 输出流设计：
+ *   ❯ hello                  ← readline prompt + 用户输入
+ *    ⠋ Thinking (0.3s)       ← spinner 在单独行
+ *   Here's the answer...      ← 响应流式输出（spinner 行被清除，响应从新行开始）
+ *   tokens: 22+242  qwen3.5-plus  ← 统计
+ *   ❯                  ← 下一轮
  */
 
 import chalk from 'chalk';
@@ -15,46 +17,36 @@ import chalk from 'chalk';
 
 const ACCENT = chalk.hex('#00D4AA');
 const DIM = chalk.dim;
-const GRAY = chalk.hex('#6B7280');
 const GREEN = chalk.green;
 const RED = chalk.red;
 
-// ASCII Spinner 动画帧
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+// 使用终端控制码清除整行，避免宽字符（中文）残留
+const CLEAR_LINE = '\x1b[2K\r';
 
 // ============================================================================
-// Thinking Spinner
+// Spinner
 // ============================================================================
 
 export interface Spinner {
-  /** 开始 spinner 动画 */
   start: (text?: string) => void;
-  /** 停止 spinner，清除动画行并换行 */
   stop: () => void;
-  /** 更新 spinner 文本 */
   update: (text?: string) => void;
 }
 
-/**
- * 创建 Thinking spinner
- *
- * ```
- * ⠋ Thinking...
- * ```
- */
 export function createSpinner(): Spinner {
   let interval: NodeJS.Timeout | null = null;
   let frame = 0;
   let currentText = '';
   let startTime = Date.now();
   let isRunning = false;
+  let shouldStop = false;
 
   function render(): void {
+    if (!isRunning || shouldStop) return;
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     const spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
-    const line = ` ${spinner} ${currentText} (${elapsed}s)`;
-
-    process.stdout.write(`\r${' '.repeat(100)}\r${line}`);
+    process.stdout.write(`${CLEAR_LINE}${spinner} ${currentText} (${elapsed}s)`);
     frame++;
   }
 
@@ -62,25 +54,24 @@ export function createSpinner(): Spinner {
     start(text = 'Thinking') {
       if (isRunning) return;
       isRunning = true;
+      shouldStop = false;
       currentText = text;
       startTime = Date.now();
       frame = 0;
-
       render();
       interval = setInterval(render, 100);
     },
 
     stop() {
       if (!isRunning) return;
+      // 先设置标记，防止 clearInterval 前 pending 的回调仍渲染
+      shouldStop = true;
       isRunning = false;
-
       if (interval) {
         clearInterval(interval);
         interval = null;
       }
-
-      // 清除 spinner 行，换到下一行
-      process.stdout.write(`\r${' '.repeat(100)}\r\n`);
+      process.stdout.write(CLEAR_LINE);
     },
 
     update(text) {
@@ -90,48 +81,29 @@ export function createSpinner(): Spinner {
 }
 
 // ============================================================================
-// 紧凑工具调用行
+// 工具调用行
 // ============================================================================
 
-/**
- * 渲染紧凑的工具调用行
- *
- * ```
- *   ▸ read_file  path: src/index.ts  ✓ 234ms
- * ```
- */
 export function toolLine(
   name: string,
   args: Record<string, unknown>,
   success: boolean,
   duration?: number,
 ): string {
-  const argSummary = compactArgs(name, args);
+  const argSummary = compactArgs(args);
   const status = success
     ? `${GREEN('✓')}${duration !== undefined ? ` ${duration}ms` : ''}`
     : `${RED('✗')}${duration !== undefined ? ` ${duration}ms` : ''}`;
-
   return `  ${ACCENT('▸')} ${ACCENT(name)} ${DIM(argSummary)} ${status}`;
 }
 
-/** 渲染进行中的工具调用行 */
-export function toolLineInProgress(name: string, args: Record<string, unknown>): string {
-  const argSummary = compactArgs(name, args);
-  const spinner = SPINNER_FRAMES[0];
-  return `  ${GRAY(spinner)} ${ACCENT(name)} ${DIM(argSummary)} ${DIM('...')}`;
-}
-
-/** 将工具参数摘要为简短可读字符串 */
-function compactArgs(name: string, args: Record<string, unknown>): string {
-  // 优先取 path 参数（文件类工具）
+function compactArgs(args: Record<string, unknown>): string {
   if (typeof args.path === 'string') {
     return args.path.length > 48 ? args.path.slice(0, 45) + '...' : args.path;
   }
-  // exec_command 取 command 的前 48 字符
   if (typeof args.command === 'string') {
     return args.command.length > 48 ? args.command.slice(0, 45) + '...' : args.command;
   }
-  // fallback：取第一个字符串值
   for (const val of Object.values(args)) {
     if (typeof val === 'string') {
       return val.length > 48 ? val.slice(0, 45) + '...' : val;
