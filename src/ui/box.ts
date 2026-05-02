@@ -99,8 +99,11 @@ export function renderHeaderBox(config: HeaderBoxConfig): string {
     : config.status === 'processing' ? ACCENT('◌')
     : DIM('○');
   const statusText = config.statusText || 'Ready — type /help to begin';
-  const statusVal = `${statusIcon} cloud    ${DIM(statusText)}`;
-  lines.push(`${BOX_LEFT}${DIM(' ' + statusVal.padEnd(innerWidth - 1))}${BOX_RIGHT}`);
+  // Build status content: icon + " cloud    " + statusText
+  const statusContent = ` ${statusIcon} cloud    ${statusText}`;
+  const statusVisibleLen = stringWidth(statusContent);
+  const statusPadding = innerWidth - statusVisibleLen - 1; // -1 for left space
+  lines.push(`${BOX_LEFT}${DIM(' ' + statusIcon + ' cloud    ')}${DIM(statusText)}${' '.repeat(Math.max(0, statusPadding))}${BOX_RIGHT}`);
 
   // Bottom border
   lines.push(`${BOX_BOTTOM_LEFT}${BOX_BOTTOM.repeat(innerWidth)}${BOX_BOTTOM_RIGHT}`);
