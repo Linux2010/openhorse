@@ -12,6 +12,7 @@
 
 import 'dotenv/config';
 import chalk from 'chalk';
+import figlet from 'figlet';
 import { init, OpenHorseRuntime } from './init';
 import { LLMService } from './services/llm';
 import { TOOLS } from './tools';
@@ -27,6 +28,7 @@ import { renderHeaderBox, renderFooterBar } from './ui/box';
 // 颜色常量
 // ============================================================================
 
+const BRAND = chalk.hex('#FF6B35');
 const ACCENT = chalk.hex('#00D4AA');
 const DIM = chalk.dim;
 const ERROR = chalk.red;
@@ -45,6 +47,16 @@ let store: Store;
 // ============================================================================
 
 function printBanner(): void {
+  // ASCII art banner
+  const art = figlet.textSync('OPENHORSE', {
+    font: 'standard',
+    horizontalLayout: 'default',
+    verticalLayout: 'default',
+  });
+  console.log(BRAND(art));
+  console.log();
+
+  // Header box with provider/model/endpoint info
   const config = store.getSnapshot().config;
   const baseUrl = config.apiBaseUrl || '';
   const headerBox = renderHeaderBox({
