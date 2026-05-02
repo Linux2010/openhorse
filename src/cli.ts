@@ -18,8 +18,7 @@ import { AgentRunner } from './services/agent-runner';
 import { TaskManager, CreateTaskOptions } from './services/task-manager';
 import { getTools, executeTool, getToolNames } from './tools';
 import { loadConfig, OpenHorseCLIConfig, isConfigured, getConfigSummary, getConfigErrors } from './services/config';
-import { userBox, createSpinner, toolBlock } from './ui/box';
-import { renderMarkdown } from './ui/markdown';
+import { createSpinner, toolLine } from './ui/box';
 
 // ============================================================================
 // 颜色常量
@@ -101,7 +100,7 @@ async function interactiveMode(runtime: OpenHorseRuntime): Promise<void> {
   });
 
   const prompt = () => {
-    process.stdout.write(`${ACCENT('❯ ')} `);
+    process.stdout.write(ACCENT('❯ '));
   };
 
   console.log(SUCCESS('✔ System initialized successfully'));
@@ -179,7 +178,7 @@ async function interactiveMode(runtime: OpenHorseRuntime): Promise<void> {
 // 命令实现
 // ============================================================================
 
-/** 处理对话消息（工具调用循环 + markdown 渲染） */
+/** 处理对话消息（工具调用循环 + 流式输出） */
 async function handleChat(input: string): Promise<void> {
   if (!llm || !isConfigured(cliConfig!)) {
     console.log(WARN('⚠ LLM not configured. Set OPENHORSE_API_KEY in .env to enable chat.'));
@@ -199,17 +198,14 @@ async function handleChat(input: string): Promise<void> {
   // 添加用户消息
   conversationHistory.push({ role: 'user', content: input });
 
-  // 显示用户消息框（Claude Code 风格）
-  console.log();
-  console.log(userBox(input));
+  // 用户消息 — 内联显示（不带 ❯ 前缀，readline 已有）
+  console.log(input);
 
-  // 创建 thinking spinner
+  // Thinking spinner
   const spinner = createSpinner();
   spinner.start('Thinking');
 
   const tools = getTools();
-  let hasTools = false;
-  const toolCallResults: Array<{ name: string; args: Record<string, unknown>; success: boolean; duration: number }> = [];
 
   try {
     const response = await llm.chatWithTools(
@@ -218,54 +214,42 @@ async function handleChat(input: string): Promise<void> {
       async (name: string, args: Record<string, unknown>) => {
         const toolStart = Date.now();
 
-        // 停止 spinner 显示工具调用
-        spinner.stop();
-        if (!hasTools) {
-          hasTools = true;
-        }
-
         const result = await executeTool(name, args);
         const parsed = JSON.parse(result);
         const duration = Date.now() - toolStart;
 
-        console.log(toolBlock(name, args, parsed.success !== false, duration));
-        toolCallResults.push({ name, args, success: parsed.success !== false, duration });
+        // 紧凑工具行：▸ name  args  ✓ 234ms
+        console.log(toolLine(name, args, parsed.success !== false, duration));
 
         return result;
       },
       {
         onThinking: () => {
-          // spinner 已在启动时处理
+          spinner.update('Thinking...');
         },
-        onChunk: () => {
-          // 收集内容，完成后统一渲染
+        onChunk: (chunk: string) => {
+          // 收到第一个 token 后停止 spinner，直接流式输出
+          spinner.stop();
+          process.stdout.write(chunk);
         },
       },
     );
 
-    // 停止 spinner
+    // 确保 spinner 停止
     spinner.stop();
 
-    // 用 markdown 渲染 AI 回复
-    console.log();
-    console.log(renderMarkdown(response.content));
-    console.log();
-
-    // 显示 token 用量和统计
-    const stats = toolCallResults.length > 0
-      ? ` | ${toolCallResults.length} tool(s)`
-      : '';
-    if (response.usage) {
-      console.log(
-        DIM(
-          `  tokens: ${response.usage.promptTokens} in / ${response.usage.completionTokens} out | model: ${response.model}${stats}`,
-        ),
-      );
+    // 紧凑统计
+    const stats = [
+      response.usage ? `tokens: ${response.usage.promptTokens}+${response.usage.completionTokens}` : '',
+      response.model ? response.model : '',
+    ].filter(Boolean).join('  ');
+    if (stats) {
+      console.log(DIM(stats));
     }
   } catch (error: any) {
     spinner.stop();
     console.log();
-    console.log(ERROR(`✗ Error: ${error.message || String(error)}`));
+    console.log(ERROR(`✗ ${error.message || String(error)}`));
     conversationHistory.pop();
   }
 

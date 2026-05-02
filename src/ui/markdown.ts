@@ -3,6 +3,7 @@
  *
  * 不依赖外部 markdown 库，纯 chalk + 正则实现。
  * 支持：标题、粗体、斜体、行内代码、代码块、列表、引用、分隔线。
+ * 无首行缩进，与流式输出对齐。
  */
 
 import chalk from 'chalk';
@@ -43,7 +44,7 @@ export function renderMarkdown(text: string, maxWidth = DEFAULT_MAX_WIDTH): stri
       const codeBlockLines: string[] = [];
       const lang = line.trim().slice(3).trim();
       if (lang) {
-        result.push(DIM(`  ┌─ ${lang}`));
+        result.push(DIM(`┌─ ${lang}`));
       }
       i++;
       while (i < lines.length && !lines[i].trimStart().startsWith('```')) {
@@ -52,10 +53,10 @@ export function renderMarkdown(text: string, maxWidth = DEFAULT_MAX_WIDTH): stri
       }
       // 渲染代码块
       for (const codeLine of codeBlockLines) {
-        result.push(CODE_BG(' ') + CODE_BG(codeLine));
+        result.push(CODE_BG(' ') + CODE_TEXT(codeLine));
       }
       if (lang) {
-        result.push(DIM('  └' + '─'.repeat(Math.min(maxWidth - 4, 70))));
+        result.push(DIM('└' + '─'.repeat(Math.min(maxWidth - 3, 70))));
       }
       i++; // skip closing ```
       continue;
@@ -80,7 +81,7 @@ export function renderMarkdown(text: string, maxWidth = DEFAULT_MAX_WIDTH): stri
       const quoteText = line.trimStart().slice(1).trim();
       const wrapped = wrapText(quoteText, maxWidth - 4);
       for (const w of wrapped) {
-        result.push(QUOTE(`  │ ${w}`));
+        result.push(QUOTE(`│ ${w}`));
       }
       i++;
       continue;
@@ -136,13 +137,11 @@ export function renderMarkdown(text: string, maxWidth = DEFAULT_MAX_WIDTH): stri
       continue;
     }
 
-    // 普通文本行
+    // 普通文本行 — 无首行缩进
     const content = renderInline(line.trim());
     if (content) {
-      const wrapped = wrapText(content, maxWidth - 2);
-      for (const w of wrapped) {
-        result.push('  ' + w);
-      }
+      const wrapped = wrapText(content, maxWidth);
+      result.push(...wrapped);
     }
 
     i++;
