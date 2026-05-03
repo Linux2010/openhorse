@@ -37,6 +37,32 @@ const WARN = chalk.yellow;
 const SUCCESS = chalk.green;
 
 // ============================================================================
+// Unicode 辅助函数
+// ============================================================================
+
+/**
+ * 删除字符串最后一个 Unicode 字符（正确处理 surrogate pairs）
+ * 中文字符在 UTF-16 中占用 2 个 code units，slice(0, -1) 只删除一半
+ */
+function removeLastUnicodeChar(str: string): string {
+  if (str.length === 0) return str;
+
+  // 检查最后字符是否是 low surrogate
+  const lastCode = str.charCodeAt(str.length - 1);
+  if (lastCode >= 0xDC00 && lastCode <= 0xDFFF && str.length >= 2) {
+    // Low surrogate，检查前一个是否是 high surrogate
+    const prevCode = str.charCodeAt(str.length - 2);
+    if (prevCode >= 0xD800 && prevCode <= 0xDBFF) {
+      // Surrogate pair，删除 2 个 code units
+      return str.slice(0, -2);
+    }
+  }
+
+  // 普通字符，删除 1 个 code unit
+  return str.slice(0, -1);
+}
+
+// ============================================================================
 // 全局状态
 // ============================================================================
 
@@ -191,10 +217,10 @@ async function interactiveMode(runtime: OpenHorseRuntime): Promise<void> {
       return;
     }
 
-    // Backspace: delete last character
+    // Backspace: delete last character (handle Unicode correctly)
     if (key.backspace || key.delete) {
       if (currentInput.length > 0) {
-        currentInput = currentInput.slice(0, -1);
+        currentInput = removeLastUnicodeChar(currentInput);
         clearSuggestions();
         redrawInput(currentInput, getModeIndicator());
         // Show suggestions if input starts with /
