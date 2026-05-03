@@ -9,6 +9,7 @@ import type { Message } from '../services/llm';
 import type { OpenHorseTool } from './tool';
 import type { OpenHorseCLIConfig } from '../services/config';
 import type { PermissionMode } from '../commands/types';
+import { CostTracker } from '../core/cost-tracker';
 
 // ============================================================================
 // 状态结构
@@ -22,6 +23,7 @@ export interface AppState {
   currentModel: string;
   tokenUsage: { promptTokens: number; completionTokens: number } | null;
   permissionMode: PermissionMode;
+  costTracker: CostTracker;
 }
 
 // ============================================================================
@@ -34,12 +36,13 @@ export class Store {
   private state: AppState;
   private listeners: Set<Listener> = new Set();
 
-  constructor(initial: Omit<AppState, 'conversationHistory' | 'isProcessing' | 'tokenUsage' | 'permissionMode'> & Partial<AppState>) {
+  constructor(initial: Omit<AppState, 'conversationHistory' | 'isProcessing' | 'tokenUsage' | 'permissionMode' | 'costTracker'> & Partial<AppState>) {
     this.state = {
       conversationHistory: [],
       isProcessing: false,
       tokenUsage: null,
       permissionMode: 'default',
+      costTracker: new CostTracker(),
       ...initial,
     } as AppState;
   }

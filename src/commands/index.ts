@@ -193,6 +193,54 @@ function showConfig(ctx: CommandContext): CommandResult {
   return { success: true };
 }
 
+function showCost(ctx: CommandContext): CommandResult {
+  console.log();
+  console.log(HEADER('Token Usage & Cost'));
+  console.log(DIM('─'.repeat(40)));
+
+  const costTracker = ctx.store.getSnapshot().costTracker;
+  const stats = costTracker.getSessionStats();
+
+  if (stats.recordCount === 0) {
+    console.log(DIM('  No usage recorded yet.'));
+    console.log(DIM('  Use /run or /chat to interact with LLM.'));
+    console.log();
+    return { success: true };
+  }
+
+  // Summary
+  console.log(HEADER('  Session Summary:'));
+  console.log(`  ${ACCENT('Total Tokens')}   ${stats.totalTokens}`);
+  console.log(`  ${ACCENT('Prompt')}         ${stats.totalPromptTokens}`);
+  console.log(`  ${ACCENT('Completion')}    ${stats.totalCompletionTokens}`);
+  console.log(`  ${ACCENT('Est. Cost')}     ${costTracker.formatCost(stats.totalCost)}`);
+  console.log(`  ${ACCENT('Requests')}       ${stats.recordCount}`);
+  console.log();
+
+  // By Model
+  if (Object.keys(stats.byModel).length > 0) {
+    console.log(HEADER('  By Model:'));
+    for (const [model, data] of Object.entries(stats.byModel)) {
+      console.log(`    ${BRAND(model.padEnd(20))} ${data.tokens} tokens, ${costTracker.formatCost(data.cost)}`);
+    }
+    console.log();
+  }
+
+  // Budget
+  const budget = costTracker.getBudget();
+  if (budget !== null) {
+    const check = costTracker.checkBudget();
+    console.log(HEADER('  Budget:'));
+    console.log(`    ${ACCENT('Limit')}    ${costTracker.formatCost(budget)}`);
+    console.log(`    ${ACCENT('Used')}     ${costTracker.formatCost(check.used)}`);
+    console.log(`    ${ACCENT('Remaining')} ${costTracker.formatCost(check.remaining)}`);
+    console.log(`    ${check.ok ? SUCCESS('✓ Within budget') : WARN('⚠ Budget exceeded')}`);
+    console.log();
+  }
+
+  return { success: true };
+}
+
 function handleModel(ctx: CommandContext, args: string): CommandResult {
   // 模型别名映射
   const MODEL_ALIASES: Record<string, string> = {
@@ -474,6 +522,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       toolExecutor,
       llm: ctx.llm,
       streamCallbacks,
+      costTracker: snapshot.costTracker,
     })) {
       switch (event.type) {
         case 'request_start':
@@ -698,6 +747,13 @@ const COMMANDS: SlashCommand[] = [
     description: 'Show current configuration',
     type: 'builtin',
     execute: (ctx) => showConfig(ctx),
+  },
+  {
+    name: 'cost',
+    aliases: ['usage'],
+    description: 'Show token usage and estimated cost',
+    type: 'builtin',
+    execute: (ctx) => showCost(ctx),
   },
 
   // Agent/Harness 命令

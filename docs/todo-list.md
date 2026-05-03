@@ -1,28 +1,34 @@
 # OpenHorse Todo List
 
-## Phase 3 - CLI 实时交互 ✅ 已完成
+## Phase 3 - 高级 Agent
 
-- [x] 研究 OpenClaude 的 PromptInput 实现（React + Ink）
-- [x] 实现 keypress 事件处理（字符级输入）
-- [x] 创建建议渲染模块（src/ui/suggestions.ts）
-- [x] 集成 "/" 实时命令建议显示
+### 成本追踪 ✅ 已完成
 
-### 完成详情
+- [x] CostTracker 类 - 记录 token 使用和估算成本
+- [x] 模型定价表 - 支持 OpenAI/Claude/Qwen/Gemini/DeepSeek/GLM
+- [x] 统计维度 - 按 Agent/任务/模型/时间
+- [x] 预算检查 - setBudget/checkBudget
+- [x] /cost 命令 - 显示会话用量和成本
 
-**提交**: [2779252](https://github.com/Linux2010/openhorse/commit/2779252)
+**提交**: [668171d](https://github.com/Linux2010/openhorse/commit/668171d)
 
-**功能**:
-- 输入 "/" 时显示所有命令列表
-- 输入 "/m" 等部分命令时显示匹配建议
-- Backspace/Escape 实时更新建议
-- Enter 提交命令执行
+**新增文件**:
+- `src/core/cost-tracker.ts` - CostTracker 类
+- `tests/cost-tracker.test.ts` - 20 个测试用例
 
-**技术实现**:
-- 使用 `rl.emitKeypressEvents` 启用字符级输入
-- 使用 muted Writable stream 控制 readline 输出
-- ANSI escape codes 控制光标和清屏
+**修改文件**:
+- `src/framework/store.ts` - 添加 costTracker 字段
+- `src/framework/query.ts` - 执行后记录 usage
+- `src/commands/index.ts` - 添加 /cost 命令
 
-**测试**: 134 passed ✅
+**测试**: 154 passed ✅
+
+---
+
+### 待完成
+
+- [ ] Task 链 - 基础抽象
+- [ ] Coordinator - 核心编排
 
 ---
 
@@ -56,7 +62,7 @@
 
 ## Slash 命令系统改进 ✅ 已完成
 
-- [x] 查看openclaude如何实现 切换模型的 /model 是如何做的，以及其他的/ 命令行，使用它的方案完成自己的能力
+- [x] 查看 openclaude 如何实现 切换模型的 /model 是如何做的，以及其他的 / 命令行
 
 ### 完成详情
 

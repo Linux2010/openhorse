@@ -12,6 +12,7 @@
 import type { LLMService, Message, StreamCallbacks, Tool } from '../services/llm';
 import type { OpenHorseTool, ToolContext, PermissionResult } from './tool';
 import type { PermissionMode } from '../commands/types';
+import type { CostTracker } from '../core/cost-tracker';
 import { toOpenAITools } from './tool';
 
 // ============================================================================
@@ -48,6 +49,8 @@ export interface QueryParams {
   permissionMode?: PermissionMode;
   /** Tool execution context */
   toolContext?: ToolContext;
+  /** Cost tracker for recording usage */
+  costTracker?: CostTracker;
 }
 
 // ============================================================================
@@ -78,6 +81,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     maxTurns = 20,
     abortSignal,
     streamCallbacks,
+    costTracker,
   } = params;
 
   const openaiTools = toOpenAITools(tools) as unknown as Tool[];
@@ -181,6 +185,12 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
     // No tool calls — done
     yield { type: 'message', role: 'assistant', content: response.content };
+
+    // Record usage to cost tracker
+    if (costTracker && response.usage) {
+      costTracker.record(response.usage, { model: response.model });
+    }
+
     yield {
       type: 'complete',
       content: response.content,
