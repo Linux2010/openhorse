@@ -10,6 +10,7 @@ import type { OpenHorseTool } from './tool';
 import type { OpenHorseCLIConfig } from '../services/config';
 import type { PermissionMode } from '../commands/types';
 import { CostTracker } from '../core/cost-tracker';
+import type { TodoItem } from './tool-state';
 
 // ============================================================================
 // 状态结构
@@ -26,6 +27,14 @@ export interface AppState {
   costTracker: CostTracker;
   /** Project memory content loaded at startup */
   memoryContent: string;
+  /** Pre-rendered skills section for the system prompt */
+  skillsContent: string;
+  /** Active todo list (mirrored from tool-state) */
+  todos: TodoItem[];
+  /** Whether the agent is in plan mode (mirrored from tool-state) */
+  planMode: boolean;
+  /** Latest plan from exit_plan_mode (mirrored from tool-state) */
+  currentPlan: string | null;
 }
 
 // ============================================================================
@@ -38,7 +47,7 @@ export class Store {
   private state: AppState;
   private listeners: Set<Listener> = new Set();
 
-  constructor(initial: Omit<AppState, 'conversationHistory' | 'isProcessing' | 'tokenUsage' | 'permissionMode' | 'costTracker' | 'memoryContent'> & Partial<AppState>) {
+  constructor(initial: Omit<AppState, 'conversationHistory' | 'isProcessing' | 'tokenUsage' | 'permissionMode' | 'costTracker' | 'memoryContent' | 'skillsContent' | 'todos' | 'planMode' | 'currentPlan'> & Partial<AppState>) {
     this.state = {
       conversationHistory: [],
       isProcessing: false,
@@ -46,6 +55,10 @@ export class Store {
       permissionMode: 'default',
       costTracker: new CostTracker(),
       memoryContent: '',
+      skillsContent: '',
+      todos: [],
+      planMode: false,
+      currentPlan: null,
       ...initial,
     } as AppState;
   }

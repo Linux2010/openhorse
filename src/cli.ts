@@ -13,12 +13,14 @@ import { join } from 'path';
 import { init, OpenHorseRuntime } from './init';
 import { LLMService } from './services/llm';
 import { TOOLS } from './tools';
+import { mcpManager } from './tools/mcp';
 import { loadConfig, isConfigured } from './services/config';
 import { ensureConfigDir } from './services/config-dir';
 import { recordFirstStartTime, incrementSessionCount } from './services/global-config';
 import { createSession, type SessionMeta, readSessionMessages, updateSessionSummary, endSession } from './services/session-storage';
 import { loadAllMemories } from './memory/storage';
-import { Store } from './framework';
+import { getSkillsRegistry } from './skills';
+import { Store, subscribeToolState, resetToolState } from './framework';
 import { findCommand, executeChat, getCommandNames } from './commands';
 import { parseInput, buildCommandSuggestions } from './commands/parser';
 import type { CommandContext } from './commands/types';
@@ -159,11 +161,31 @@ async function main(): Promise<void> {
     ? memories.map(m => `## ${m.name} (${m.type})\n${m.content}`).join('\n\n')
     : '';
 
+  // Load skills (builtin + user + project) and render the prompt section
+  let skillsContent = '';
+  try {
+    const registry = getSkillsRegistry();
+    skillsContent = registry.generateSystemPromptInjection();
+  } catch (err: any) {
+    console.error(WARN(`⚠ Skills load error: ${err.message}`));
+  }
+
   store = new Store({
     config: cliConfig,
     tools: TOOLS,
     currentModel: cliConfig.model,
     memoryContent,
+    skillsContent,
+  });
+
+  // Mirror tool-state (todos/plan) into Store so the UI can observe it
+  resetToolState();
+  subscribeToolState((s) => {
+    store.setState({
+      todos: s.todos,
+      planMode: s.planMode,
+      currentPlan: s.currentPlan,
+    });
   });
 
   currentSession = createSession(projectPath, cliConfig.model);
@@ -195,6 +217,11 @@ async function main(): Promise<void> {
 
   await runtime.start();
 
+  // Auto-connect MCP servers from ~/.openhorse/mcp.json (non-blocking)
+  mcpManager.connectAll().catch(err => {
+    console.error(WARN(`⚠ MCP startup error: ${err.message}`));
+  });
+
   // Banner
   showBanner();
 
@@ -218,6 +245,7 @@ async function main(): Promise<void> {
   rl.on('close', async () => {
     console.log();
     console.log(DIM('Shutting down...'));
+    mcpManager.disconnectAll();
     await runtime.shutdown();
     console.log(SUCCESS('Goodbye! 🐴'));
     process.exit(0);

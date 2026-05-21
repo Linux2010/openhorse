@@ -11,8 +11,9 @@ import { TaskManager, CreateTaskOptions } from '../services/task-manager';
 import { AgentRunner } from '../services/agent-runner';
 import { isConfigured } from '../services/config';
 import { createSpinner, toolLine } from '../ui/box';
-import { query, getSystemPrompt, type QueryEvent, type PromptContext } from '../framework';
+import { query, getSystemPrompt, resetToolState, type QueryEvent, type PromptContext } from '../framework';
 import { TOOLS, executeTool, getToolNames } from '../tools';
+import { mcpManager } from '../tools/mcp';
 import type { Message, StreamCallbacks } from '../services/llm';
 import {
   listSessions,
@@ -153,6 +154,41 @@ function showMemory(ctx: CommandContext): CommandResult {
   return { success: true };
 }
 
+async function handleMemoryReindex(ctx: CommandContext): Promise<CommandResult> {
+  const { isSemanticEnabled, getSemanticSearchService } = require('../memory/semantic-search');
+
+  if (!isSemanticEnabled()) {
+    console.log();
+    console.log(WARN('⚠ Semantic search is not enabled.'));
+    console.log(DIM('  Set OPENHORSE_EMBEDDING_PROVIDER=ollama or openai to enable.'));
+    console.log();
+    return { success: false };
+  }
+
+  console.log();
+  console.log(HEADER('Reindexing project memories...'));
+
+  try {
+    const service = getSemanticSearchService();
+    const count = await service.indexExistingMemories(process.cwd());
+    console.log(SUCCESS(`✔ Indexed ${count} memories`));
+  } catch (err: any) {
+    console.log(ERROR(`✗ Reindex failed: ${err.message}`));
+    return { success: false };
+  }
+
+  console.log();
+  return { success: true };
+}
+
+async function handleMemory(ctx: CommandContext, args: string): Promise<CommandResult> {
+  const sub = args.trim().toLowerCase();
+  if (sub === 'reindex') {
+    return handleMemoryReindex(ctx);
+  }
+  return showMemory(ctx);
+}
+
 function showSafety(ctx: CommandContext): CommandResult {
   console.log();
   console.log(HEADER('Safety Checker'));
@@ -239,7 +275,17 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
     'gpt4': 'gpt-4o',
     'gpt4o': 'gpt-4o',
     'gpt35': 'gpt-3.5-turbo',
+    // Bailian (coding.dashscope.aliyuncs.com) — OpenAI-compatible
     'qwen': 'qwen3.5-plus',
+    'qwenplus': 'qwen3.5-plus',
+    'qwen36': 'qwen3.6-plus',
+    'qwenmax': 'qwen3-max-2026-01-23',
+    'coder': 'qwen3-coder-plus',
+    'codernext': 'qwen3-coder-next',
+    'glm': 'glm-5',
+    'glm47': 'glm-4.7',
+    'kimi': 'kimi-k2.5',
+    'minimax': 'MiniMax-M2.5',
   };
 
   // 可用模型列表
@@ -249,8 +295,15 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
     { name: 'claude-haiku-4-5-20251001', alias: 'haiku', provider: 'Anthropic' },
     { name: 'gpt-4o', alias: 'gpt4o', provider: 'OpenAI' },
     { name: 'gpt-3.5-turbo', alias: 'gpt35', provider: 'OpenAI' },
-    { name: 'qwen3.5-plus', alias: 'qwen', provider: 'Alibaba Cloud' },
-    { name: 'glm-5', alias: 'glm', provider: 'Zhipu' },
+    { name: 'glm-5', alias: 'glm', provider: 'Bailian (Zhipu)' },
+    { name: 'glm-4.7', alias: 'glm47', provider: 'Bailian (Zhipu)' },
+    { name: 'qwen3.5-plus', alias: 'qwen', provider: 'Bailian (Alibaba)' },
+    { name: 'qwen3.6-plus', alias: 'qwen36', provider: 'Bailian (Alibaba)' },
+    { name: 'qwen3-max-2026-01-23', alias: 'qwenmax', provider: 'Bailian (Alibaba)' },
+    { name: 'qwen3-coder-plus', alias: 'coder', provider: 'Bailian (Alibaba)' },
+    { name: 'qwen3-coder-next', alias: 'codernext', provider: 'Bailian (Alibaba)' },
+    { name: 'kimi-k2.5', alias: 'kimi', provider: 'Bailian (Moonshot)' },
+    { name: 'MiniMax-M2.5', alias: 'minimax', provider: 'Bailian (MiniMax)' },
   ];
 
   const trimmedArgs = args.trim().toLowerCase();
@@ -480,6 +533,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
     nodeVersion: process.version,
     tools: TOOLS,
     memoryContent: snapshot.memoryContent,
+    skillsContent: snapshot.skillsContent,
   };
   const systemPrompt = getSystemPrompt(promptCtx);
 
@@ -714,6 +768,69 @@ function handleCost(ctx: CommandContext): CommandResult {
   return { success: true };
 }
 
+function handleSkills(ctx: CommandContext): CommandResult {
+  const { getSkillsRegistry } = require('../skills');
+
+  console.log();
+  console.log(HEADER('Loaded Skills'));
+  console.log(DIM('─'.repeat(40)));
+
+  try {
+    const registry = getSkillsRegistry();
+    const summary = registry.getSummary();
+
+    if (summary.count === 0) {
+      console.log();
+      console.log(DIM('  No skills loaded.'));
+      console.log(DIM('  Place SKILL.md files in ~/.openhorse/skills/<name>/ or .openhorse/skills/<name>/'));
+      console.log();
+      return { success: true };
+    }
+
+    console.log();
+    console.log(`  Total ${SUCCESS(summary.count)} skills (${WARN(summary.autoCount)} auto-trigger)`);
+    console.log();
+    for (const skill of registry.getAllSkills()) {
+      const source = registry['loader']?.getSource(skill.name);
+      const sourceType = source?.type || 'unknown';
+      console.log(`  ${ACCENT(skill.name)} ${DIM(`(${sourceType})`)}`);
+      console.log(`    ${DIM(skill.description || '(no description)')}`);
+    }
+    console.log();
+  } catch (err: any) {
+    console.log(ERROR(`✗ ${err.message}`));
+    return { success: false };
+  }
+
+  return { success: true };
+}
+
+function handleMcp(ctx: CommandContext): CommandResult {
+  console.log();
+  console.log(HEADER('MCP Servers'));
+  console.log(DIM('─'.repeat(40)));
+
+  const status = mcpManager.getStatus();
+  if (status.length === 0) {
+    console.log();
+    console.log(DIM('  No servers configured. Add to ~/.openhorse/mcp.json'));
+    console.log();
+    return { success: true };
+  }
+
+  console.log();
+  for (const s of status) {
+    const stateLabel = s.dead
+      ? ERROR('dead')
+      : s.connected
+        ? SUCCESS('connected')
+        : WARN('disconnected');
+    console.log(`  ${ACCENT(s.name.padEnd(20))} ${stateLabel}  ${DIM(`${s.toolCount} tools`)}`);
+  }
+  console.log();
+  return { success: true };
+}
+
 function handleClearHistory(ctx: CommandContext): CommandResult {
   const history = ctx.store.getSnapshot().conversationHistory;
 
@@ -724,6 +841,7 @@ function handleClearHistory(ctx: CommandContext): CommandResult {
   }
 
   ctx.store.resetConversation();
+  resetToolState();
   console.log(SUCCESS(`✔ Cleared ${history.length} messages from conversation history`));
   console.log(DIM('  Configuration and system state preserved'));
   console.log();
@@ -839,6 +957,7 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
         console.log();
 
         ctx.store.setState({ conversationHistory: history });
+        resetToolState();
         console.log(SUCCESS(`✔ Restored ${history.length} messages from session`));
       } else {
         console.log();
@@ -878,6 +997,7 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
     console.log();
 
     ctx.store.setState({ conversationHistory: history });
+    resetToolState();
     console.log(SUCCESS(`✔ Restored ${history.length} messages`));
   } else {
     console.log();
@@ -1006,9 +1126,10 @@ const COMMANDS: SlashCommand[] = [
   },
   {
     name: 'memory',
-    description: 'Show memory system status',
+    description: 'Show memory status, or `/memory reindex` to rebuild semantic index',
+    argumentHint: '[reindex]',
     type: 'builtin',
-    execute: (ctx) => showMemory(ctx),
+    execute: (ctx, args) => handleMemory(ctx, args),
   },
   {
     name: 'safety',
@@ -1052,6 +1173,22 @@ const COMMANDS: SlashCommand[] = [
     argumentHint: '[session-id]',
     type: 'builtin',
     execute: (ctx, args) => handleResume(ctx, args),
+  },
+
+  // MCP
+  {
+    name: 'mcp',
+    description: 'Show connected MCP servers and their status',
+    type: 'builtin',
+    execute: (ctx) => handleMcp(ctx),
+  },
+
+  // Skills
+  {
+    name: 'skills',
+    description: 'List loaded skills (built-in / user / project)',
+    type: 'builtin',
+    execute: (ctx) => handleSkills(ctx),
   },
 
   // Chat 命令

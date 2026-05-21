@@ -24,13 +24,39 @@ import {
   type MemoryEntry,
   type MemoryType,
 } from '../memory';
+import { getSemanticSearchService, isSemanticEnabled } from '../memory/semantic-search';
 import { readSessionMessages, loadSessionMeta, listSessions, type SessionMessage } from '../services/session-storage';
+import { WEB_TOOLS } from './web';
+import { MCP_TOOLS } from './mcp';
+import { TODO_TOOLS } from './todo';
+import { PLAN_TOOLS } from './plan';
+import {
+  assessCommandSecurity,
+  isReadOnlyCommand,
+  checkDangerousCommand,
+  wrapForSandbox,
+  type SandboxOptions,
+  DEFAULT_SANDBOX_OPTIONS,
+} from './bash_security';
 
 // ============================================================================
 // 工具集
 // ============================================================================
 
 export const TOOLS: OpenHorseTool[] = [
+  // Web tools (P0)
+  ...WEB_TOOLS,
+
+  // MCP tools (P0)
+  ...MCP_TOOLS,
+
+  // Todo tools (P1)
+  ...TODO_TOOLS,
+
+  // Plan mode tools (P1)
+  ...PLAN_TOOLS,
+
+  // File tools
   buildTool({
     name: 'read_file',
     description: '读取文件的全部内容。返回文件内容字符串。',
@@ -162,24 +188,28 @@ export const TOOLS: OpenHorseTool[] = [
     },
     checkPermissions: (args, context) => {
       const cmd = (args.command as string) || '';
-      // Block truly dangerous commands
-      const blockedPatterns = [
-        /rm\s+-rf\s+\/$/,
-        /mkfs/,
-        /dd\s+of=\/dev/,
-        /:\(\)\s*\{/,  // fork bomb
-      ];
-      for (const pat of blockedPatterns) {
-        if (pat.test(cmd)) {
-          return { behavior: 'deny', reason: `Command blocked by safety policy: ${cmd.slice(0, 50)}` };
-        }
+
+      // Use the bash_security module for comprehensive checks
+      const security = assessCommandSecurity(cmd);
+
+      if (security.level === 'blocked') {
+        return { behavior: 'deny', reason: security.reason || `Command blocked by safety policy: ${cmd.slice(0, 50)}` };
       }
-      // Ask for potentially destructive commands
-      if (/(rm\s+-rf|rm\s+-r|chmod|chown|kill|pkill)/.test(cmd)) {
-        return { behavior: 'ask', reason: 'Command may have destructive effects' };
+
+      if (security.level === 'safe' && security.isReadOnly) {
+        return { behavior: 'allow' };
       }
-      // Allow safe commands
-      return { behavior: 'allow' };
+
+      if (security.level === 'caution') {
+        return { behavior: 'ask', reason: security.reason || 'Command requires confirmation' };
+      }
+
+      // Default: ask for confirmation
+      return { behavior: 'ask', reason: 'Command requires confirmation' };
+    },
+    isReadOnly: (args) => {
+      const cmd = (args.command as string) || '';
+      return isReadOnlyCommand(cmd);
     },
     userFacingName: (args) => `Exec ${(args.command as string)?.slice(0, 60) || ''}`,
   }),
@@ -353,7 +383,13 @@ export const TOOLS: OpenHorseTool[] = [
           createdAt: Date.now(),
           updatedAt: Date.now(),
         };
-        saveMemory(entry, projectPath);
+
+        if (isSemanticEnabled()) {
+          // saveAndIndex internally calls saveMemory + vectorStore.upsert
+          await getSemanticSearchService().saveAndIndex(entry, projectPath);
+        } else {
+          saveMemory(entry, projectPath);
+        }
         return { success: true, output: `Saved memory: ${name} (${type})` };
       } catch (err: any) {
         return { success: false, output: '', error: err.message };
@@ -388,7 +424,33 @@ export const TOOLS: OpenHorseTool[] = [
         const type = args.type as MemoryType | undefined;
 
         let memories: MemoryEntry[];
-        if (type) {
+
+        if (query && isSemanticEnabled()) {
+          // Semantic path: ask the vector store, then fall back to keywords if it
+          // returns nothing (e.g. embedding provider unreachable, empty index)
+          try {
+            const result = await getSemanticSearchService().search({
+              query,
+              projectPath,
+              type,
+            });
+            memories = result.memories.map(m => ({
+              name: m.name,
+              type: m.type,
+              description: m.description,
+              content: m.content,
+              createdAt: m.createdAt,
+              updatedAt: m.createdAt,
+            }));
+            if (memories.length === 0) {
+              memories = searchMemories(query, projectPath);
+              if (type) memories = memories.filter(m => m.type === type);
+            }
+          } catch {
+            memories = searchMemories(query, projectPath);
+            if (type) memories = memories.filter(m => m.type === type);
+          }
+        } else if (type) {
           memories = loadAllMemories(projectPath).filter(m => m.type === type);
         } else if (query) {
           memories = searchMemories(query, projectPath);
@@ -443,6 +505,16 @@ export const TOOLS: OpenHorseTool[] = [
           return { success: false, output: '', error: `Memory not found: ${name}` };
         }
         deleteMemory(name, projectPath);
+
+        if (isSemanticEnabled()) {
+          try {
+            const { getVectorStore } = require('../memory/vector-store');
+            getVectorStore().delete(name);
+          } catch {
+            // Vector store cleanup is best-effort
+          }
+        }
+
         return { success: true, output: `Deleted memory: ${name}` };
       } catch (err: any) {
         return { success: false, output: '', error: err.message };
@@ -969,3 +1041,17 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
 export function getToolNames(): string {
   return TOOLS.map(t => t.name).join(', ');
 }
+
+// Re-export bash_security module
+export {
+  READ_ONLY_COMMANDS,
+  DANGEROUS_PATTERNS,
+  POTENTIALLY_DESTRUCTIVE_PATTERNS,
+  isReadOnlyCommand,
+  checkDangerousCommand,
+  isPotentiallyDestructive,
+  assessCommandSecurity,
+  wrapForSandbox,
+  type SandboxOptions,
+  DEFAULT_SANDBOX_OPTIONS,
+} from './bash_security';

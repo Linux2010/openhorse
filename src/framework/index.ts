@@ -27,3 +27,11 @@ export type { PromptContext, PromptSection } from './prompt';
 
 export { Store } from './store';
 export type { AppState } from './store';
+
+export {
+  getToolState,
+  setToolState,
+  subscribeToolState,
+  resetToolState,
+} from './tool-state';
+export type { ToolState, TodoItem } from './tool-state';

@@ -1,0 +1,49 @@
+/**
+ * openhorse - Tool State
+ *
+ * Shared state for tools that need persistence across calls within a session
+ * (todos, plan mode, current plan). Tools update this state; the CLI mirrors
+ * it into the main Store so the UI and `/resume` can observe it.
+ */
+
+export interface TodoItem {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  activeForm: string;
+}
+
+export interface ToolState {
+  todos: TodoItem[];
+  planMode: boolean;
+  currentPlan: string | null;
+}
+
+const initialState: ToolState = {
+  todos: [],
+  planMode: false,
+  currentPlan: null,
+};
+
+let state: ToolState = { ...initialState };
+let listeners: Array<(s: ToolState) => void> = [];
+
+export function getToolState(): ToolState {
+  return state;
+}
+
+export function setToolState(partial: Partial<ToolState>): void {
+  state = { ...state, ...partial };
+  for (const l of listeners) l(state);
+}
+
+export function subscribeToolState(fn: (s: ToolState) => void): () => void {
+  listeners.push(fn);
+  return () => {
+    listeners = listeners.filter(f => f !== fn);
+  };
+}
+
+export function resetToolState(): void {
+  state = { ...initialState };
+  for (const l of listeners) l(state);
+}

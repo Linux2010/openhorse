@@ -8,11 +8,15 @@
  * Memory is project-scoped: each project has its own memory directory.
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, unlinkSync } from 'fs';
 import { join, basename } from 'path';
 import { createHash } from 'crypto';
 import type { MemoryEntry, MemoryType } from './types';
 import { getConfigHome } from '../services/config-dir';
+import { atomicWriteFileSync } from '../services/atomic-write';
+
+// Re-export types for convenience
+export type { MemoryEntry, MemoryType } from './types';
 
 // ============================================================================
 // Constants
@@ -43,6 +47,12 @@ export function getProjectHash(projectPath: string): string {
 /**
  * Get memory directory path for a specific project.
  * @param projectPath - Project path (defaults to current working directory)
+ *
+ * Note: when `projectPath` is omitted we fall back to the legacy v0.1.2
+ * global memory directory. This branch is preserved for backwards
+ * compatibility with existing config homes; new code should always pass a
+ * `projectPath`. The fallback is slated for removal once a migration tool
+ * lands (tracked in v0.1.4-plus roadmap Part 10).
  */
 export function getMemoryDir(projectPath?: string): string {
   const configHome = getConfigHome();
@@ -52,8 +62,6 @@ export function getMemoryDir(projectPath?: string): string {
     return join(configHome, PROJECTS_SUBDIR, hash, MEMORY_SUBDIR);
   }
 
-  // Legacy: use global memory directory (v0.1.2 style)
-  // This is kept for backwards compatibility but not recommended
   return join(configHome, MEMORY_SUBDIR);
 }
 
@@ -206,7 +214,7 @@ export function saveMemory(entry: MemoryEntry, projectPath?: string): void {
   entry.updatedAt = now;
 
   const content = generateMemoryFrontmatter(entry);
-  writeFileSync(filePath, content, 'utf-8');
+  atomicWriteFileSync(filePath, content);
 
   // Update MEMORY.md index
   updateMemoryIndex(projectPath);
@@ -214,15 +222,18 @@ export function saveMemory(entry: MemoryEntry, projectPath?: string): void {
 
 /**
  * Delete memory entry from a project.
+ * Hard-deletes the file so `memory_recall` no longer returns it.
  */
 export function deleteMemory(name: string, projectPath?: string): void {
   const dir = getMemoryDir(projectPath);
   const filePath = join(dir, `${name}.md`);
 
   if (existsSync(filePath)) {
-    // Mark as deleted in content instead of actually deleting
-    // This preserves the memory for potential recovery
-    writeFileSync(filePath, `---\nname: ${name}\nstatus: deleted\n---\n`, 'utf-8');
+    try {
+      unlinkSync(filePath);
+    } catch {
+      // ignore — index regeneration below will reflect whatever is on disk
+    }
   }
 
   updateMemoryIndex(projectPath);
@@ -264,7 +275,7 @@ export function updateMemoryIndex(projectPath?: string): void {
     }
   }
 
-  writeFileSync(getEntrypointPath(projectPath), lines.join('\n'), 'utf-8');
+  atomicWriteFileSync(getEntrypointPath(projectPath), lines.join('\n'));
 }
 
 // ============================================================================

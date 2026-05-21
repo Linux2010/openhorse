@@ -3,5 +3,5 @@ dist/
 .env
 package-lock.json
 tests/tmp/
-docs
+docs/*
 !docs/roadmap/
