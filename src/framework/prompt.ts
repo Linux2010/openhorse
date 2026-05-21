@@ -19,6 +19,8 @@ export interface PromptContext {
   nodeVersion: string;
   tools: OpenHorseTool[];
   memoryContent?: string;
+  /** Pre-rendered skills section (e.g. from SkillsRegistry.generateSystemPromptInjection) */
+  skillsContent?: string;
 }
 
 /** A named prompt section */
@@ -79,6 +81,14 @@ Use tools when they help complete the task. Prefer the right tool for the job.`;
     render: (ctx) => {
       if (!ctx.memoryContent) return '';
       return `Project memory:\n${ctx.memoryContent}`;
+    },
+  },
+  {
+    name: 'skills',
+    dynamic: true,
+    render: (ctx) => {
+      if (!ctx.skillsContent) return '';
+      return ctx.skillsContent;
     },
   },
 ];

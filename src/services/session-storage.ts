@@ -9,6 +9,7 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync, readdirSync, u
 import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { ensureConfigDir, getHistoryPath, getSessionMetaPath, getSessionMessagesPath, getSessionsDir } from './config-dir';
+import { atomicWriteFileSync } from './atomic-write';
 import type { Message } from './llm';
 
 // ============================================================================
@@ -109,7 +110,7 @@ export function createSession(projectPath: string, model: string): SessionMeta {
 export function saveSessionMeta(session: SessionMeta): void {
   ensureConfigDir();
   const path = getSessionMetaPath(session.id);
-  writeFileSync(path, JSON.stringify(session, null, 2), { mode: 0o600 });
+  atomicWriteFileSync(path, JSON.stringify(session, null, 2), { mode: 0o600 });
 }
 
 /**

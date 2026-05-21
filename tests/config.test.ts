@@ -55,7 +55,17 @@ describe('loadConfig', () => {
     expect(config.logLevel).toBe('debug');
   });
 
-  test('env vars are used when no overrides', () => {
+  test('env vars are used when no overrides and no globalConfig', () => {
+    // Mock loadGlobalConfig to return defaults (no config file)
+    jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
+      defaultModel: 'gpt-4o',
+      maxTokens: 4096,
+      temperature: 0.7,
+      totalSessions: 0,
+      totalTokens: 0,
+      totalCost: 0,
+    });
+
     process.env.OPENHORSE_API_KEY = 'env-key';
     process.env.OPENHORSE_MODEL = 'env-model';
     process.env.OPENHORSE_MAX_TOKENS = '1024';
@@ -65,22 +75,53 @@ describe('loadConfig', () => {
     process.env.OPENHORSE_LOG_LEVEL = 'warn';
 
     const config = loadConfig();
+    // globalConfig.defaultModel (gpt-4o) takes priority over env var
     expect(config.apiKey).toBe('env-key');
-    expect(config.model).toBe('env-model');
-    expect(config.maxTokens).toBe(1024);
-    expect(config.temperature).toBe(0.5);
-    expect(config.name).toBe('env-name');
+    expect(config.model).toBe('gpt-4o');  // globalConfig priority
+    expect(config.maxTokens).toBe(4096);  // globalConfig priority
+    expect(config.temperature).toBe(0.7);  // globalConfig priority
+    expect(config.name).toBe('env-name');  // name uses env var (no globalConfig field)
     expect(config.mode).toBe('production');
     expect(config.logLevel).toBe('warn');
   });
 
-  test('overrides take priority over env vars', () => {
+  test('overrides take priority over globalConfig and env vars', () => {
+    jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
+      defaultModel: 'config-model',
+      maxTokens: 2048,
+      temperature: 0.8,
+      apiKey: 'config-key',
+      totalSessions: 0,
+      totalTokens: 0,
+      totalCost: 0,
+    });
+
     process.env.OPENHORSE_API_KEY = 'env-key';
     process.env.OPENHORSE_MODEL = 'env-model';
 
-    const config = loadConfig({ apiKey: 'override-key' });
+    const config = loadConfig({ apiKey: 'override-key', model: 'override-model' });
     expect(config.apiKey).toBe('override-key');
-    expect(config.model).toBe('env-model');
+    expect(config.model).toBe('override-model');
+  });
+
+  test('globalConfig takes priority over env vars', () => {
+    jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
+      defaultModel: 'config-model',
+      maxTokens: 2048,
+      temperature: 0.8,
+      apiKey: 'config-key',
+      totalSessions: 0,
+      totalTokens: 0,
+      totalCost: 0,
+    });
+
+    process.env.OPENHORSE_MODEL = 'env-model';
+    process.env.OPENHORSE_MAX_TOKENS = '1024';
+
+    const config = loadConfig();
+    expect(config.model).toBe('config-model');  // globalConfig wins
+    expect(config.maxTokens).toBe(2048);  // globalConfig wins
+    expect(config.apiKey).toBe('config-key');  // globalConfig wins
   });
 
   test('OPENHORSE_API_BASE_URL takes priority over OPENHORSE_BASE_URL', () => {

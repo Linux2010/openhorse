@@ -3,8 +3,8 @@
  *
  * 配置加载优先级：
  *   1. 命令行参数
- *   2. 环境变量
- *   3. ~/.openhorse/openhorse.json (GlobalConfig)
+ *   2. ~/.openhorse/openhorse.json (GlobalConfig)
+ *   3. 环境变量
  *   4. 默认值
  */
 
@@ -63,28 +63,29 @@ const DEFAULTS: Partial<OpenHorseCLIConfig> = {
 
 /**
  * 从多源加载配置
- * 优先级：命令行 > 环境变量 > GlobalConfig > 默认值
+ * 优先级：命令行 > 配置文件 > 环境变量 > 默认值
  */
 export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHorseCLIConfig {
   const globalConfig = loadGlobalConfig();
 
   const config: OpenHorseCLIConfig = {
+    // 新优先级：overrides > globalConfig > env > defaults
     apiKey:
-      overrides.apiKey ?? process.env.OPENHORSE_API_KEY ?? globalConfig.apiKey ?? '',
+      overrides.apiKey ?? globalConfig.apiKey ?? process.env.OPENHORSE_API_KEY ?? '',
     apiBaseUrl:
-      overrides.apiBaseUrl ?? process.env.OPENHORSE_API_BASE_URL ?? process.env.OPENHORSE_BASE_URL ?? globalConfig.apiBaseUrl ?? undefined,
+      overrides.apiBaseUrl ?? globalConfig.apiBaseUrl ?? process.env.OPENHORSE_API_BASE_URL ?? process.env.OPENHORSE_BASE_URL ?? undefined,
     model:
-      overrides.model ?? process.env.OPENHORSE_MODEL ?? globalConfig.defaultModel ?? DEFAULTS.model!,
+      overrides.model ?? globalConfig.defaultModel ?? process.env.OPENHORSE_MODEL ?? DEFAULTS.model!,
     fallbackModel:
-      overrides.fallbackModel ?? process.env.OPENHORSE_FALLBACK_MODEL ?? undefined,
+      overrides.fallbackModel ?? globalConfig.fallbackModel ?? process.env.OPENHORSE_FALLBACK_MODEL ?? undefined,
     maxTokens:
-      overrides.maxTokens ?? parseNum(process.env.OPENHORSE_MAX_TOKENS) ?? globalConfig.maxTokens ?? DEFAULTS.maxTokens!,
+      overrides.maxTokens ?? globalConfig.maxTokens ?? parseNum(process.env.OPENHORSE_MAX_TOKENS) ?? DEFAULTS.maxTokens!,
     temperature:
-      overrides.temperature ?? parseNum(process.env.OPENHORSE_TEMPERATURE) ?? globalConfig.temperature ?? DEFAULTS.temperature!,
+      overrides.temperature ?? globalConfig.temperature ?? parseNum(process.env.OPENHORSE_TEMPERATURE) ?? DEFAULTS.temperature!,
     maxRetries:
-      overrides.maxRetries ?? parseNum(process.env.OPENHORSE_MAX_RETRIES) ?? DEFAULTS.maxRetries!,
+      overrides.maxRetries ?? globalConfig.maxRetries ?? parseNum(process.env.OPENHORSE_MAX_RETRIES) ?? DEFAULTS.maxRetries!,
     retryBaseDelay:
-      overrides.retryBaseDelay ?? parseNum(process.env.OPENHORSE_RETRY_BASE_DELAY) ?? DEFAULTS.retryBaseDelay!,
+      overrides.retryBaseDelay ?? globalConfig.retryBaseDelay ?? parseNum(process.env.OPENHORSE_RETRY_BASE_DELAY) ?? DEFAULTS.retryBaseDelay!,
     name:
       overrides.name ?? process.env.OPENHORSE_NAME ?? DEFAULTS.name!,
     mode:
@@ -92,7 +93,7 @@ export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHor
     logLevel:
       (overrides.logLevel ?? process.env.OPENHORSE_LOG_LEVEL ?? DEFAULTS.logLevel!) as OpenHorseCLIConfig['logLevel'],
     budgetLimit:
-      overrides.budgetLimit ?? parseNum(process.env.OPENHORSE_BUDGET) ?? globalConfig.budgetLimit,
+      overrides.budgetLimit ?? globalConfig.budgetLimit ?? parseNum(process.env.OPENHORSE_BUDGET),
   };
 
   return config;

@@ -34,10 +34,16 @@ export interface GlobalConfig {
   apiBaseUrl?: string;
   /** 默认模型 */
   defaultModel: string;
+  /** 备用模型 */
+  fallbackModel?: string;
   /** 最大输出 token */
   maxTokens: number;
   /** 温度 */
   temperature: number;
+  /** 最大重试次数 */
+  maxRetries?: number;
+  /** 重试基础延迟 (ms) */
+  retryBaseDelay?: number;
 
   // ---- 预算 ----
   /** 预算限制 (USD) */

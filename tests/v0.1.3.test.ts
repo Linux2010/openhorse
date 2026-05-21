@@ -17,6 +17,9 @@ import {
   readSessionMessages,
   loadSessionHistory,
   saveSessionMeta,
+  loadSessionMeta,
+  updateSessionSummary,
+  endSession,
   type SessionMessage,
   type ToolCallRecord,
 } from '../src/services/session-storage';
@@ -320,5 +323,88 @@ describe('history_search tool', () => {
     expect(parsed.success).toBe(true);
     expect(parsed.output).toContain('read_file');
     expect(parsed.output).toContain('src/main.ts');
+  });
+});
+
+// ============================================================================
+// Session summary 测试
+// ============================================================================
+
+describe('Session summary', () => {
+  beforeEach(setupTestEnv);
+  afterEach(teardownTestEnv);
+
+  test('updateSessionSummary extracts tools and files', () => {
+    const session = createSession(PROJECT_A, 'gpt-4o');
+
+    // Add messages with tool calls
+    appendSessionMessage(session.id, {
+      role: 'user',
+      content: '读取 src/main.ts 并修改 src/config.ts',
+      timestamp: Date.now(),
+    });
+
+    appendSessionMessage(session.id, {
+      role: 'assistant',
+      content: '',
+      timestamp: Date.now(),
+      tool_calls: [
+        {
+          id: 'call_read',
+          type: 'function',
+          function: {
+            name: 'read_file',
+            arguments: '{"path":"src/main.ts"}',
+          },
+        },
+        {
+          id: 'call_edit',
+          type: 'function',
+          function: {
+            name: 'edit_file',
+            arguments: '{"path":"src/config.ts","old_string":"old","new_string":"new"}',
+          },
+        },
+      ],
+    });
+
+    appendSessionMessage(session.id, {
+      role: 'tool',
+      content: '{"success":true}',
+      timestamp: Date.now(),
+      toolCallId: 'call_read',
+    });
+
+    appendSessionMessage(session.id, {
+      role: 'tool',
+      content: '{"success":true}',
+      timestamp: Date.now(),
+      toolCallId: 'call_edit',
+    });
+
+    // Update summary
+    const messages = readSessionMessages(session.id);
+    updateSessionSummary(session.id, messages);
+
+    // Verify summary was saved
+    const updatedSession = loadSessionMeta(session.id);
+    expect(updatedSession).not.toBeNull();
+    expect(updatedSession!.taskSummary).toBe('读取 src/main.ts 并修改 src/config.ts');
+    expect(updatedSession!.toolsUsed).toContain('read_file');
+    expect(updatedSession!.toolsUsed).toContain('edit_file');
+    expect(updatedSession!.filesModified).toContain('src/config.ts');
+    // read_file should not be in filesModified
+    expect(updatedSession!.filesModified).not.toContain('src/main.ts');
+  });
+
+  test('endSession sets endTime', () => {
+    const session = createSession(PROJECT_A, 'gpt-4o');
+    expect(session.endTime).toBeUndefined();
+
+    endSession(session.id);
+
+    const updatedSession = loadSessionMeta(session.id);
+    expect(updatedSession!.endTime).toBeDefined();
+    expect(updatedSession!.endTime).toBeGreaterThanOrEqual(session.startTime);
   });
 });

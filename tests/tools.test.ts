@@ -23,12 +23,14 @@ function cleanupTestDir() {
 }
 
 describe('TOOLS array', () => {
-  test('contains 11 tools', () => {
-    expect(TOOLS).toHaveLength(11);
+  test('contains expected number of tools', () => {
+    // Core tools: 11, Web tools: 2, MCP tools: 2, Todo tools: 1, Plan tools: 2 = 18
+    expect(TOOLS.length).toBeGreaterThanOrEqual(18);
   });
 
   test('includes expected tool names', () => {
     const names = TOOLS.map(t => t.name);
+    // Core tools
     expect(names).toContain('read_file');
     expect(names).toContain('write_file');
     expect(names).toContain('list_files');
@@ -40,6 +42,14 @@ describe('TOOLS array', () => {
     expect(names).toContain('memory_recall');
     expect(names).toContain('memory_forget');
     expect(names).toContain('history_search');
+    // New v0.1.4 tools
+    expect(names).toContain('web_fetch');
+    expect(names).toContain('web_search');
+    expect(names).toContain('mcp_list');
+    expect(names).toContain('mcp_call');
+    expect(names).toContain('todo_write');
+    expect(names).toContain('enter_plan_mode');
+    expect(names).toContain('exit_plan_mode');
   });
 });
 
