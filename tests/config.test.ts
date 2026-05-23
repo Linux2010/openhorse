@@ -26,6 +26,16 @@ afterAll(() => {
 
 describe('loadConfig', () => {
   test('returns defaults when no env or overrides', () => {
+    // Mock global config to have empty values
+    jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
+      defaultModel: 'gpt-4o',
+      maxTokens: 4096,
+      temperature: 0.7,
+      totalSessions: 0,
+      totalTokens: 0,
+      totalCost: 0,
+    });
+
     const config = loadConfig();
     expect(config.model).toBe('gpt-4o');
     expect(config.maxTokens).toBe(4096);
@@ -125,6 +135,16 @@ describe('loadConfig', () => {
   });
 
   test('OPENHORSE_API_BASE_URL takes priority over OPENHORSE_BASE_URL', () => {
+    // Mock global config to not have apiBaseUrl
+    jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
+      defaultModel: 'gpt-4o',
+      maxTokens: 4096,
+      temperature: 0.7,
+      totalSessions: 0,
+      totalTokens: 0,
+      totalCost: 0,
+    });
+
     process.env.OPENHORSE_API_BASE_URL = 'https://api-base.example.com';
     process.env.OPENHORSE_BASE_URL = 'https://base.example.com';
 
@@ -133,6 +153,16 @@ describe('loadConfig', () => {
   });
 
   test('falls back to OPENHORSE_BASE_URL when API_BASE_URL not set', () => {
+    // Mock global config to not have apiBaseUrl
+    jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
+      defaultModel: 'gpt-4o',
+      maxTokens: 4096,
+      temperature: 0.7,
+      totalSessions: 0,
+      totalTokens: 0,
+      totalCost: 0,
+    });
+
     process.env.OPENHORSE_BASE_URL = 'https://base.example.com';
 
     const config = loadConfig();
@@ -149,6 +179,16 @@ describe('loadConfig', () => {
   });
 
   test('apiBaseUrl defaults to undefined when not set', () => {
+    // Mock global config to not have apiBaseUrl
+    jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
+      defaultModel: 'gpt-4o',
+      maxTokens: 4096,
+      temperature: 0.7,
+      totalSessions: 0,
+      totalTokens: 0,
+      totalCost: 0,
+    });
+
     const config = loadConfig();
     expect(config.apiBaseUrl).toBeUndefined();
   });
@@ -161,14 +201,14 @@ describe('isConfigured', () => {
   });
 
   test('returns false when apiKey is empty', () => {
-    const config = loadConfig();
+    const config = loadConfig({ apiKey: '' }); // Explicitly empty
     expect(isConfigured(config)).toBe(false);
   });
 });
 
 describe('getConfigErrors', () => {
   test('returns error when apiKey is missing', () => {
-    const config = loadConfig();
+    const config = loadConfig({ apiKey: '' }); // Explicitly empty
     const errors = getConfigErrors(config);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain('OPENHORSE_API_KEY');
@@ -189,7 +229,7 @@ describe('getConfigSummary', () => {
   });
 
   test('shows (not set) when apiKey is empty', () => {
-    const config = loadConfig();
+    const config = loadConfig({ apiKey: '' }); // Explicitly empty
     const summary = getConfigSummary(config);
     expect(summary.apiKey).toBe('(not set)');
   });
