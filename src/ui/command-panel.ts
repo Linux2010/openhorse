@@ -230,7 +230,9 @@ function clearPanel(): void {
  * 重绘输入行（带 prompt）
  */
 export function redrawInputWithPrompt(input: string, modeIndicator: string = ''): void {
-  process.stdout.write('\r\x1b[2K');
+  // 清除当前行并重绘
+  // 使用更可靠的终端控制序列
+  process.stdout.write('\x1b[2K\r');  // 清除整行，回到行首
   const prompt = ACCENT('❯ ') + (modeIndicator ? DIM(modeIndicator) : '');
   process.stdout.write(prompt + input);
 }

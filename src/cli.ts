@@ -535,8 +535,8 @@ async function handleInput(input: string) {
   updateStatusBar();
 
   // 重新显示 prompt
-  process.stdout.write('\r\x1b[2K');
-  process.stdout.write(getPrompt());
+  rl.setPrompt(getPrompt());
+  rl.prompt();
 }
 
 /**
@@ -657,20 +657,29 @@ async function main(): Promise<void> {
   // 加载输入历史
   inputHistory = getInputHistory();
 
-  // 创建 readline（启用 terminal 模式以获取 keypress）
+  // 创建 readline
   rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
     terminal: true,
   });
 
-  // 启用 raw mode 以获取完整的 keypress 事件
-  if (process.stdin.isTTY) {
-    process.stdin.setRawMode(true);
-  }
+  // 使用 readline 的 line 事件处理普通输入
+  rl.on('line', (line) => {
+    const input = line.trim();
+    if (!input) {
+      rl.setPrompt(getPrompt());
+      rl.prompt();
+      return;
+    }
 
-  // 监听 keypress 事件
-  process.stdin.on('keypress', handleKeypress);
+    // 添加到历史
+    addToInputHistory(input);
+    inputHistory = getInputHistory();
+
+    // 处理输入
+    handleInput(input);
+  });
 
   rl.on('close', async () => {
     console.log();
@@ -694,7 +703,8 @@ async function main(): Promise<void> {
   });
 
   // 显示初始 prompt
-  process.stdout.write(getPrompt());
+  rl.setPrompt(getPrompt());
+  rl.prompt();
 }
 
 main().catch(err => {
