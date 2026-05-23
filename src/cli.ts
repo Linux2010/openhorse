@@ -58,6 +58,7 @@ import {
   getFileQuery,
   redrawInputWithFile,
 } from './ui/file-completion';
+import { renderStatusBar, type StatusBarStats } from './ui/status-bar';
 
 // Get version from package.json
 const VERSION = (() => {
@@ -530,9 +531,36 @@ async function handleInput(input: string) {
     console.log(ERROR(`Error: ${err.message || String(err)}`));
   }
 
+  // 显示状态栏
+  updateStatusBar();
+
   // 重新显示 prompt
-  rl.setPrompt(getPrompt());
-  rl.prompt();
+  process.stdout.write('\r\x1b[2K');
+  process.stdout.write(getPrompt());
+}
+
+/**
+ * 更新状态栏显示
+ */
+function updateStatusBar(): void {
+  const snapshot = store.getSnapshot();
+  const usage = snapshot.tokenUsage;
+  const costStats = snapshot.costTracker.getSessionStats();
+  const mcpStatus = mcpManager.getStatus();
+
+  const stats: StatusBarStats = {
+    model: snapshot.currentModel,
+    tokens: usage ? usage.promptTokens + usage.completionTokens : 0,
+    promptTokens: usage?.promptTokens || 0,
+    completionTokens: usage?.completionTokens || 0,
+    cost: costStats.totalCost,
+    ctxPercent: Math.round((snapshot.conversationHistory.length / 50) * 100), // 假设 50 条上限
+    mcpConnected: mcpStatus.filter(s => s.connected).length,
+    mcpTotal: mcpStatus.length,
+  };
+
+  // 在 prompt 上一行显示状态栏
+  console.log(renderStatusBar(stats));
 }
 
 let rl: readline.Interface;
