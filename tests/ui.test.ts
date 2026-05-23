@@ -27,15 +27,15 @@ describe('StreamMarkdownRenderer', () => {
     // Feed code block start
     const output1 = renderer.feed('Here is code:\n```typescript\n');
     expect(output1).toContain('Here is code:');
-    // Code block content is buffered
+    expect(output1).toContain('typescript');
 
-    // Feed code content
+    // Feed code content - outputs line immediately
     const output2 = renderer.feed('const x = 1;\n');
-    expect(output2).toBe(''); // Buffered
+    expect(output2).toContain('const x = 1');
 
     // Feed code block end
     const output3 = renderer.feed('```');
-    expect(output3).toContain('const x = 1');
+    expect(output3).toContain('└──');
   });
 
   test('flush outputs remaining buffer', () => {

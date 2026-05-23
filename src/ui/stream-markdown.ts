@@ -1,26 +1,24 @@
 /**
  * openhorse - 流式 Markdown 渲染器
  *
- * 支持代码块缓冲渲染，防止断裂。
+ * 只缓冲代码块，防止代码块断裂。
+ * 其他内容直接透传，不做处理。
  */
 
 import chalk from 'chalk';
 
-const ACCENT = chalk.hex('#00D4AA');
 const CODE_BG = chalk.bgHex('#1E293B');
 const CODE_TEXT = chalk.hex('#E2E8F0');
 const DIM = chalk.dim;
-const CYAN = chalk.cyan;
 
 // ============================================================================
 // 类型定义
 // ============================================================================
 
 export interface StreamRendererState {
-  buffer: string;
   inCodeBlock: boolean;
   codeBlockLang: string;
-  codeBlockLines: string[];
+  codeBlockBuffer: string;
 }
 
 // ============================================================================
@@ -29,92 +27,113 @@ export interface StreamRendererState {
 
 export class StreamMarkdownRenderer {
   private state: StreamRendererState = {
-    buffer: '',
     inCodeBlock: false,
     codeBlockLang: '',
-    codeBlockLines: [],
+    codeBlockBuffer: '',
   };
 
   /**
    * 输入 chunk，返回渲染后的 ANSI 字符串
+   *
+   * 策略：
+   * - 代码块内：缓冲直到代码块结束
+   * - 代码块外：直接透传（不做任何处理）
    */
   feed(chunk: string): string {
-    // 添加到缓冲
-    this.state.buffer += chunk;
+    if (!chunk) return '';
 
-    // 检测代码块开始
-    if (!this.state.inCodeBlock && this.state.buffer.includes('```')) {
-      // 找到代码块开始
-      const startIdx = this.state.buffer.indexOf('```');
-      const beforeCode = this.state.buffer.slice(0, startIdx);
-      const afterCodeStart = this.state.buffer.slice(startIdx);
+    // 检测代码块开始/结束
+    if (!this.state.inCodeBlock) {
+      // 检测代码块开始
+      const codeStart = chunk.indexOf('```');
+      if (codeStart >= 0) {
+        // 输出代码块前的内容
+        const before = chunk.slice(0, codeStart);
+        const after = chunk.slice(codeStart);
 
-      // 解析语言
-      const langMatch = afterCodeStart.match(/```(\w+)?\n?/);
-      this.state.codeBlockLang = langMatch?.[1] || '';
-      this.state.inCodeBlock = true;
-      this.state.codeBlockLines = [];
+        // 解析语言
+        const langMatch = after.match(/```(\w+)?/);
+        this.state.codeBlockLang = langMatch?.[1] || '';
+        this.state.inCodeBlock = true;
+        this.state.codeBlockBuffer = '';
 
-      // 清空缓冲（保留代码块开始后的内容）
-      const codeStartEnd = afterCodeStart.indexOf('\n') + 1;
-      this.state.buffer = afterCodeStart.slice(codeStartEnd);
-
-      // 渲染代码块前的内容
-      return this.renderInline(beforeCode);
-    }
-
-    // 代码块内缓冲
-    if (this.state.inCodeBlock) {
-      // 检测代码块结束
-      if (this.state.buffer.includes('```')) {
-        const endIdx = this.state.buffer.indexOf('```');
-        const codeContent = this.state.buffer.slice(0, endIdx);
-        const afterCodeEnd = this.state.buffer.slice(endIdx + 3);
-
-        this.state.codeBlockLines.push(codeContent);
-        this.state.inCodeBlock = false;
-
-        // 渲染完整代码块
-        const rendered = this.renderCodeBlock(this.state.codeBlockLines, this.state.codeBlockLang);
-
-        // 清空缓冲
-        this.state.buffer = afterCodeEnd;
-        this.state.codeBlockLines = [];
-
-        return rendered;
+        // 输出代码块开始标记
+        const langDisplay = this.state.codeBlockLang ? ` ${this.state.codeBlockLang}` : '';
+        return before + '\n' + DIM(`┌─${langDisplay}`) + '\n';
       }
 
-      // 按行分割，最后一行可能不完整
-      const lines = this.state.buffer.split('\n');
-      if (lines.length > 1) {
-        // 完整行加入代码块
-        for (let i = 0; i < lines.length - 1; i++) {
-          this.state.codeBlockLines.push(lines[i]);
+      // 无代码块：直接透传
+      return chunk;
+    }
+
+    // 代码块内：检测结束
+    const codeEnd = chunk.indexOf('```');
+    if (codeEnd >= 0) {
+      // 代码块结束
+      const codeContent = chunk.slice(0, codeEnd);
+      const after = chunk.slice(codeEnd + 3);
+
+      // 输出累积的代码内容 + 当前 chunk 的代码部分
+      const fullCode = this.state.codeBlockBuffer + codeContent;
+      const lines = fullCode.split('\n');
+
+      let output = '';
+      for (const line of lines) {
+        if (line.trim()) {
+          output += CODE_BG(' ') + CODE_TEXT(line) + '\n';
         }
-        // 最后一行保留在缓冲
-        this.state.buffer = lines[lines.length - 1];
       }
+      output += DIM('└──') + '\n';
 
-      // 代码块内不输出（缓冲）
-      return '';
+      // 重置状态
+      this.state.inCodeBlock = false;
+      this.state.codeBlockLang = '';
+      this.state.codeBlockBuffer = '';
+
+      // 输出代码块后的内容
+      return output + after;
     }
 
-    // 普通文本：实时渲染
-    const output = this.renderInline(this.state.buffer);
-    this.state.buffer = '';
-    return output;
+    // 代码块内但未结束：缓冲
+    this.state.codeBlockBuffer += chunk;
+
+    // 按行输出已完成的行
+    const lines = this.state.codeBlockBuffer.split('\n');
+    if (lines.length > 1) {
+      // 输出除最后一行外的所有行
+      let output = '';
+      for (let i = 0; i < lines.length - 1; i++) {
+        const line = lines[i];
+        if (line.trim() || i < lines.length - 2) {
+          output += CODE_BG(' ') + CODE_TEXT(line) + '\n';
+        }
+      }
+      // 最后一行保留在 buffer
+      this.state.codeBlockBuffer = lines[lines.length - 1];
+      return output;
+    }
+
+    // 未完成一行：不输出
+    return '';
   }
 
   /**
    * 结束时输出剩余内容
    */
   flush(): string {
-    if (this.state.inCodeBlock) {
-      // 代码块未结束，直接输出
-      return this.state.codeBlockLines.join('\n') + '\n' + this.state.buffer;
+    if (this.state.inCodeBlock && this.state.codeBlockBuffer) {
+      // 代码块未正常结束：输出剩余内容
+      const lines = this.state.codeBlockBuffer.split('\n');
+      let output = '';
+      for (const line of lines) {
+        if (line.trim()) {
+          output += CODE_BG(' ') + CODE_TEXT(line) + '\n';
+        }
+      }
+      output += DIM('└── (incomplete)') + '\n';
+      return output;
     }
-
-    return this.renderInline(this.state.buffer);
+    return '';
   }
 
   /**
@@ -122,48 +141,10 @@ export class StreamMarkdownRenderer {
    */
   reset(): void {
     this.state = {
-      buffer: '',
       inCodeBlock: false,
       codeBlockLang: '',
-      codeBlockLines: [],
+      codeBlockBuffer: '',
     };
-  }
-
-  // ============================================================================
-  // 内部渲染
-  // ============================================================================
-
-  private renderInline(text: string): string {
-    if (!text) return '';
-
-    // 行内代码
-    let result = text.replace(/`([^`]+)`/g, (_, code) => CODE_BG(' ') + CODE_TEXT(code) + CODE_BG(' '));
-
-    // 粗体
-    result = result.replace(/\*\*(.+?)\*\*/g, (_, inner) => chalk.bold(inner));
-
-    return result;
-  }
-
-  private renderCodeBlock(lines: string[], lang: string): string {
-    const output: string[] = [];
-
-    // 语言标签
-    if (lang) {
-      output.push(DIM(`┌─ ${lang}`));
-    }
-
-    // 代码行
-    for (const line of lines) {
-      output.push(CODE_BG(' ') + CODE_TEXT(line));
-    }
-
-    // 底部边框
-    if (lang) {
-      output.push(DIM('└' + '─'.repeat(Math.min(70, lines[0]?.length || 0 + 3))));
-    }
-
-    return output.join('\n') + '\n';
   }
 }
 
