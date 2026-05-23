@@ -1,12 +1,18 @@
 {
   "name": "openhorse",
   "version": "0.1.5",
-  "description": "OpenHorse - Universal Agent Harness Framework",
+  "description": "OpenHorse - Universal Agent Harness Framework. A complete coding CLI agent with tools, MCP, memory system.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
     "openhorse": "bin/openhorse"
   },
+  "files": [
+    "dist/",
+    "bin/",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "start": "ts-node src/cli.ts",
     "dev": "nodemon src/cli.ts",
@@ -14,17 +20,33 @@
     "build": "tsc",
     "test": "jest",
     "lint": "eslint src/",
-    "format": "prettier --write src/"
+    "format": "prettier --write src/",
+    "prepublishOnly": "npm run build && npm test"
   },
   "keywords": [
     "agent",
     "ai",
-    "intelligence",
-    "framework",
-    "automation"
+    "coding-agent",
+    "cli-agent",
+    "llm",
+    "openai",
+    "claude",
+    "mcp",
+    "harness",
+    "automation",
+    "coding-assistant",
+    "developer-tools"
   ],
   "author": "Linux2010",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Linux2010/openhorse.git"
+  },
+  "homepage": "https://github.com/Linux2010/openhorse#readme",
+  "bugs": {
+    "url": "https://github.com/Linux2010/openhorse/issues"
+  },
   "dependencies": {
     "@clack/prompts": "^0.7.0",
     "@types/better-sqlite3": "^7.6.13",

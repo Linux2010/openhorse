@@ -21,6 +21,11 @@ export function getConfigHome(): string {
   return process.env.OPENHORSE_CONFIG_DIR ?? join(homedir(), '.openhorse');
 }
 
+/** Alias for getConfigHome */
+export function getConfigDir(): string {
+  return getConfigHome();
+}
+
 /**
  * 确保配置目录存在
  * 创建时使用 0o700 权限（仅用户可读写执行）
