@@ -46,6 +46,18 @@ import {
   isMultilineActive,
   renderContinuationPrompt,
 } from './ui/multiline-input';
+import {
+  showFileCompletion,
+  hideFileCompletion,
+  navigateFiles,
+  selectFile,
+  completeFile,
+  updateFileQuery,
+  isFileCompletionVisible,
+  getBaseInput,
+  getFileQuery,
+  redrawInputWithFile,
+} from './ui/file-completion';
 
 // Get version from package.json
 const VERSION = (() => {
@@ -115,6 +127,12 @@ function handleKeypress(char: string | undefined, key: KeyInfo | undefined): voi
   // 命令面板模式
   if (isPanelVisible()) {
     handlePanelKeypress(k, char);
+    return;
+  }
+
+  // 文件补全模式
+  if (isFileCompletionVisible()) {
+    handleFileCompletionKeypress(k, char);
     return;
   }
 
@@ -232,6 +250,61 @@ function handleHistoryKeypress(k: KeyInfo, char: string | undefined): void {
   }
 }
 
+function handleFileCompletionKeypress(k: KeyInfo, char: string | undefined): void {
+  switch (k.name) {
+    case 'up':
+      navigateFiles('up');
+      break;
+    case 'down':
+      navigateFiles('down');
+      break;
+    case 'tab':
+      const completedPath = completeFile();
+      if (completedPath) {
+        currentInput = getBaseInput() + '@' + completedPath;
+        hideFileCompletion();
+        redrawInputWithPrompt(currentInput);
+      } else {
+        // 目录：继续显示面板，更新 query
+        currentInput = getBaseInput() + '@' + getFileQuery();
+        redrawInputWithPrompt(currentInput);
+      }
+      break;
+    case 'enter':
+      const selectedPath = selectFile();
+      if (selectedPath) {
+        currentInput = getBaseInput() + '@' + selectedPath;
+        redrawInputWithPrompt(currentInput);
+      }
+      break;
+    case 'escape':
+      hideFileCompletion();
+      currentInput = getBaseInput() + '@' + getFileQuery();
+      redrawInputWithPrompt(currentInput);
+      break;
+    case 'backspace':
+      const query = getFileQuery();
+      if (query.length > 0) {
+        updateFileQuery(query.slice(0, -1));
+        currentInput = getBaseInput() + '@' + getFileQuery();
+        redrawInputWithPrompt(currentInput);
+      } else {
+        hideFileCompletion();
+        currentInput = getBaseInput();
+        redrawInputWithPrompt(currentInput);
+      }
+      break;
+    default:
+      // 添加字符到路径查询
+      if (char && char.length === 1 && !k.ctrl) {
+        const newQuery = getFileQuery() + char;
+        updateFileQuery(newQuery);
+        currentInput = getBaseInput() + '@' + newQuery;
+        redrawInputWithPrompt(currentInput);
+      }
+  }
+}
+
 function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
   switch (k.name) {
     case 'enter':
@@ -329,6 +402,13 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
       // 显示命令面板
       currentInput = '/';
       showCommandPanel('');
+      redrawInputWithPrompt(currentInput);
+      break;
+    case '@':
+      // 显示文件补全
+      const baseInput = currentInput;
+      currentInput += '@';
+      showFileCompletion('', baseInput);
       redrawInputWithPrompt(currentInput);
       break;
     default:
