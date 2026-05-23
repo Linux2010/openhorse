@@ -11,6 +11,7 @@ import { TaskManager, CreateTaskOptions } from '../services/task-manager';
 import { AgentRunner } from '../services/agent-runner';
 import { isConfigured } from '../services/config';
 import { createSpinner, toolLine } from '../ui/box';
+import { createStreamRenderer, type StreamMarkdownRenderer } from '../ui/stream-markdown';
 import { query, getSystemPrompt, resetToolState, type QueryEvent, type PromptContext } from '../framework';
 import { TOOLS, executeTool, getToolNames } from '../tools';
 import { mcpManager } from '../tools/mcp';
@@ -551,6 +552,9 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
   let pendingToolCalls: ToolCallRecord[] = [];
   let currentAssistantContent = '';
 
+  // 流式 Markdown 渲染器
+  let streamRenderer: StreamMarkdownRenderer | null = null;
+
   const toolExecutor = async (name: string, args: Record<string, unknown>) => {
     const result = await executeTool(name, args);
     // 不在这里打印，让 tool_result 事件处理
@@ -564,9 +568,19 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
         spinner.stop();
         // 打印换行，让流式输出在新行开始
         console.log();
+        // 初始化流式渲染器
+        streamRenderer = createStreamRenderer();
       }
       currentAssistantContent += chunk;
-      process.stdout.write(chunk);
+      // 使用流式渲染器处理 chunk
+      if (streamRenderer) {
+        const rendered = streamRenderer.feed(chunk);
+        if (rendered) {
+          process.stdout.write(rendered);
+        }
+      } else {
+        process.stdout.write(chunk);
+      }
     },
   };
 
@@ -590,6 +604,8 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           // 重置当前 turn 的状态
           pendingToolCalls = [];
           currentAssistantContent = '';
+          // 重置流式渲染器
+          streamRenderer = createStreamRenderer();
           break;
 
         case 'tool_call':
@@ -658,6 +674,15 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           }
           break;
       }
+    }
+
+    // 刷新流式渲染器，输出剩余内容
+    if (streamRenderer) {
+      const remaining = streamRenderer.flush();
+      if (remaining) {
+        process.stdout.write(remaining);
+      }
+      streamRenderer = null;
     }
 
     if (finalContent) {
