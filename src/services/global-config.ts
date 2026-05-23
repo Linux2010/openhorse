@@ -7,7 +7,8 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { randomBytes } from 'crypto';
-import { ensureConfigDir, getGlobalConfigPath } from './config-dir';
+import { join } from 'path';
+import { ensureConfigDir, getGlobalConfigPath, getConfigDir } from './config-dir';
 
 // ============================================================================
 // 类型定义
@@ -205,4 +206,83 @@ export function updateTokenStats(tokens: number, cost: number): void {
     totalTokens: config.totalTokens + tokens,
     totalCost: config.totalCost + cost,
   });
+}
+
+// ============================================================================
+// 输入历史
+// ============================================================================
+
+const MAX_INPUT_HISTORY = 1000;
+
+export interface InputHistoryEntry {
+  content: string;
+  timestamp: number;
+}
+
+/**
+ * 获取输入历史文件路径
+ */
+function getInputHistoryPath(): string {
+  return join(getConfigDir(), 'input-history.json');
+}
+
+/**
+ * 加载输入历史
+ */
+export function getInputHistory(): InputHistoryEntry[] {
+  const path = getInputHistoryPath();
+  if (!existsSync(path)) {
+    return [];
+  }
+  try {
+    const content = readFileSync(path, 'utf-8');
+    return JSON.parse(content);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 保存输入历史
+ */
+function saveInputHistory(history: InputHistoryEntry[]): void {
+  ensureConfigDir();
+  const path = getInputHistoryPath();
+  writeFileSync(path, JSON.stringify(history, null, 2), { mode: 0o600 });
+}
+
+/**
+ * 添加输入到历史
+ */
+export function addToInputHistory(content: string): void {
+  if (!content.trim()) return;
+
+  const history = getInputHistory();
+
+  // 去重：相似输入只保留最新
+  const existingIndex = history.findIndex(h => h.content === content);
+  if (existingIndex >= 0) {
+    history.splice(existingIndex, 1);
+  }
+
+  history.unshift({
+    content,
+    timestamp: Date.now(),
+  });
+
+  // 限制数量
+  if (history.length > MAX_INPUT_HISTORY) {
+    history.splice(MAX_INPUT_HISTORY);
+  }
+
+  saveInputHistory(history);
+}
+
+/**
+ * 搜索输入历史
+ */
+export function searchInputHistory(query: string): InputHistoryEntry[] {
+  const history = getInputHistory();
+  if (!query) return history.slice(0, 20);
+  return history.filter(h => h.content.toLowerCase().includes(query.toLowerCase())).slice(0, 20);
 }
