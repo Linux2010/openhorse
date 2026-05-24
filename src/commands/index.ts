@@ -625,7 +625,17 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
         case 'tool_result':
           // 显示工具结果后，准备下一轮（不启动 spinner）
           const parsedResult = JSON.parse(event.result);
-          console.log(toolLine(event.name, lastToolArgs, parsedResult.success !== false, event.duration));
+          const toolSuccess = parsedResult.success !== false;
+          console.log(toolLine(event.name, lastToolArgs, toolSuccess, event.duration));
+          // 显示错误详情
+          if (!toolSuccess && parsedResult.error) {
+            console.log(ERROR(`    Error: ${parsedResult.error}`));
+          }
+          // Debug: 显示接收到的参数
+          if (!toolSuccess && Object.keys(lastToolArgs).length === 0) {
+            console.log(WARN(`    ⚠ Tool received empty arguments - LLM may not be providing parameters correctly`));
+            console.log(DIM(`    Try using /model qwen or /model gpt4o for better tool calling support`));
+          }
           // Record tool result for session
           sessionMessagesToRecord.push({
             role: 'tool',
