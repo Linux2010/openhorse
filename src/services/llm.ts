@@ -367,6 +367,14 @@ export class LLMService {
         }>();
 
         for await (const chunk of stream) {
+          // Debug: log raw chunk when tool_calls present (for diagnosing API compatibility)
+          if (process.env.OPENHORSE_DEBUG_TOOLS === 'true') {
+            const delta = chunk.choices?.[0]?.delta;
+            if (delta?.tool_calls || chunk.choices?.[0]?.message?.tool_calls) {
+              console.log('[DEBUG] Raw chunk:', JSON.stringify(chunk, null, 2));
+            }
+          }
+
           const delta = chunk.choices?.[0]?.delta;
 
           const text = delta?.content ?? '';
@@ -375,17 +383,41 @@ export class LLMService {
             onChunk?.(text);
           }
 
+          // Handle tool_calls from delta (OpenAI standard streaming format)
+          // Note: Some APIs (like DashScope) send id AND arguments in the same chunk
           const tc = delta?.tool_calls?.[0];
-          if (tc?.id) {
-            toolCallsMap.set(tc.index ?? 0, {
-              id: tc.id,
-              type: 'function',
-              function: { name: tc.function?.name ?? '', arguments: '' },
-            });
-          } else if (tc?.function?.arguments) {
-            const entry = toolCallsMap.get(tc.index ?? 0);
-            if (entry) {
-              entry.function.arguments += tc.function.arguments;
+          if (tc) {
+            const idx = tc.index ?? 0;
+            // Create or update entry
+            if (tc.id) {
+              toolCallsMap.set(idx, {
+                id: tc.id,
+                type: 'function',
+                function: { name: tc.function?.name ?? '', arguments: tc.function?.arguments ?? '' },
+              });
+            } else if (tc.function?.arguments) {
+              // Arguments chunk (no id, just adding arguments)
+              const entry = toolCallsMap.get(idx);
+              if (entry) {
+                entry.function.arguments += tc.function.arguments;
+              }
+            }
+          }
+
+          // Handle tool_calls from message (some APIs like DashScope may use this format)
+          const msg = chunk.choices?.[0]?.message;
+          if (msg?.tool_calls && !delta?.tool_calls) {
+            for (const msgTc of msg.tool_calls) {
+              const existing = toolCallsMap.get(msgTc.index ?? 0);
+              if (!existing && msgTc.id) {
+                toolCallsMap.set(msgTc.index ?? 0, {
+                  id: msgTc.id,
+                  type: 'function',
+                  function: { name: msgTc.function?.name ?? '', arguments: msgTc.function?.arguments ?? '' },
+                });
+              } else if (existing && msgTc.function?.arguments) {
+                existing.function.arguments += msgTc.function.arguments;
+              }
             }
           }
 

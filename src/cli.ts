@@ -119,6 +119,17 @@ function parseKey(char: string | undefined, key: KeyInfo | undefined): KeyInfo {
     if (char === '\x7f' || char === '\b') return { name: 'backspace', ctrl: false, shift: false, meta: false, sequence: char };
     return { name: char || '', ctrl: false, shift: false, meta: false, sequence: char || '' };
   }
+
+  // 统一 "return" 和 "enter"
+  if (key.name === 'return') {
+    key.name = 'enter';
+  }
+
+  // 如果 key.name 为空，使用 char 作为 name
+  if (!key.name && char) {
+    key.name = char;
+  }
+
   return key;
 }
 
@@ -449,7 +460,19 @@ async function handleCtrlC(): Promise<void> {
     }
     endSession(currentSession.id);
   }
-  rl.close();
+
+  // 关闭 stdin raw mode 并退出
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(false);
+  }
+  process.stdin.pause();
+
+  console.log();
+  console.log(DIM('Shutting down...'));
+  mcpManager.disconnectAll();
+  await runtime.shutdown();
+  console.log(SUCCESS('Goodbye! 🐴'));
+  process.exit(0);
 }
 
 // ============================================================================
@@ -535,8 +558,7 @@ async function handleInput(input: string) {
   updateStatusBar();
 
   // 重新显示 prompt
-  rl.setPrompt(getPrompt());
-  rl.prompt();
+  redrawInputWithPrompt(currentInput);
 }
 
 /**
@@ -563,7 +585,8 @@ function updateStatusBar(): void {
   console.log(renderStatusBar(stats));
 }
 
-let rl: readline.Interface;
+// 接口变量（用于兼容性，主要逻辑通过 keypress 处理）
+let rl: readline.Interface | null = null;
 
 // ============================================================================
 // 主入口
@@ -657,54 +680,52 @@ async function main(): Promise<void> {
   // 加载输入历史
   inputHistory = getInputHistory();
 
-  // 创建 readline
-  rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    terminal: true,
-  });
+  // 启用 keypress 事件处理
+  // 使用 emitKeypressEvents + setRawMode 实现交互式功能
+  readline.emitKeypressEvents(process.stdin);
 
-  // 使用 readline 的 line 事件处理普通输入
-  rl.on('line', (line) => {
-    const input = line.trim();
-    if (!input) {
-      rl.setPrompt(getPrompt());
-      rl.prompt();
-      return;
-    }
+  // Debug: 显示 stdin 状态
+  if (process.env.OPENHORSE_DEBUG_KEYS === 'true') {
+    console.log(`[DEBUG] stdin.isTTY: ${process.stdin.isTTY}`);
+    console.log(`[DEBUG] stdin.isRaw: ${process.stdin.isRaw}`);
+  }
 
-    // 添加到历史
-    addToInputHistory(input);
-    inputHistory = getInputHistory();
-
-    // 处理输入
-    handleInput(input);
-  });
-
-  rl.on('close', async () => {
-    console.log();
-    console.log(DIM('Shutting down...'));
-    mcpManager.disconnectAll();
-    await runtime.shutdown();
-    console.log(SUCCESS('Goodbye! 🐴'));
-    process.exit(0);
-  });
-
-  process.on('SIGINT', async () => {
-    // Save session summary before exit
-    if (currentSession) {
-      const messages = readSessionMessages(currentSession.id);
-      if (messages.length > 0) {
-        updateSessionSummary(currentSession.id, messages);
+  if (process.stdin.isTTY) {
+    try {
+      process.stdin.setRawMode(true);
+      if (process.env.OPENHORSE_DEBUG_KEYS === 'true') {
+        console.log('[DEBUG] setRawMode(true) succeeded');
       }
-      endSession(currentSession.id);
+    } catch (err: any) {
+      console.error(ERROR(`setRawMode failed: ${err.message}`));
     }
-    rl.close();
+  } else {
+    console.log(WARN('⚠ stdin is not TTY - interactive features disabled'));
+  }
+  process.stdin.resume();  // 确保 stdin 开始接收数据
+
+  // 监听 keypress 事件（替代 line 事件）
+  process.stdin.on('keypress', (char: string | undefined, key: any) => {
+    // Debug: 显示接收到的按键
+    if (process.env.OPENHORSE_DEBUG_KEYS === 'true') {
+      console.log(`\n[DEBUG] keypress: char='${char}' key=${JSON.stringify(key)}`);
+    }
+    try {
+      handleKeypress(char, key);
+    } catch (err: any) {
+      console.error(ERROR(`Keypress error: ${err.message}`));
+    }
   });
 
-  // 显示初始 prompt
-  rl.setPrompt(getPrompt());
-  rl.prompt();
+  // 监听 stdin 关闭事件
+  process.stdin.on('end', () => {
+    if (process.env.OPENHORSE_DEBUG_KEYS === 'true') {
+      console.log('[DEBUG] stdin ended');
+    }
+  });
+
+  // 初始 prompt
+  redrawInputWithPrompt('');
 }
 
 main().catch(err => {

@@ -41,7 +41,7 @@ export interface QueryParams {
   toolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>;
   /** LLM service instance */
   llm: LLMService;
-  /** Maximum turns (default: 20) */
+  /** Maximum turns (default: no limit, relies on safety mechanisms) */
   maxTurns?: number;
   /** Abort signal for cancellation */
   abortSignal?: AbortSignal;
@@ -82,17 +82,18 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     tools,
     toolExecutor,
     llm,
-    maxTurns = 20,
+    maxTurns,  // 无默认值，可选参数
     abortSignal,
     streamCallbacks,
     costTracker,
-    strategyTracker = createStrategyTracker({ maxAttempts: 3 }),
+    strategyTracker = createStrategyTracker({ maxAttempts: 5 }),  // 增加到 5 次
   } = params;
 
   const openaiTools = toOpenAITools(tools) as unknown as Tool[];
   let turn = 0;
 
-  while (turn < maxTurns) {
+  // 无限循环，依赖安全机制停止
+  while (true) {
     turn++;
 
     // Check abort
@@ -107,6 +108,16 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
     // Request start
     yield { type: 'request_start', model: llm.getModel(), turn };
+
+    // Safety valve: check maxTurns if specified (optional)
+    if (maxTurns && turn > maxTurns) {
+      yield {
+        type: 'complete',
+        content: `Reached maximum turns (${maxTurns}). Task may be incomplete.`,
+        model: llm.getModel(),
+      };
+      return;
+    }
 
     // Stream the LLM response
     const response = await llm.chatStream(messages, streamCallbacks, openaiTools);
@@ -240,11 +251,5 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     };
     return;
   }
-
-  // Max turns reached
-  yield {
-    type: 'complete',
-    content: 'Reached maximum execution steps. Please simplify your request.',
-    model: llm.getModel(),
-  };
+  // Note: Loop exits via return statements above, not by falling through
 }
