@@ -675,10 +675,15 @@ async function main(): Promise<void> {
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
   }
+  process.stdin.resume();  // 确保 stdin 开始接收数据
 
   // 监听 keypress 事件（替代 line 事件）
-  process.stdin.on('keypress', (char: string | undefined, key: KeyInfo | undefined) => {
-    handleKeypress(char, key);
+  process.stdin.on('keypress', (char: string | undefined, key: any) => {
+    try {
+      handleKeypress(char, key);
+    } catch (err: any) {
+      console.error(ERROR(`Keypress error: ${err.message}`));
+    }
   });
 
   // 初始 prompt
