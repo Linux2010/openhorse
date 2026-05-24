@@ -173,7 +173,7 @@ describe('query generator', () => {
 
     const complete = events.find(e => e.type === 'complete');
     expect(complete).toBeDefined();
-    expect((complete as any).content).toContain('maximum execution steps');
+    expect((complete as any).content).toContain('maximum turns');
   });
 
   test('passes usage info in complete event', async () => {

@@ -684,43 +684,23 @@ async function main(): Promise<void> {
   // 使用 emitKeypressEvents + setRawMode 实现交互式功能
   readline.emitKeypressEvents(process.stdin);
 
-  // Debug: 显示 stdin 状态
-  if (process.env.OPENHORSE_DEBUG_KEYS === 'true') {
-    console.log(`[DEBUG] stdin.isTTY: ${process.stdin.isTTY}`);
-    console.log(`[DEBUG] stdin.isRaw: ${process.stdin.isRaw}`);
-  }
-
   if (process.stdin.isTTY) {
     try {
       process.stdin.setRawMode(true);
-      if (process.env.OPENHORSE_DEBUG_KEYS === 'true') {
-        console.log('[DEBUG] setRawMode(true) succeeded');
-      }
     } catch (err: any) {
       console.error(ERROR(`setRawMode failed: ${err.message}`));
     }
   } else {
     console.log(WARN('⚠ stdin is not TTY - interactive features disabled'));
   }
-  process.stdin.resume();  // 确保 stdin 开始接收数据
+  process.stdin.resume();
 
-  // 监听 keypress 事件（替代 line 事件）
+  // 监听 keypress 事件
   process.stdin.on('keypress', (char: string | undefined, key: any) => {
-    // Debug: 显示接收到的按键
-    if (process.env.OPENHORSE_DEBUG_KEYS === 'true') {
-      console.log(`\n[DEBUG] keypress: char='${char}' key=${JSON.stringify(key)}`);
-    }
     try {
       handleKeypress(char, key);
     } catch (err: any) {
       console.error(ERROR(`Keypress error: ${err.message}`));
-    }
-  });
-
-  // 监听 stdin 关闭事件
-  process.stdin.on('end', () => {
-    if (process.env.OPENHORSE_DEBUG_KEYS === 'true') {
-      console.log('[DEBUG] stdin ended');
     }
   });
 
