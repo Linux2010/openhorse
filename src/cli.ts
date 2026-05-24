@@ -119,10 +119,17 @@ function parseKey(char: string | undefined, key: KeyInfo | undefined): KeyInfo {
     if (char === '\x7f' || char === '\b') return { name: 'backspace', ctrl: false, shift: false, meta: false, sequence: char };
     return { name: char || '', ctrl: false, shift: false, meta: false, sequence: char || '' };
   }
+
   // 统一 "return" 和 "enter"
   if (key.name === 'return') {
     key.name = 'enter';
   }
+
+  // 如果 key.name 为空，使用 char 作为 name
+  if (!key.name && char) {
+    key.name = char;
+  }
+
   return key;
 }
 
