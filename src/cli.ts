@@ -449,7 +449,19 @@ async function handleCtrlC(): Promise<void> {
     }
     endSession(currentSession.id);
   }
-  rl.close();
+
+  // 关闭 stdin raw mode 并退出
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(false);
+  }
+  process.stdin.pause();
+
+  console.log();
+  console.log(DIM('Shutting down...'));
+  mcpManager.disconnectAll();
+  await runtime.shutdown();
+  console.log(SUCCESS('Goodbye! 🐴'));
+  process.exit(0);
 }
 
 // ============================================================================
@@ -535,8 +547,7 @@ async function handleInput(input: string) {
   updateStatusBar();
 
   // 重新显示 prompt
-  rl.setPrompt(getPrompt());
-  rl.prompt();
+  redrawInputWithPrompt(currentInput);
 }
 
 /**
@@ -563,7 +574,8 @@ function updateStatusBar(): void {
   console.log(renderStatusBar(stats));
 }
 
-let rl: readline.Interface;
+// 接口变量（用于兼容性，主要逻辑通过 keypress 处理）
+let rl: readline.Interface | null = null;
 
 // ============================================================================
 // 主入口
@@ -657,54 +669,20 @@ async function main(): Promise<void> {
   // 加载输入历史
   inputHistory = getInputHistory();
 
-  // 创建 readline
-  rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    terminal: true,
+  // 启用 keypress 事件处理
+  // 使用 emitKeypressEvents + setRawMode 实现交互式功能
+  readline.emitKeypressEvents(process.stdin);
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
+  }
+
+  // 监听 keypress 事件（替代 line 事件）
+  process.stdin.on('keypress', (char: string | undefined, key: KeyInfo | undefined) => {
+    handleKeypress(char, key);
   });
 
-  // 使用 readline 的 line 事件处理普通输入
-  rl.on('line', (line) => {
-    const input = line.trim();
-    if (!input) {
-      rl.setPrompt(getPrompt());
-      rl.prompt();
-      return;
-    }
-
-    // 添加到历史
-    addToInputHistory(input);
-    inputHistory = getInputHistory();
-
-    // 处理输入
-    handleInput(input);
-  });
-
-  rl.on('close', async () => {
-    console.log();
-    console.log(DIM('Shutting down...'));
-    mcpManager.disconnectAll();
-    await runtime.shutdown();
-    console.log(SUCCESS('Goodbye! 🐴'));
-    process.exit(0);
-  });
-
-  process.on('SIGINT', async () => {
-    // Save session summary before exit
-    if (currentSession) {
-      const messages = readSessionMessages(currentSession.id);
-      if (messages.length > 0) {
-        updateSessionSummary(currentSession.id, messages);
-      }
-      endSession(currentSession.id);
-    }
-    rl.close();
-  });
-
-  // 显示初始 prompt
-  rl.setPrompt(getPrompt());
-  rl.prompt();
+  // 初始 prompt
+  redrawInputWithPrompt('');
 }
 
 main().catch(err => {
