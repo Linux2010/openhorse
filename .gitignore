@@ -4,4 +4,3 @@ dist/
 package-lock.json
 tests/tmp/
 docs/*
-!docs/roadmap/
