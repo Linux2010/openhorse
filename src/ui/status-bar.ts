@@ -10,6 +10,7 @@ const ACCENT = chalk.hex('#00D4AA');
 const BRAND = chalk.hex('#FF6B35');
 const DIM = chalk.dim;
 const SUCCESS = chalk.green;
+const WARN = chalk.yellow;
 
 // ============================================================================
 // 类型定义
@@ -39,6 +40,7 @@ export function renderStatusBar(stats: StatusBarStats): string {
     `${ACCENT(stats.model)}`,
     `${formatTokens(stats.tokens)}`,
     `${formatCost(stats.cost)}`,
+    `${formatCtx(stats.ctxPercent)}`,  // 添加 ctxPercent 显示
   ];
 
   if (stats.mcpTotal > 0) {
@@ -111,4 +113,12 @@ function formatCost(cost: number): string {
     return `$${cost.toFixed(2)}`;
   }
   return `$${cost.toFixed(1)}`;
+}
+
+function formatCtx(percent: number): string {
+  if (percent === 0) return '';
+  if (percent >= 80) {
+    return WARN(`${percent}% ctx`);  // 高占用时警告色
+  }
+  return DIM(`${percent}% ctx`);
 }
