@@ -61,6 +61,8 @@
     "figlet": "^1.11.0",
     "js-yaml": "^4.1.1",
     "lodash-es": "^4.18.1",
+    "marked": "^11.2.0",
+    "marked-terminal": "^6.2.0",
     "openai": "^4.0.0",
     "react": "^19.2.6",
     "react-compiler-runtime": "^1.0.0",

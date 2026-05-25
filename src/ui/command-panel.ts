@@ -155,7 +155,11 @@ function updateMatches(): void {
   }
 }
 
+/** 上次渲染的面板行数 */
+let lastPanelLines: string[] = [];
+
 function render(): void {
+  // 先清除上次的面板（使用保存的行数）
   clearPanel();
 
   if (state.matches.length === 0) {
@@ -200,12 +204,16 @@ function render(): void {
   // 操作提示
   lines.push(DIM('  ↑↓ Navigate  Enter Select  Esc Cancel'));
 
-  // 渲染
-  for (const line of lines) {
-    process.stdout.write('\n' + line);
-  }
-
+  // 保存行数用于下次清除
+  lastPanelLines = lines;
   panelHeight = lines.length;
+
+  // 渲染：从当前位置向下画
+  for (const line of lines) {
+    process.stdout.write('\x1b[B');  // 下移一行
+    process.stdout.write('\x1b[2K'); // 清除该行
+    process.stdout.write('\r' + line); // 写入内容
+  }
 
   // 恢复光标到输入位置
   process.stdout.write(`\x1b[${panelHeight}A`);
@@ -213,26 +221,67 @@ function render(): void {
 }
 
 function clearPanel(): void {
-  if (panelHeight > 0) {
+  // 使用保存的行数清除
+  const height = lastPanelLines.length || panelHeight;
+  if (height > 0) {
     // 下移并清除每一行
-    for (let i = 0; i < panelHeight; i++) {
+    for (let i = 0; i < height; i++) {
       process.stdout.write('\x1b[B');  // 下移一行
       process.stdout.write('\x1b[2K'); // 清除整行
     }
     // 移回原位置
-    process.stdout.write(`\x1b[${panelHeight}A`);
+    process.stdout.write(`\x1b[${height}A`);
     process.stdout.write('\r');
+    lastPanelLines = [];
     panelHeight = 0;
   }
 }
 
+/** 上次渲染的长度（用于计算清除行数） */
+let lastRenderLength = 0;
+
 /**
  * 重绘输入行（带 prompt）
+ * Issue #26 修复：正确清除多行输入的重影
  */
 export function redrawInputWithPrompt(input: string, modeIndicator: string = ''): void {
-  // 清除当前行并重绘
-  // 使用更可靠的终端控制序列
-  process.stdout.write('\x1b[2K\r');  // 清除整行，回到行首
+  const terminalWidth = process.stdout.columns || 80;
   const prompt = ACCENT('❯ ') + (modeIndicator ? DIM(modeIndicator) : '');
+  const promptLength = stripAnsi(prompt).length;
+
+  // 计算上次渲染占用的行数
+  const lastTotalLength = promptLength + lastRenderLength;
+  const lastLines = Math.max(1, Math.ceil(lastTotalLength / terminalWidth));
+
+  // 清除上次渲染的所有行
+  for (let i = 0; i < lastLines; i++) {
+    process.stdout.write('\x1b[2K');  // 清除整行
+    if (i < lastLines - 1) {
+      process.stdout.write('\x1b[1A');  // 上移一行
+    }
+  }
+
+  // 移到行首
+  process.stdout.write('\r');
+
+  // 绘制新的输入
   process.stdout.write(prompt + input);
+
+  // 记录当前长度
+  lastRenderLength = input.length;
+}
+
+/**
+ * 重置渲染长度跟踪
+ */
+export function resetRenderLength(): void {
+  lastRenderLength = 0;
+}
+
+/**
+ * 去除 ANSI 颜色码，计算实际可见长度
+ */
+function stripAnsi(str: string): string {
+  // 简单的 ANSI 去除
+  return str.replace(/\x1b\[[0-9;]*m/g, '');
 }

@@ -22,8 +22,8 @@ import { createStrategyTracker, type StrategyTracker, type StrategyResult } from
 
 export type QueryEvent =
   | { type: 'request_start'; model: string; turn: number }
-  | { type: 'tool_call'; name: string; args: Record<string, unknown>; callId: string }
-  | { type: 'tool_result'; name: string; result: string; duration: number }
+  | { type: 'tool_call'; name: string; args: Record<string, unknown>; callId: string; batchCount?: number; batchIndex?: number }
+  | { type: 'tool_result'; name: string; result: string; duration: number; success: boolean; error?: string }
   | { type: 'strategy_exhausted'; suggestion: string }
   | { type: 'message'; role: 'assistant'; content: string }
   | { type: 'complete'; content: string; usage?: { promptTokens: number; completionTokens: number }; model: string };
@@ -188,11 +188,15 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
         const duration = Date.now() - start;
 
-        // Parse result and record to strategy tracker
-        let strategyResult: StrategyResult = 'success';
+        // Issue #21 修复：解析结果，提取 success/error 字段
+        let toolSuccess = true;
+        let toolError: string | undefined;
+        let strategyResult: 'success' | 'failed' = 'success';
         let errorMsg: string | undefined;
         try {
           const parsed = JSON.parse(result);
+          toolSuccess = parsed.success === true;
+          toolError = parsed.error;
           if (parsed.success === false) {
             strategyResult = 'failed';
             errorMsg = parsed.error || 'Unknown error';
@@ -200,6 +204,8 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         } catch {
           strategyResult = 'failed';
           errorMsg = 'Invalid result';
+          toolSuccess = false;
+          toolError = 'Invalid JSON result';
         }
         strategyTracker.recordResult(attemptId, strategyResult, errorMsg, duration);
 
@@ -208,6 +214,8 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           name: tc.function.name,
           result,
           duration,
+          success: toolSuccess,   // Issue #21: 添加 success 字段
+          error: toolError,       // Issue #21: 添加 error 字段
         };
 
         messages.push({
@@ -215,6 +223,14 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           content: result,
           tool_call_id: tc.id,
         });
+
+        // Issue #21 修复：工具失败时添加系统提示消息
+        if (!toolSuccess) {
+          messages.push({
+            role: 'user',
+            content: `[System] Tool ${tc.function.name} failed: ${toolError}. Consider alternative approaches or inform the user.`,
+          });
+        }
 
         // Check if strategy exhausted - suggest alternatives
         if (strategyTracker.isExhausted()) {

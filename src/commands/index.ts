@@ -12,6 +12,7 @@ import { AgentRunner } from '../services/agent-runner';
 import { isConfigured } from '../services/config';
 import { createSpinner, toolLine } from '../ui/box';
 import { createStreamRenderer, type StreamMarkdownRenderer } from '../ui/stream-markdown';
+import { showProgress, hideProgress, showToolProgress } from '../ui/progress';
 import { query, getSystemPrompt, resetToolState, type QueryEvent, type PromptContext } from '../framework';
 import { TOOLS, executeTool, getToolNames } from '../tools';
 import { mcpManager } from '../tools/mcp';
@@ -552,6 +553,10 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
   let pendingToolCalls: ToolCallRecord[] = [];
   let currentAssistantContent = '';
 
+  // Issue #22: 批量工具调用进度显示
+  let toolCallCount = 0;
+  let lastProgressUpdate = 0;
+
   // 流式 Markdown 渲染器
   let streamRenderer: StreamMarkdownRenderer | null = null;
 
@@ -606,9 +611,18 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           currentAssistantContent = '';
           // 重置流式渲染器
           streamRenderer = createStreamRenderer();
+          // Issue #22: 重置工具调用计数器
+          toolCallCount = 0;
+          lastProgressUpdate = 0;
           break;
 
         case 'tool_call':
+          // Issue #22: 批量工具调用进度显示
+          toolCallCount++;
+          if (toolCallCount >= 3 && Date.now() - lastProgressUpdate > 1000) {
+            showToolProgress(toolCallCount, event.name);
+            lastProgressUpdate = Date.now();
+          }
           // 收集完整的 tool_call 信息
           lastToolCallId = event.callId;
           lastToolArgs = event.args;
@@ -623,6 +637,8 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           break;
 
         case 'tool_result':
+          // Issue #22: 隐藏进度指示
+          hideProgress();
           // 显示工具结果后，准备下一轮（不启动 spinner）
           const parsedResult = JSON.parse(event.result);
           const toolSuccess = parsedResult.success !== false;

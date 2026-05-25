@@ -1,12 +1,16 @@
 /**
- * openhorse - 轻量级终端 Markdown 渲染器
+ * openhorse - 终端 Markdown 渲染器
  *
- * 不依赖外部 markdown 库，纯 chalk + 正则实现。
- * 支持：标题、粗体、斜体、行内代码、代码块、列表、引用、分隔线。
- * 无首行缩进，与流式输出对齐。
+ * Issue #25 修复：使用 marked-terminal 渲染 Markdown
+ * 支持：标题、粗体、斜体、行内代码、代码块、列表、引用、表格、链接。
+ *
+ * 检测 TTY 和 NO_COLOR 环境变量，非 TTY 输出原始 Markdown。
  */
 
 import chalk from 'chalk';
+import { marked } from 'marked';
+// @ts-ignore - marked-terminal 没有 TypeScript 类型定义
+import TerminalRenderer from 'marked-terminal';
 
 // ============================================================================
 // 颜色常量
@@ -24,14 +28,77 @@ const GRAY = chalk.hex('#6B7280');
 
 const DEFAULT_MAX_WIDTH = 80;
 
+// 初始化 marked-terminal renderer
+let terminalRenderer: any = null;
+
+function initRenderer(): void {
+  if (terminalRenderer) return;
+
+  try {
+    terminalRenderer = new TerminalRenderer({
+      showEscapePrefix: false,
+      code: chalk.yellow,
+      blockquote: chalk.dim.gray,
+      heading: chalk.bold.cyan,
+      firstHeading: chalk.bold.magenta,
+      hr: chalk.dim,
+      listitem: chalk.green,
+      table: chalk.cyan,
+      paragraph: chalk.white,
+      strong: chalk.bold,
+      em: chalk.italic,
+      codespan: chalk.bgGray.white,
+      ref: chalk.cyan,
+      tab: 2,
+    });
+
+    marked.setOptions({
+      renderer: terminalRenderer,
+    });
+  } catch (e) {
+    // marked-terminal 初始化失败，使用 fallback
+    terminalRenderer = null;
+  }
+}
+
 // ============================================================================
 // 公共 API
 // ============================================================================
 
 /**
  * 将 markdown 文本渲染为带 ANSI 颜色的终端输出
+ * Issue #25 修复：使用 marked-terminal 或 fallback
  */
 export function renderMarkdown(text: string, maxWidth = DEFAULT_MAX_WIDTH): string {
+  // 检测 TTY
+  if (!process.stdout.isTTY) {
+    return text;  // 非 TTY 返回原始 Markdown（用于 pipe 到文件）
+  }
+
+  // 检测 NO_COLOR
+  if (process.env.NO_COLOR) {
+    return stripMarkdownSyntax(text);  // 去除 Markdown 符号，输出纯文本
+  }
+
+  // 尝试使用 marked-terminal
+  initRenderer();
+  if (terminalRenderer) {
+    try {
+      return marked.parse(text) as string;
+    } catch (e) {
+      // marked 解析失败，使用 fallback
+      return renderMarkdownFallback(text, maxWidth);
+    }
+  }
+
+  // fallback：使用原有渲染器
+  return renderMarkdownFallback(text, maxWidth);
+}
+
+/**
+ * Fallback 渲染器（当 marked-terminal 不可用时）
+ */
+export function renderMarkdownFallback(text: string, maxWidth = DEFAULT_MAX_WIDTH): string {
   const lines = text.split('\n');
   const result: string[] = [];
 
@@ -233,4 +300,37 @@ function wrapAnsiText(text: string, maxWidth: number): string[] {
 
   if (current) lines.push(current);
   return lines;
+}
+
+/**
+ * 去除 Markdown 语法符号（用于 NO_COLOR 模式）
+ */
+function stripMarkdownSyntax(text: string): string {
+  let result = text;
+
+  // 去除标题符号
+  result = result.replace(/^#{1,6}\s+/gm, '');
+
+  // 去除粗体和斜体符号
+  result = result.replace(/\*\*(.+?)\*\*/g, '$1');
+  result = result.replace(/\*(.+?)\*/g, '$1');
+
+  // 去除行内代码符号
+  result = result.replace(/`([^`]+)`/g, '$1');
+
+  // 去除链接，保留文本
+  result = result.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+
+  // 去除引用符号
+  result = result.replace(/^>\s+/gm, '');
+
+  // 去除列表符号
+  result = result.replace(/^[-*]\s+/gm, '  ');
+  result = result.replace(/^\d+\.\s+/gm, '  ');
+
+  // 保留代码块内容但去除 ``` 标记
+  result = result.replace(/^```[\w]*\n/gm, '');
+  result = result.replace(/^```$/gm, '');
+
+  return result;
 }
