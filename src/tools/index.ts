@@ -31,6 +31,7 @@ import { MCP_TOOLS } from './mcp';
 import { TODO_TOOLS } from './todo';
 import { PLAN_TOOLS } from './plan';
 import { GIT_TOOLS } from './git';
+import { lspTools } from './lsp';
 import {
   assessCommandSecurity,
   isReadOnlyCommand,
@@ -53,6 +54,9 @@ export const TOOLS: OpenHorseTool[] = [
 
   // Git tools (P0 - Issue #18/#23)
   ...GIT_TOOLS,
+
+  // LSP tools (P0 - Phase 6)
+  ...lspTools,
 
   // Todo tools (P1)
   ...TODO_TOOLS,

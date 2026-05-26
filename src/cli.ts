@@ -83,6 +83,35 @@ const WARN = chalk.yellow;
 const SUCCESS = chalk.green;
 
 // ============================================================================
+// CLI Help
+// ============================================================================
+
+function showCliHelp(): void {
+  console.log();
+  console.log(BRAND('openhorse') + DIM(` v${VERSION}`));
+  console.log(DIM('  Universal Agent Harness Framework'));
+  console.log();
+  console.log(ACCENT('Usage:'));
+  console.log('  openhorse              Start interactive REPL');
+  console.log('  openhorse --help       Show this help message');
+  console.log('  openhorse --version    Show version');
+  console.log();
+  console.log(ACCENT('Options:'));
+  console.log('  -h, --help     Show help');
+  console.log('  -v, --version  Show version');
+  console.log();
+  console.log(ACCENT('Interactive Commands:'));
+  console.log('  /help          Show available slash commands');
+  console.log('  /status        Show system status');
+  console.log('  /model [name]  Show or change model');
+  console.log('  /chat <msg>    Send message to LLM');
+  console.log('  /exit          Exit the REPL');
+  console.log();
+  console.log(DIM('Type /help in REPL for full command list.'));
+  console.log();
+}
+
+// ============================================================================
 // 全局状态
 // ============================================================================
 
@@ -593,6 +622,17 @@ let rl: readline.Interface | null = null;
 // ============================================================================
 
 async function main(): Promise<void> {
+  // Parse command line arguments
+  const args = process.argv.slice(2);
+  if (args.includes('--help') || args.includes('-h')) {
+    showCliHelp();
+    process.exit(0);
+  }
+  if (args.includes('--version') || args.includes('-v')) {
+    console.log(`openhorse v${VERSION}`);
+    process.exit(0);
+  }
+
   ensureConfigDir();
   recordFirstStartTime();
 
