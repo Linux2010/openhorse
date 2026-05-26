@@ -1,0 +1,177 @@
+/**
+ * openhorse - Compact 服务
+ *
+ * 长对话压缩服务，减少上下文长度同时保留关键信息。
+ * 参考 OpenClaude 的 compact/ 目录实现。
+ */
+
+import type { Message } from '../llm';
+import { summaryGenerator, type SummaryOptions } from './summary-generator';
+
+// ============================================================================
+// 类型定义
+// ============================================================================
+
+export interface CompactOptions {
+  /** 最大保留消息数 */
+  maxMessages?: number;
+  /** 是否保留工具调用 */
+  keepToolCalls?: boolean;
+  /** 是否保留系统消息 */
+  keepSystemMessage?: boolean;
+  /** 压缩阈值（消息数超过此值触发） */
+  threshold?: number;
+  /** 自定义摘要生成选项 */
+  summaryOptions?: SummaryOptions;
+}
+
+export interface CompactResult {
+  /** 压缩后的消息列表 */
+  messages: Message[];
+  /** 压缩前消息数 */
+  originalCount: number;
+  /** 压缩后消息数 */
+  compactedCount: number;
+  /** 压缩比率 */
+  ratio: number;
+  /** 摘要内容 */
+  summary: string;
+}
+
+// ============================================================================
+// 默认配置
+// ============================================================================
+
+const DEFAULT_OPTIONS: CompactOptions = {
+  maxMessages: 20,
+  keepToolCalls: true,
+  keepSystemMessage: true,
+  threshold: 50,
+};
+
+// ============================================================================
+// Compact 实现
+// ============================================================================
+
+/**
+ * 压缩消息历史
+ *
+ * 策略：
+ * 1. 保留 system 消息
+ * 2. 保留最近 N 条消息
+ * 3. 对早期消息生成摘要替换
+ */
+export async function compactMessages(
+  messages: Message[],
+  options?: CompactOptions
+): Promise<CompactResult> {
+  const opts = { ...DEFAULT_OPTIONS, ...options };
+  const originalCount = messages.length;
+
+  // 检查是否需要压缩
+  if (originalCount <= opts.threshold!) {
+    return {
+      messages,
+      originalCount,
+      compactedCount: originalCount,
+      ratio: 1,
+      summary: '',
+    };
+  }
+
+  // 1. 保留 system 消息
+  const systemMessage = opts.keepSystemMessage
+    ? messages.find(m => m.role === 'system')
+    : undefined;
+
+  // 2. 分离需要压缩的消息
+  const toCompact = opts.keepSystemMessage
+    ? messages.filter(m => m.role !== 'system')
+    : messages;
+
+  // 3. 保留最近 maxMessages 条
+  const recentMessages = toCompact.slice(-opts.maxMessages!);
+  const oldMessages = toCompact.slice(0, toCompact.length - opts.maxMessages!);
+
+  // 4. 对早期消息生成摘要
+  const summary = await summaryGenerator(oldMessages, opts.summaryOptions);
+
+  // 5. 构建压缩后的消息列表
+  let compactedMessages: Message[] = [];
+
+  if (systemMessage) {
+    compactedMessages.push(systemMessage);
+  }
+
+  // 添加摘要作为 user 消息（作为上下文背景）
+  if (summary) {
+    compactedMessages.push({
+      role: 'user',
+      content: `[Context Summary]\n${summary}`,
+    });
+    compactedMessages.push({
+      role: 'assistant',
+      content: 'I understand the context. I will continue the conversation with this background information.',
+    });
+  }
+
+  // 添加最近消息
+  compactedMessages.push(...recentMessages);
+
+  // 过滤工具调用（如果需要）
+  if (!opts.keepToolCalls) {
+    compactedMessages = compactedMessages.map(m => {
+      if (m.role === 'assistant' && m.tool_calls) {
+        return { ...m, tool_calls: undefined };
+      }
+      return m;
+    });
+  }
+
+  const compactedCount = compactedMessages.length;
+  const ratio = compactedCount / originalCount;
+
+  return {
+    messages: compactedMessages,
+    originalCount,
+    compactedCount,
+    ratio,
+    summary,
+  };
+}
+
+/**
+ * 检查是否需要压缩
+ */
+export function needsCompact(messages: Message[], threshold?: number): boolean {
+  const limit = threshold || DEFAULT_OPTIONS.threshold!;
+  return messages.length > limit;
+}
+
+/**
+ * 快速压缩（不生成摘要，直接保留最近 N 条）
+ */
+export function quickCompact(messages: Message[], keepLast: number = 10): Message[] {
+  const systemMessage = messages.find(m => m.role === 'system');
+
+  // 过滤掉 system
+  const nonSystem = messages.filter(m => m.role !== 'system');
+
+  // 保留最近 keepLast 条
+  const recent = nonSystem.slice(-keepLast);
+
+  // 构建结果
+  const result: Message[] = [];
+  if (systemMessage) {
+    result.push(systemMessage);
+  }
+  result.push(...recent);
+
+  return result;
+}
+
+// ============================================================================
+// 导出
+// ============================================================================
+
+export { CompactOptions as CompactConfig, CompactResult as CompactResultData };

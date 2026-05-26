@@ -116,41 +116,47 @@ function htmlToMarkdown(html: string): string {
   return md;
 }
 
-async function fetchUrl(url: string): Promise<{ content: string; code: number; contentType: string }> {
+interface FetchResult {
+  content: string;
+  code: number;
+  contentType: string;
+  url?: string;           // 最终 URL（跟随重定向后）
+  redirects?: string[];   // 重定向链
+  errorType?: string;     // 错误类型
+}
+
+async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchResult> {
   const cached = cacheGet(url);
-  if (cached) return cached;
+  if (cached) return { ...cached, url };
 
   try {
+    // Issue #20 修复：启用 redirect: 'follow' 自动跟随重定向
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'OpenHorse/0.1.4',
+        'User-Agent': 'OpenHorse/0.1.5',
         'Accept': 'text/html,application/xhtml+xml,text/markdown,text/plain,*/*',
       },
+      redirect: 'follow',  // 自动跟随重定向（最多 20 次，由 fetch 内置限制）
     });
 
     const contentType = response.headers.get('content-type') || 'text/plain';
+    const finalUrl = response.url;
+    const redirects: string[] = [];
+
+    // 记录重定向信息（如果发生了重定向）
+    if (response.redirected && finalUrl !== url) {
+      redirects.push(finalUrl);
+    }
 
     if (!response.ok) {
       return {
         content: `HTTP Error ${response.status}: ${response.statusText}`,
         code: response.status,
         contentType,
+        url: finalUrl,
+        redirects,
+        errorType: 'HTTP_ERROR',
       };
-    }
-
-    // Check for redirect to different host
-    if (response.redirected) {
-      const redirectUrl = response.url;
-      const originalHost = new URL(url).hostname;
-      const redirectHost = new URL(redirectUrl).hostname;
-
-      if (originalHost !== redirectHost) {
-        return {
-          content: `REDIRECT DETECTED: URL redirects to a different host.\nOriginal: ${url}\nRedirect: ${redirectUrl}\nPlease fetch the redirect URL instead.`,
-          code: 302,
-          contentType: 'text/plain',
-        };
-      }
     }
 
     const text = await response.text();
@@ -166,18 +172,21 @@ async function fetchUrl(url: string): Promise<{ content: string; code: number; c
       content = content.slice(0, MAX_MARKDOWN_LENGTH) + '\n\n[... content truncated]';
     }
 
-    const result = {
+    const result: FetchResult = {
       content,
       code: response.status,
       contentType,
+      url: finalUrl,
+      redirects,
     };
-    if (response.ok) cacheSet(url, result);
+    if (response.ok) cacheSet(url, { content, code: response.status, contentType });
     return result;
   } catch (err: any) {
     return {
       content: `Fetch error: ${err.message}`,
       code: 0,
       contentType: 'text/plain',
+      errorType: 'NETWORK_ERROR',
     };
   }
 }
@@ -252,17 +261,30 @@ Before using this tool, check if the URL points to an authenticated service (e.g
       return { success: false, output: '', error: `Invalid URL: ${url}` };
     }
 
-    const { content, code, contentType } = await fetchUrl(url);
+    const { content, code, contentType, url: finalUrl, redirects, errorType } = await fetchUrl(url);
 
+    // Issue #20 修复：返回结构化结果
     if (code !== 200) {
-      return { success: false, output: content, error: `HTTP ${code}` };
+      const errorInfo = {
+        type: errorType || 'HTTP_ERROR',
+        code,
+        message: content,
+        url: finalUrl,
+        redirects: redirects || [],
+      };
+      return {
+        success: false,
+        output: '',
+        error: JSON.stringify(errorInfo),
+      };
     }
 
-    const result = applyPromptToContent(content, prompt);
+    const resultContent = applyPromptToContent(content, prompt);
+    const finalUrlInfo = finalUrl !== url ? `\n\nFinal URL (after redirects): ${finalUrl}` : '';
 
     return {
       success: true,
-      output: result,
+      output: resultContent + finalUrlInfo,
     };
   },
   isReadOnly: () => true,
@@ -293,18 +315,40 @@ Before using this tool, check if the URL points to an authenticated service (e.g
 // WebSearch Tool
 // ============================================================================
 
+interface SearchError {
+  type: string;
+  message: string;
+  retryable: boolean;
+}
+
+interface SearchResult {
+  success: boolean;
+  results: Array<{ title: string; url: string; description: string }>;
+  source: 'duckduckgo';
+  error?: SearchError;
+}
+
 /** DuckDuckGo search (free, no API key required) */
-async function duckDuckGoSearch(query: string, limit: number): Promise<Array<{ title: string; url: string; description: string }>> {
+async function duckDuckGoSearch(query: string, limit: number): Promise<SearchResult> {
   try {
     const searchUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
     const response = await fetch(searchUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; OpenHorse/0.1.4)',
+        'User-Agent': 'Mozilla/5.0 (compatible; OpenHorse/0.1.5)',
       },
     });
 
     if (!response.ok) {
-      throw new Error(`Search failed: HTTP ${response.status}`);
+      return {
+        success: false,
+        results: [],
+        source: 'duckduckgo',
+        error: {
+          type: 'SEARCH_ENGINE_UNAVAILABLE',
+          message: `HTTP ${response.status}: ${response.statusText}`,
+          retryable: response.status >= 500 || response.status === 429,
+        },
+      };
     }
 
     const html = await response.text();
@@ -334,9 +378,19 @@ async function duckDuckGoSearch(query: string, limit: number): Promise<Array<{ t
       count++;
     }
 
-    return results;
+    return { success: true, results, source: 'duckduckgo' };
   } catch (err: any) {
-    throw new Error(`DuckDuckGo search error: ${err.message}`);
+    // Issue #19 修复：返回结构化错误信息
+    return {
+      success: false,
+      results: [],
+      source: 'duckduckgo',
+      error: {
+        type: 'SEARCH_ENGINE_UNAVAILABLE',
+        message: err.message,
+        retryable: true,  // 网络错误通常可重试
+      },
+    };
   }
 }
 
@@ -399,21 +453,26 @@ You MUST include the Sources section with markdown hyperlinks in your response.`
       return { success: false, output: '', error: 'Query must be at least 2 characters' };
     }
 
-    try {
-      const results = await duckDuckGoSearch(query, limit);
-      const output = formatSearchResults(results, query);
+    // Issue #19 修复：返回结构化结果
+    const result = await duckDuckGoSearch(query, limit);
 
-      return {
-        success: true,
-        output,
-      };
-    } catch (err: any) {
+    if (!result.success) {
+      // 返回结构化错误信息
       return {
         success: false,
         output: '',
-        error: err.message,
+        error: result.error ? JSON.stringify(result.error) : 'Search failed',
+        metadata: { source: result.source, count: 0 },
       };
     }
+
+    const output = formatSearchResults(result.results, query);
+
+    return {
+      success: true,
+      output,
+      metadata: { source: result.source, count: result.results.length },
+    };
   },
   isReadOnly: () => true,
   isConcurrencySafe: () => true,
