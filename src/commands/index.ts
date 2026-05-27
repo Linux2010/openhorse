@@ -31,6 +31,7 @@ import {
   type SessionMessage,
   type ToolCallRecord,
 } from '../services/session-storage';
+import { getAutoCompact } from '../services/compact/auto-compact';
 
 // ============================================================================
 // 颜色常量
@@ -899,6 +900,47 @@ function handleClearHistory(ctx: CommandContext): CommandResult {
   return { success: true };
 }
 
+async function handleCompact(ctx: CommandContext, args: string): Promise<CommandResult> {
+  const history = ctx.store.getSnapshot().conversationHistory;
+
+  if (history.length === 0) {
+    console.log(DIM('Conversation history is empty, nothing to compact'));
+    console.log();
+    return { success: true };
+  }
+
+  // 解析参数
+  const thresholdArg = parseInt(args.trim(), 10);
+  const threshold = thresholdArg > 0 ? thresholdArg : 50;
+
+  console.log();
+  console.log(HEADER('Compacting Conversation'));
+  console.log(DIM('─'.repeat(40)));
+  console.log(`  Current messages: ${history.length}`);
+  console.log(`  Threshold: ${threshold}`);
+  console.log();
+
+  try {
+    const autoCompact = getAutoCompact({ threshold });
+    const compacted = await autoCompact.forceCompact(history);
+
+    // 更新 store
+    ctx.store.setState({ conversationHistory: compacted });
+
+    const reduction = history.length - compacted.length;
+    const percent = Math.round((reduction / history.length) * 100);
+
+    console.log(SUCCESS(`✔ Compacted ${history.length} → ${compacted.length} messages`));
+    console.log(DIM(`  Reduced by ${reduction} messages (${percent}%)`));
+    console.log();
+    return { success: true };
+  } catch (err: any) {
+    console.log(ERROR(`✗ Compact failed: ${err.message}`));
+    console.log();
+    return { success: false };
+  }
+}
+
 function handleUsage(ctx: CommandContext): CommandResult {
   console.log();
   console.log(HEADER('Usage Statistics'));
@@ -1129,6 +1171,13 @@ const COMMANDS: SlashCommand[] = [
     description: 'Clear conversation history (keep config)',
     type: 'builtin',
     execute: (ctx) => handleClearHistory(ctx),
+  },
+  {
+    name: 'compact',
+    description: 'Compact conversation history to reduce context size',
+    argumentHint: '[threshold]',
+    type: 'builtin',
+    execute: (ctx, args) => handleCompact(ctx, args),
   },
   {
     name: 'exit',
