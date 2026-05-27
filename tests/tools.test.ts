@@ -178,6 +178,38 @@ describe('exec_command tool', () => {
     const name = tool.userFacingName?.({ command: 'echo hello world' });
     expect(name).toBe('Exec echo hello world');
   });
+
+  // Issue #28: Output truncation tests
+  test('truncates large output with maxOutput parameter', async () => {
+    // Generate 100KB of output
+    const result = await tool.execute({
+      command: 'yes "test line" | head -2000',
+      maxOutput: 1024, // 1KB limit
+    }, ctx);
+    expect(result.success).toBe(true);
+    expect(result.output.length).toBeLessThan(1100); // Allow some overhead for truncation message
+    expect(result.output).toContain('[... output truncated');
+  });
+
+  test('default maxOutput is 50KB', async () => {
+    // Generate 60KB of output, should be truncated
+    const result = await tool.execute({
+      command: 'yes "test line for truncation test" | head -1500',
+    }, ctx);
+    expect(result.success).toBe(true);
+    // Default is 51200 bytes, output should be truncated
+    expect(result.output.length).toBeLessThan(52000);
+  });
+
+  test('does not truncate small output', async () => {
+    const result = await tool.execute({
+      command: 'echo "small output"',
+      maxOutput: 1024,
+    }, ctx);
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('small output');
+    expect(result.output).not.toContain('[... output truncated');
+  });
 });
 
 describe('executeTool', () => {

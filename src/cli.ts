@@ -440,10 +440,17 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
       }
       break;
     case '/':
-      // 显示命令面板
-      currentInput = '/';
-      showCommandPanel('');
-      redrawInputWithPrompt(currentInput);
+      // Issue #30 fix: 只在输入为空时触发命令面板（即 `/` 是第一个字符）
+      // 避免在 URL（http://）、路径（src/）、正则等场景误触发
+      if (currentInput === '') {
+        currentInput = '/';
+        showCommandPanel('');
+        redrawInputWithPrompt(currentInput);
+      } else {
+        // 正常添加 `/` 到输入
+        currentInput += '/';
+        redrawInputWithPrompt(currentInput);
+      }
       break;
     case '@':
       // 显示文件补全
@@ -569,11 +576,13 @@ async function handleInput(input: string) {
           // 命令完成后的输出已经在 cmd.execute 中处理
         }
       } else {
+        console.log();
         console.log(ERROR(`Unknown command: /${parsed.name}`));
         const suggestions = buildCommandSuggestions(parsed.name);
         if (suggestions.length > 0) {
           console.log(DIM(`Did you mean: ${suggestions.map(s => `/${s}`).join(', ')}?`));
         }
+        console.log();
       }
     } else {
       // 直接 chat - executeChat 有自己的 spinner 和流式输出
