@@ -36,6 +36,7 @@ import {
   getPendingCommand,
   clearPendingCommand,
   redrawInputWithPrompt,
+  resetRenderLength,
 } from './ui/command-panel';
 import {
   shouldEnterMultiline,
@@ -445,7 +446,10 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
       if (currentInput === '') {
         currentInput = '/';
         showCommandPanel('');
-        redrawInputWithPrompt(currentInput);
+        // 命令面板已渲染，光标已在正确位置
+        // 重置渲染长度并写入 `/` 符号
+        resetRenderLength();
+        process.stdout.write('/');
       } else {
         // 正常添加 `/` 到输入
         currentInput += '/';
