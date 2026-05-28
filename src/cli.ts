@@ -36,6 +36,7 @@ import {
   getPendingCommand,
   clearPendingCommand,
   redrawInputWithPrompt,
+  resetRenderLength,
 } from './ui/command-panel';
 import {
   shouldEnterMultiline,
@@ -81,6 +82,35 @@ const DIM = chalk.dim;
 const ERROR = chalk.red;
 const WARN = chalk.yellow;
 const SUCCESS = chalk.green;
+
+// ============================================================================
+// CLI Help
+// ============================================================================
+
+function showCliHelp(): void {
+  console.log();
+  console.log(BRAND('openhorse') + DIM(` v${VERSION}`));
+  console.log(DIM('  Universal Agent Harness Framework'));
+  console.log();
+  console.log(ACCENT('Usage:'));
+  console.log('  openhorse              Start interactive REPL');
+  console.log('  openhorse --help       Show this help message');
+  console.log('  openhorse --version    Show version');
+  console.log();
+  console.log(ACCENT('Options:'));
+  console.log('  -h, --help     Show help');
+  console.log('  -v, --version  Show version');
+  console.log();
+  console.log(ACCENT('Interactive Commands:'));
+  console.log('  /help          Show available slash commands');
+  console.log('  /status        Show system status');
+  console.log('  /model [name]  Show or change model');
+  console.log('  /chat <msg>    Send message to LLM');
+  console.log('  /exit          Exit the REPL');
+  console.log();
+  console.log(DIM('Type /help in REPL for full command list.'));
+  console.log();
+}
 
 // ============================================================================
 // 全局状态
@@ -411,10 +441,20 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
       }
       break;
     case '/':
-      // 显示命令面板
-      currentInput = '/';
-      showCommandPanel('');
-      redrawInputWithPrompt(currentInput);
+      // Issue #30 fix: 只在输入为空时触发命令面板（即 `/` 是第一个字符）
+      // 避免在 URL（http://）、路径（src/）、正则等场景误触发
+      if (currentInput === '') {
+        currentInput = '/';
+        showCommandPanel('');
+        // 命令面板已渲染，光标已在正确位置
+        // 重置渲染长度并写入 `/` 符号
+        resetRenderLength();
+        process.stdout.write('/');
+      } else {
+        // 正常添加 `/` 到输入
+        currentInput += '/';
+        redrawInputWithPrompt(currentInput);
+      }
       break;
     case '@':
       // 显示文件补全
@@ -540,11 +580,13 @@ async function handleInput(input: string) {
           // 命令完成后的输出已经在 cmd.execute 中处理
         }
       } else {
+        console.log();
         console.log(ERROR(`Unknown command: /${parsed.name}`));
         const suggestions = buildCommandSuggestions(parsed.name);
         if (suggestions.length > 0) {
           console.log(DIM(`Did you mean: ${suggestions.map(s => `/${s}`).join(', ')}?`));
         }
+        console.log();
       }
     } else {
       // 直接 chat - executeChat 有自己的 spinner 和流式输出
@@ -593,6 +635,17 @@ let rl: readline.Interface | null = null;
 // ============================================================================
 
 async function main(): Promise<void> {
+  // Parse command line arguments
+  const args = process.argv.slice(2);
+  if (args.includes('--help') || args.includes('-h')) {
+    showCliHelp();
+    process.exit(0);
+  }
+  if (args.includes('--version') || args.includes('-v')) {
+    console.log(`openhorse v${VERSION}`);
+    process.exit(0);
+  }
+
   ensureConfigDir();
   recordFirstStartTime();
 

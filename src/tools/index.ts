@@ -10,7 +10,7 @@
  * 使用 buildTool() 工厂模式。
  */
 
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, createReadStream } from 'fs';
 import { join, resolve, relative, extname } from 'path';
 import { createInterface } from 'readline';
@@ -31,6 +31,7 @@ import { MCP_TOOLS } from './mcp';
 import { TODO_TOOLS } from './todo';
 import { PLAN_TOOLS } from './plan';
 import { GIT_TOOLS } from './git';
+import { lspTools } from './lsp';
 import {
   assessCommandSecurity,
   isReadOnlyCommand,
@@ -53,6 +54,9 @@ export const TOOLS: OpenHorseTool[] = [
 
   // Git tools (P0 - Issue #18/#23)
   ...GIT_TOOLS,
+
+  // LSP tools (P0 - Phase 6)
+  ...lspTools,
 
   // Todo tools (P1)
   ...TODO_TOOLS,
@@ -159,7 +163,7 @@ export const TOOLS: OpenHorseTool[] = [
 
   buildTool({
     name: 'exec_command',
-    description: '执行一个 shell 命令。返回 stdout 和 stderr。',
+    description: '执行一个 shell 命令。返回 stdout 和 stderr。输出超过 maxOutput 会自动截断。',
     parameters: {
       type: 'object',
       properties: {
@@ -175,6 +179,10 @@ export const TOOLS: OpenHorseTool[] = [
           type: 'number',
           description: '超时时间 ms（可选，默认 30000）',
         },
+        maxOutput: {
+          type: 'number',
+          description: '最大输出字节数（可选，默认 51200 = 50KB，超出截断）',
+        },
       },
       required: ['command'],
     },
@@ -184,7 +192,7 @@ export const TOOLS: OpenHorseTool[] = [
       if (!command || typeof command !== 'string') {
         return { success: false, output: '', error: 'exec_command requires a command parameter' };
       }
-      return execCommand_(command, args.cwd as string | undefined, args.timeout as number | undefined);
+      return execCommand_(command, args.cwd as string | undefined, args.timeout as number | undefined, args.maxOutput as number | undefined);
     },
     isDestructive: (args) => {
       const cmd = (args.command as string) || '';
@@ -723,32 +731,95 @@ async function listFiles_(path: string, maxDepth?: number): Promise<ToolResult> 
   return { success: true, output: results.join('\n') };
 }
 
-async function execCommand_(command: string, cwd?: string, timeout?: number): Promise<ToolResult> {
+async function execCommand_(command: string, cwd?: string, timeout?: number, maxOutput?: number): Promise<ToolResult> {
   return new Promise((resolve) => {
     const workdir = cwd ? safePath(cwd) : process.cwd();
     const timeoutMs = timeout ?? 30000;
+    const maxBytes = maxOutput ?? 51200; // Default 50KB, Issue #28 fix
 
-    execFile('sh', ['-c', command], {
+    // Use spawn for streaming output with truncation support
+    const child = spawn('sh', ['-c', command], {
       cwd: workdir,
-      timeout: timeoutMs,
-      maxBuffer: 1024 * 1024,
-    }, (error, stdout, stderr) => {
-      const output = stdout.toString().trim();
-      const errOutput = stderr.toString().trim();
+    });
 
-      if (error) {
+    let stdoutData = '';
+    let stderrData = '';
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
+    let totalBytes = 0;
+
+    // Timeout handling
+    const timeoutId = setTimeout(() => {
+      child.kill();
+      resolve({
+        success: false,
+        output: stdoutData.slice(0, maxBytes),
+        error: `Command timed out after ${timeoutMs}ms`,
+      });
+    }, timeoutMs);
+
+    // Stream stdout with truncation
+    child.stdout.on('data', (data: Buffer) => {
+      if (!stdoutTruncated) {
+        const chunk = data.toString();
+        totalBytes += chunk.length;
+
+        if (totalBytes > maxBytes) {
+          stdoutTruncated = true;
+          stdoutData += chunk.slice(0, maxBytes - stdoutData.length);
+        } else {
+          stdoutData += chunk;
+        }
+      }
+    });
+
+    // Stream stderr with truncation
+    child.stderr.on('data', (data: Buffer) => {
+      if (!stderrTruncated && stderrData.length < maxBytes) {
+        const chunk = data.toString();
+        if (stderrData.length + chunk.length > maxBytes) {
+          stderrTruncated = true;
+          stderrData += chunk.slice(0, maxBytes - stderrData.length);
+        } else {
+          stderrData += chunk;
+        }
+      }
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(timeoutId);
+
+      const output = stdoutData.trim();
+      const errOutput = stderrData.trim();
+
+      // Add truncation notice if output was truncated
+      let finalOutput = output;
+      if (stdoutTruncated) {
+        finalOutput += '\n\n[... output truncated, exceeded 50KB limit]';
+      }
+
+      if (code !== 0) {
         resolve({
           success: false,
-          output: output || errOutput,
-          error: error.message || `Command exited with code ${error.code}`,
+          output: finalOutput || errOutput,
+          error: `Command exited with code ${code}`,
         });
       } else {
         resolve({
           success: true,
-          output: output || '(no output)',
-          error: errOutput || undefined,
+          output: finalOutput || '(no output)',
+          error: stderrTruncated ? errOutput + '\n\n[... stderr truncated]' : errOutput || undefined,
         });
       }
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(timeoutId);
+      resolve({
+        success: false,
+        output: '',
+        error: err.message,
+      });
     });
   });
 }
