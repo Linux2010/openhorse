@@ -208,30 +208,35 @@ function render(): void {
   lastPanelLines = lines;
   panelHeight = lines.length;
 
-  // 渲染：从当前位置向下画
+  // 使用更安全的渲染方式：保存光标位置，清除下方区域，写入面板，恢复光标
+  process.stdout.write('\x1b[s');  // 保存光标位置
+
+  // 清除从当前行到屏幕底部的内容（不移动光标）
+  process.stdout.write('\x1b[J');  // 清除从光标到屏幕底部
+
+  // 现在写入面板内容（光标在原位置）
   for (const line of lines) {
-    process.stdout.write('\x1b[B');  // 下移一行
-    process.stdout.write('\x1b[2K'); // 清除该行
-    process.stdout.write('\r' + line); // 写入内容
+    process.stdout.write('\n');     // 换行（更安全）
+    process.stdout.write('\r' + line);
   }
 
-  // 恢复光标到输入位置
-  process.stdout.write(`\x1b[${panelHeight}A`);
-  process.stdout.write('\r');
+  // 恢复光标到保存的位置
+  process.stdout.write('\x1b[u');
 }
 
 function clearPanel(): void {
   // 使用保存的行数清除
   const height = lastPanelLines.length || panelHeight;
   if (height > 0) {
-    // 下移并清除每一行
-    for (let i = 0; i < height; i++) {
-      process.stdout.write('\x1b[B');  // 下移一行
-      process.stdout.write('\x1b[2K'); // 清除整行
-    }
-    // 移回原位置
-    process.stdout.write(`\x1b[${height}A`);
-    process.stdout.write('\r');
+    // 保存当前光标位置
+    process.stdout.write('\x1b[s');
+
+    // 清除从光标到屏幕底部
+    process.stdout.write('\x1b[J');
+
+    // 恢复光标位置
+    process.stdout.write('\x1b[u');
+
     lastPanelLines = [];
     panelHeight = 0;
   }
