@@ -19,7 +19,7 @@ export async function listSessions(limit?: number): Promise<SDKSessionInfo[]> {
     const { listSessions: storageListSessions } = require('../services/session-storage');
     const sessions = storageListSessions(maxLimit);
 
-    return sessions.map(s => ({
+    return sessions.map((s: { id: string; createdAt: string; updatedAt: string; messageCount?: number; projectRoot?: string }) => ({
       id: s.id,
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
