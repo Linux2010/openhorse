@@ -5,9 +5,76 @@
  * WebSearch: Search the web for information
  *
  * v0.1.11: 工具失败透明反馈 - 搜索失败时告知用户失败源、切换后的源、重试次数
+ * Issue #32 #3.7: SSRF 拦截 - 拒绝访问内网地址 + Content-Length 上限
  */
 
 import { buildTool, type OpenHorseTool } from '../framework/tool';
+
+// ============================================================================
+// SSRF Protection - Issue #32 #3.7
+// ============================================================================
+
+/** 内网 IP 地址范围（禁止访问） */
+const BLOCKED_IP_PATTERNS = [
+  /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/,       // 127.x.x.x (localhost range)
+  /^10\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/,        // 10.x.x.x (private class A)
+  /^192\.168\.(\d{1,3})\.(\d{1,3})$/,             // 192.168.x.x (private class C)
+  /^169\.254\.(\d{1,3})\.(\d{1,3})$/,             // 169.254.x.x (link-local)
+  /^172\.(1[6-9]|2\d|3[01])\.(\d{1,3})\.(\d{1,3})$/, // 172.16-31.x.x (private class B)
+  /^0\.0\.0\.0$/,                                  // 0.0.0.0
+  /^::1$/,                                         // IPv6 localhost
+  /^fc[0-9a-f]{2}:/i,                              // IPv6 unique local
+  /^fe[8-9a-f][0-9a-f]:/i,                         // IPv6 link-local
+];
+
+/** 禁止访问的主机名 */
+const BLOCKED_HOSTNAMES = [
+  'localhost',
+  'localhost.localdomain',
+  'ip6-localhost',
+  'ip6-loopback',
+  'metadata.google.internal',    // GCP metadata server
+  'metadata',                     // Azure metadata
+  'kubernetes.default',           // K8s internal
+  'kubernetes.default.svc',
+];
+
+/** 最大响应内容长度 (10MB) */
+const MAX_CONTENT_LENGTH = 10 * 1024 * 1024;
+
+/**
+ * 检查 URL 是否为内网地址
+ * @param url - 要检查的 URL
+ * @returns 是否为安全的（非内网）地址
+ */
+function isUrlSafeForSSRF(url: string): { safe: boolean; reason?: string } {
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.toLowerCase();
+
+    // 检查禁止的主机名
+    if (BLOCKED_HOSTNAMES.includes(hostname)) {
+      return { safe: false, reason: `Blocked hostname: ${hostname}` };
+    }
+
+    // 检查内网 IP 模式
+    for (const pattern of BLOCKED_IP_PATTERNS) {
+      if (pattern.test(hostname)) {
+        return { safe: false, reason: `Blocked IP range: ${hostname}` };
+      }
+    }
+
+    // 检查以 .internal, .local, .localhost 结尾的主机名
+    if (hostname.endsWith('.internal') || hostname.endsWith('.local') || hostname.endsWith('.localhost')) {
+      return { safe: false, reason: `Blocked internal hostname: ${hostname}` };
+    }
+
+    return { safe: true };
+  } catch {
+    // URL 解析失败
+    return { safe: false, reason: 'Invalid URL format' };
+  }
+}
 
 // ============================================================================
 // WebFetch Tool
@@ -131,6 +198,17 @@ async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchRes
   const cached = cacheGet(url);
   if (cached) return { ...cached, url };
 
+  // Issue #32 #3.7: SSRF 检查
+  const ssrfCheck = isUrlSafeForSSRF(url);
+  if (!ssrfCheck.safe) {
+    return {
+      content: `SSRF blocked: ${ssrfCheck.reason}`,
+      code: 403,
+      contentType: 'text/plain',
+      errorType: 'SSRF_BLOCKED',
+    };
+  }
+
   try {
     // Issue #20 修复：启用 redirect: 'follow' 自动跟随重定向
     const response = await fetch(url, {
@@ -140,6 +218,17 @@ async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchRes
       },
       redirect: 'follow',  // 自动跟随重定向（最多 20 次，由 fetch 内置限制）
     });
+
+    // Issue #32 #3.7: Content-Length 检查
+    const contentLength = response.headers.get('content-length');
+    if (contentLength && parseInt(contentLength, 10) > MAX_CONTENT_LENGTH) {
+      return {
+        content: `Response too large: Content-Length ${contentLength} exceeds ${MAX_CONTENT_LENGTH} bytes`,
+        code: 413,
+        contentType: 'text/plain',
+        errorType: 'CONTENT_TOO_LARGE',
+      };
+    }
 
     const contentType = response.headers.get('content-type') || 'text/plain';
     const finalUrl = response.url;
@@ -266,6 +355,7 @@ Before using this tool, check if the URL points to an authenticated service (e.g
     const { content, code, contentType, url: finalUrl, redirects, errorType } = await fetchUrl(url);
 
     // Issue #20 修复：返回结构化结果
+    // Issue #32 #3.7: SSRF 和 Content-Length 错误处理
     if (code !== 200) {
       const errorInfo = {
         type: errorType || 'HTTP_ERROR',
@@ -274,6 +364,23 @@ Before using this tool, check if the URL points to an authenticated service (e.g
         url: finalUrl,
         redirects: redirects || [],
       };
+
+      // SSRF 或 Content-Length 错误时返回更详细的错误
+      if (errorType === 'SSRF_BLOCKED') {
+        return {
+          success: false,
+          output: '',
+          error: `Security policy blocked access to internal network address. ${content}`,
+        };
+      }
+      if (errorType === 'CONTENT_TOO_LARGE') {
+        return {
+          success: false,
+          output: '',
+          error: `Response exceeds maximum allowed size (${MAX_CONTENT_LENGTH} bytes). ${content}`,
+        };
+      }
+
       return {
         success: false,
         output: '',

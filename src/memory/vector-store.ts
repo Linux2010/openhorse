@@ -7,6 +7,7 @@
 import Database from 'better-sqlite3';
 import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
+import { createHash } from 'crypto';  // Issue #32 #3.4: 用于 hashProject
 import { getEmbeddingService, type EmbeddingConfig } from './embeddings';
 import type { MemoryEntry, MemoryType } from './types';
 
@@ -114,31 +115,53 @@ export class VectorStore {
     return this.initialized;
   }
 
-  /** Insert or update memory with embedding */
+  /** Insert or update memory with embedding - Issue #32 #3.3: 使用事务 */
   async upsert(entry: MemoryEntry, projectPath?: string): Promise<void> {
     const projectHash = projectPath ? this.hashProject(projectPath) : 'global';
 
-    // Insert/update memory record
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO memories (id, name, type, content, description, project, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    // Issue #32 #3.3: 使用事务确保 embed 失败时不写 memories 表
+    const upsertTransaction = this.db.transaction((data: {
+      name: string;
+      type: string;
+      content: string;
+      description: string;
+      projectHash: string;
+      createdAt: number;
+      updatedAt: number;
+    }) => {
+      // Insert/update memory record
+      const stmt = this.db.prepare(`
+        INSERT OR REPLACE INTO memories (id, name, type, content, description, project, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
 
-    stmt.run(
-      entry.name,
-      entry.name,
-      entry.type,
-      entry.content,
-      entry.description || entry.content.slice(0, 100),
-      projectHash,
-      entry.createdAt,
-      entry.updatedAt
-    );
+      stmt.run(
+        data.name,
+        data.name,
+        data.type,
+        data.content,
+        data.description,
+        data.projectHash,
+        data.createdAt,
+        data.updatedAt
+      );
+    });
 
-    // Generate and store embedding if vector search available
+    // Generate embedding first (before transaction)
     if (this.initialized) {
       try {
         const vector = await this.embeddingService.embed(entry.content);
+
+        // Now execute transaction with the data
+        upsertTransaction({
+          name: entry.name,
+          type: entry.type,
+          content: entry.content,
+          description: entry.description || entry.content.slice(0, 100),
+          projectHash,
+          createdAt: entry.createdAt,
+          updatedAt: entry.updatedAt,
+        });
 
         // Delete old vector if exists
         this.db.prepare('DELETE FROM memory_vectors WHERE memory_id = ?').run(entry.name);
@@ -155,7 +178,20 @@ export class VectorStore {
         );
       } catch (err: any) {
         console.warn(`[VectorStore] Failed to store embedding: ${err.message}`);
+        // embed 失败时不写入 memories 表（事务未执行）
+        throw err;
       }
+    } else {
+      // No vector search - just write memory
+      upsertTransaction({
+        name: entry.name,
+        type: entry.type,
+        content: entry.content,
+        description: entry.description || entry.content.slice(0, 100),
+        projectHash,
+        createdAt: entry.createdAt,
+        updatedAt: entry.updatedAt,
+      });
     }
   }
 
@@ -291,11 +327,10 @@ export class VectorStore {
     }));
   }
 
-  /** Hash project path */
+  /** Hash project path - Issue #32 #3.4: 使用 SHA256 避免路径冲突 */
   private hashProject(projectPath: string): string {
-    // Simple hash for project identification
-    const hash = projectPath.split('/').slice(-2).join('/');
-    return hash;
+    // 使用 SHA256 生成唯一哈希，避免路径冲突
+    return createHash('sha256').update(projectPath).digest('hex').slice(0, 16);
   }
 
   /** Close database */

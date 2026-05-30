@@ -158,9 +158,15 @@ export class SseTransport extends BaseTransport {
     return url.toString();
   }
 
+  // Issue #32 #3.6: SSE 重连指数退避
   private attemptReconnect(): void {
     const maxAttempts = this.config.maxReconnectAttempts || 5;
-    const interval = this.config.reconnectInterval || 3000;
+
+    // 指数退避：3s → 6s → 12s → 24s → 48s
+    const baseInterval = 3000;
+    const exponentialBackoff = (attempt: number): number => {
+      return Math.min(baseInterval * Math.pow(2, attempt - 1), 48000);
+    };
 
     if (this.reconnectAttempts >= maxAttempts) {
       this.emitError(new Error('Max reconnect attempts reached'));
@@ -169,6 +175,8 @@ export class SseTransport extends BaseTransport {
 
     this.reconnectAttempts++;
     this.emit('reconnecting', this.reconnectAttempts);
+
+    const interval = exponentialBackoff(this.reconnectAttempts);
 
     setTimeout(() => {
       this.connect().catch(err => {
@@ -244,9 +252,15 @@ export class WebSocketTransport extends BaseTransport {
     this.ws.send(JSON.stringify(message));
   }
 
+  // Issue #32 #3.6: WebSocket 重连指数退避
   private attemptReconnect(): void {
     const maxAttempts = this.config.maxReconnectAttempts || 5;
-    const interval = this.config.reconnectInterval || 3000;
+
+    // 指数退避：3s → 6s → 12s → 24s → 48s
+    const baseInterval = 3000;
+    const exponentialBackoff = (attempt: number): number => {
+      return Math.min(baseInterval * Math.pow(2, attempt - 1), 48000);
+    };
 
     if (this.reconnectAttempts >= maxAttempts) {
       this.emitError(new Error('Max reconnect attempts reached'));
@@ -255,6 +269,8 @@ export class WebSocketTransport extends BaseTransport {
 
     this.reconnectAttempts++;
     this.emit('reconnecting', this.reconnectAttempts);
+
+    const interval = exponentialBackoff(this.reconnectAttempts);
 
     setTimeout(() => {
       this.connect().catch(err => {
