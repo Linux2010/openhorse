@@ -267,12 +267,13 @@ export function updateMemoryIndex(projectPath?: string): void {
     lines.push('', '> WARNING: MEMORY.md truncated. Keep index entries concise.');
   }
 
-  const content = lines.join('\n');
+  // Issue #32 修复：每次迭代重新计算 content
+  let content = lines.join('\n');
   if (content.length > MAX_ENTRYPOINT_BYTES) {
-    // Truncate by removing oldest entries
-    while (content.length > MAX_ENTRYPOINT_BYTES && lines.length > 10) {
+    while (lines.join('\n').length > MAX_ENTRYPOINT_BYTES && lines.length > 10) {
       lines.pop();
     }
+    lines.push('', '> WARNING: MEMORY.md truncated to fit size limit.');
   }
 
   atomicWriteFileSync(getEntrypointPath(projectPath), lines.join('\n'));

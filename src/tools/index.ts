@@ -746,7 +746,9 @@ async function execCommand_(command: string, cwd?: string, timeout?: number, max
     let stderrData = '';
     let stdoutTruncated = false;
     let stderrTruncated = false;
-    let totalBytes = 0;
+    // Issue #32 修复：使用独立计数器
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
 
     // Timeout handling
     const timeoutId = setTimeout(() => {
@@ -762,9 +764,9 @@ async function execCommand_(command: string, cwd?: string, timeout?: number, max
     child.stdout.on('data', (data: Buffer) => {
       if (!stdoutTruncated) {
         const chunk = data.toString();
-        totalBytes += chunk.length;
+        stdoutBytes += chunk.length;
 
-        if (totalBytes > maxBytes) {
+        if (stdoutBytes > maxBytes) {
           stdoutTruncated = true;
           stdoutData += chunk.slice(0, maxBytes - stdoutData.length);
         } else {
@@ -773,11 +775,13 @@ async function execCommand_(command: string, cwd?: string, timeout?: number, max
       }
     });
 
-    // Stream stderr with truncation
+    // Stream stderr with truncation (Issue #32 修复：使用独立计数器)
     child.stderr.on('data', (data: Buffer) => {
-      if (!stderrTruncated && stderrData.length < maxBytes) {
+      if (!stderrTruncated) {
         const chunk = data.toString();
-        if (stderrData.length + chunk.length > maxBytes) {
+        stderrBytes += chunk.length;
+
+        if (stderrBytes > maxBytes) {
           stderrTruncated = true;
           stderrData += chunk.slice(0, maxBytes - stderrData.length);
         } else {
