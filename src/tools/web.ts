@@ -3,6 +3,8 @@
  *
  * WebFetch: Fetch URL content and process with prompt
  * WebSearch: Search the web for information
+ *
+ * v0.1.11: 工具失败透明反馈 - 搜索失败时告知用户失败源、切换后的源、重试次数
  */
 
 import { buildTool, type OpenHorseTool } from '../framework/tool';
@@ -312,13 +314,15 @@ Before using this tool, check if the URL points to an authenticated service (e.g
 });
 
 // ============================================================================
-// WebSearch Tool
+// WebSearch Tool - v0.1.11 增强失败反馈
 // ============================================================================
 
 interface SearchError {
   type: string;
   message: string;
   retryable: boolean;
+  retryCount?: number;        // v0.1.11: 重试次数
+  switchedTo?: string;       // v0.1.11: 切换后的源
 }
 
 interface SearchResult {
@@ -326,72 +330,108 @@ interface SearchResult {
   results: Array<{ title: string; url: string; description: string }>;
   source: 'duckduckgo';
   error?: SearchError;
+  retryAttempts?: number;    // v0.1.11: 总重试次数
 }
 
-/** DuckDuckGo search (free, no API key required) */
-async function duckDuckGoSearch(query: string, limit: number): Promise<SearchResult> {
-  try {
-    const searchUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-    const response = await fetch(searchUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; OpenHorse/0.1.5)',
-      },
-    });
+interface SearchFallbackResult {
+  // v0.1.11: 当主搜索失败后尝试备用方法的结果
+  primaryFailed: boolean;
+  primaryError?: SearchError;
+  fallbackUsed?: string;
+  fallbackResults?: Array<{ title: string; url: string; description: string }>;
+}
 
-    if (!response.ok) {
-      return {
-        success: false,
-        results: [],
-        source: 'duckduckgo',
-        error: {
+/** DuckDuckGo search (free, no API key required) - v0.1.11 增强重试 */
+async function duckDuckGoSearch(query: string, limit: number, maxRetries: number = 3): Promise<SearchResult> {
+  let lastError: SearchError | undefined;
+  let retryCount = 0;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const searchUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+      const response = await fetch(searchUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; OpenHorse/0.1.5)',
+        },
+      });
+
+      if (!response.ok) {
+        lastError = {
           type: 'SEARCH_ENGINE_UNAVAILABLE',
           message: `HTTP ${response.status}: ${response.statusText}`,
           retryable: response.status >= 500 || response.status === 429,
-        },
-      };
-    }
+          retryCount: attempt + 1,
+        };
 
-    const html = await response.text();
-    const results: Array<{ title: string; url: string; description: string }> = [];
+        // Retry on server errors or rate limits
+        if (lastError.retryable && attempt < maxRetries - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+          retryCount++;
+          continue;
+        }
 
-    // Parse search results from HTML
-    const resultRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/g;
-    let match;
-    let count = 0;
-
-    while ((match = resultRegex.exec(html)) !== null && count < limit) {
-      const url = match[1];
-      const title = match[2].trim();
-
-      // DuckDuckGo redirects through their URL - extract actual URL
-      let actualUrl = url;
-      const uddgMatch = url.match(/uddg=([^&]+)/);
-      if (uddgMatch) {
-        actualUrl = decodeURIComponent(uddgMatch[1]);
+        return {
+          success: false,
+          results: [],
+          source: 'duckduckgo',
+          error: lastError,
+          retryAttempts: retryCount,
+        };
       }
 
-      results.push({
-        title,
-        url: actualUrl,
-        description: '',
-      });
-      count++;
-    }
+      const html = await response.text();
+      const results: Array<{ title: string; url: string; description: string }> = [];
 
-    return { success: true, results, source: 'duckduckgo' };
-  } catch (err: any) {
-    // Issue #19 修复：返回结构化错误信息
-    return {
-      success: false,
-      results: [],
-      source: 'duckduckgo',
-      error: {
+      // Parse search results from HTML
+      const resultRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/g;
+      let match;
+      let count = 0;
+
+      while ((match = resultRegex.exec(html)) !== null && count < limit) {
+        const url = match[1];
+        const title = match[2].trim();
+
+        // DuckDuckGo redirects through their URL - extract actual URL
+        let actualUrl = url;
+        const uddgMatch = url.match(/uddg=([^&]+)/);
+        if (uddgMatch) {
+          actualUrl = decodeURIComponent(uddgMatch[1]);
+        }
+
+        results.push({
+          title,
+          url: actualUrl,
+          description: '',
+        });
+        count++;
+      }
+
+      return { success: true, results, source: 'duckduckgo', retryAttempts: retryCount };
+    } catch (err: any) {
+      lastError = {
         type: 'SEARCH_ENGINE_UNAVAILABLE',
         message: err.message,
-        retryable: true,  // 网络错误通常可重试
-      },
-    };
+        retryable: true,
+        retryCount: attempt + 1,
+      };
+
+      // Retry on network errors
+      if (attempt < maxRetries - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+        retryCount++;
+        continue;
+      }
+    }
   }
+
+  // All retries exhausted
+  return {
+    success: false,
+    results: [],
+    source: 'duckduckgo',
+    error: lastError,
+    retryAttempts: retryCount,
+  };
 }
 
 /** Format search results */
@@ -453,25 +493,49 @@ You MUST include the Sources section with markdown hyperlinks in your response.`
       return { success: false, output: '', error: 'Query must be at least 2 characters' };
     }
 
-    // Issue #19 修复：返回结构化结果
-    const result = await duckDuckGoSearch(query, limit);
+    // v0.1.11: 使用增强的重试版本
+    const result = await duckDuckGoSearch(query, limit, 3);
 
     if (!result.success) {
-      // 返回结构化错误信息
+      // v0.1.11: 返回详细的失败信息
+      const errorInfo = result.error!;
+      const detailedError = {
+        type: errorInfo.type,
+        source: 'duckduckgo',
+        message: errorInfo.message,
+        retryCount: result.retryAttempts || 0,
+        suggestion: 'Try again later or use a different search query',
+      };
+
+      // 生成用户友好的错误消息
+      const userMessage = [
+        `⚠ Search failed: ${errorInfo.message}`,
+        `  Source: DuckDuckGo`,
+        `  Retry attempts: ${result.retryAttempts || 0}`,
+        '',
+        'Results may be incomplete. Consider:',
+        '  - Using a simpler query',
+        '  - Waiting a few seconds and retrying',
+      ].join('\n');
+
       return {
         success: false,
-        output: '',
-        error: result.error ? JSON.stringify(result.error) : 'Search failed',
-        metadata: { source: result.source, count: 0 },
+        output: userMessage,
+        error: JSON.stringify(detailedError),
+        metadata: { source: 'duckduckgo', count: 0, retries: result.retryAttempts },
       };
     }
 
-    const output = formatSearchResults(result.results, query);
+    // v0.1.11: 如果有重试，添加提示
+    let output = formatSearchResults(result.results, query);
+    if (result.retryAttempts && result.retryAttempts > 0) {
+      output = `ℹ Search completed after ${result.retryAttempts} retries\n\n${output}`;
+    }
 
     return {
       success: true,
       output,
-      metadata: { source: result.source, count: result.results.length },
+      metadata: { source: result.source, count: result.results.length, retries: result.retryAttempts },
     };
   },
   isReadOnly: () => true,

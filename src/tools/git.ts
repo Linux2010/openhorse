@@ -2,6 +2,7 @@
  * openhorse - Git 工具
  *
  * Issue #18/#23 修复：安全执行 git push，自动验证 git status
+ * v0.1.11: Git 操作验证 - push 后自动验证工作区状态，未追踪文件警告
  *
  * 提供：
  *   - git_status: 检查工作区状态
@@ -274,10 +275,23 @@ Issue #18/#23 修复：不再在未验证的情况下声称成功。`,
     }
     log.push('  ✓ Push completed');
 
-    // 6. 验证最终状态
+    // 6. 验证最终状态（v0.1.11 增强）
     log.push('✅ Verifying final status...');
     const finalChanges = await checkUncommittedChanges();
     const logResult = await execGit('log --oneline -1', cwd);
+    const untrackedResult = await execGit('status --short', cwd);
+
+    // v0.1.11: 检查是否有未追踪文件（?? 状态）
+    const untrackedFiles = untrackedResult.output
+      .split('\n')
+      .filter(line => line.startsWith('??'))
+      .map(line => line.slice(3).trim());
+
+    if (untrackedFiles.length > 0) {
+      log.push(`  ⚠ Warning: ${untrackedFiles.length} untracked files not added to commit`);
+      log.push(`  Files: ${untrackedFiles.slice(0, 5).join(', ')}${untrackedFiles.length > 5 ? '...' : ''}`);
+      log.push('  Consider using git add to track these files before next push');
+    }
 
     if (finalChanges.hasChanges) {
       log.push(`  ⚠ Warning: ${finalChanges.files.length} files still uncommitted after push`);
