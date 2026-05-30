@@ -2,6 +2,8 @@
  * openhorse - 命令面板组件
  *
  * 交互式 slash 命令选择面板，支持 ↑↓ 导航、实时过滤、Enter 选择。
+ *
+ * Issue #32 #3.11: SIGWINCH 终端大小调整 + NO_COLOR 环境变量支持
  */
 
 import chalk from 'chalk';
@@ -9,13 +11,48 @@ import { findCommand, getCommands } from '../commands/index';
 import type { SlashCommand } from '../commands/types';
 
 // ============================================================================
-// 颜色常量
+// 颜色常量 - Issue #32 #3.11: NO_COLOR 支持
 // ============================================================================
 
-const ACCENT = chalk.hex('#00D4AA');
-const BRAND = chalk.hex('#FF6B35');
-const DIM = chalk.dim;
-const SELECTED = chalk.bgHex('#1E293B').hex('#E2E8F0');
+// 检查 NO_COLOR 环境变量（https://no-color.org/）
+const NO_COLOR = process.env.NO_COLOR !== undefined || process.env.TERM === 'dumb';
+
+// 如果 NO_COLOR 设置，使用无颜色的 chalk
+const colorize = NO_COLOR ? {
+  accent: (s: string) => s,
+  brand: (s: string) => s,
+  dim: (s: string) => s,
+  selected: (s: string) => s,
+} : {
+  accent: chalk.hex('#00D4AA'),
+  brand: chalk.hex('#FF6B35'),
+  dim: chalk.dim,
+  selected: chalk.bgHex('#1E293B').hex('#E2E8F0'),
+};
+
+const ACCENT = colorize.accent;
+const BRAND = colorize.brand;
+const DIM = colorize.dim;
+const SELECTED = colorize.selected;
+
+// ============================================================================
+// SIGWINCH 处理 - Issue #32 #3.11
+// ============================================================================
+
+let terminalWidth = process.stdout.columns || 80;
+let terminalHeight = process.stdout.rows || 24;
+
+// 监听终端大小变化
+if (process.stdout.isTTY) {
+  process.stdout.on('resize', () => {
+    terminalWidth = process.stdout.columns || 80;
+    terminalHeight = process.stdout.rows || 24;
+    // 如果面板可见，重新渲染
+    if (state.visible) {
+      render();
+    }
+  });
+}
 
 // ============================================================================
 // 状态管理
@@ -166,7 +203,7 @@ function render(): void {
     return;
   }
 
-  const terminalWidth = process.stdout.columns || 80;
+  // Issue #32 #3.11: 使用动态终端宽度
   const innerWidth = Math.min(terminalWidth - 4, 60);
 
   const lines: string[] = [];
@@ -248,9 +285,9 @@ let lastRenderLength = 0;
 /**
  * 重绘输入行（带 prompt）
  * Issue #26 修复：正确清除多行输入的重影
+ * Issue #32 #3.11: 使用动态终端宽度
  */
 export function redrawInputWithPrompt(input: string, modeIndicator: string = ''): void {
-  const terminalWidth = process.stdout.columns || 80;
   const prompt = ACCENT('❯ ') + (modeIndicator ? DIM(modeIndicator) : '');
   const promptLength = stripAnsi(prompt).length;
 
