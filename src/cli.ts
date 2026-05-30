@@ -363,6 +363,15 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
           const fullInput = getMultilineInput();
           resetMultiline();
           if (fullInput.trim()) {
+            // 回显多行输入
+            process.stdout.write('\x1b[2K\r');
+            const lines = fullInput.split('\n');
+            for (const line of lines) {
+              console.log(DIM('  ') + line);
+            }
+
+            // Issue #32 fix: 重置渲染长度，防止后续 redrawInputWithPrompt 清除用户输入
+            resetRenderLength();
             handleInput(fullInput);
             addToInputHistory(fullInput);
             inputHistory = getInputHistory();
@@ -384,6 +393,14 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
 
       // 正常发送输入
       if (currentInput.trim()) {
+        // 先清除输入行的 prompt，然后打印用户输入（保存到终端历史）
+        process.stdout.write('\x1b[2K\r');  // 清除当前 prompt 行
+        console.log(ACCENT('❯ ') + currentInput);  // 回显用户输入
+
+        // Issue #32 fix: 重置渲染长度，防止后续 redrawInputWithPrompt 清除用户输入行
+        // 因为 console.log 打印后光标在新行，redrawInputWithPrompt 会从当前位置向上清除
+        resetRenderLength();
+
         handleInput(currentInput);
         addToInputHistory(currentInput);
         inputHistory = getInputHistory();

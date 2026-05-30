@@ -281,36 +281,43 @@ function clearPanel(): void {
 
 /** 上次渲染的长度（用于计算清除行数） */
 let lastRenderLength = 0;
+/** 是否是首次渲染（首次不清除） */
+let isFirstRender = true;
 
 /**
  * 重绘输入行（带 prompt）
  * Issue #26 修复：正确清除多行输入的重影
  * Issue #32 #3.11: 使用动态终端宽度
+ * v0.1.11: 首次渲染跳过清除，避免 ANSI 码与初始化消息冲突
  */
 export function redrawInputWithPrompt(input: string, modeIndicator: string = ''): void {
   const prompt = ACCENT('❯ ') + (modeIndicator ? DIM(modeIndicator) : '');
   const promptLength = stripAnsi(prompt).length;
 
-  // 计算上次渲染占用的行数
-  const lastTotalLength = promptLength + lastRenderLength;
-  const lastLines = Math.max(1, Math.ceil(lastTotalLength / terminalWidth));
+  // 首次渲染跳过清除操作，直接绘制 prompt
+  if (!isFirstRender) {
+    // 计算上次渲染占用的行数
+    const lastTotalLength = promptLength + lastRenderLength;
+    const lastLines = Math.max(1, Math.ceil(lastTotalLength / terminalWidth));
 
-  // 清除上次渲染的所有行
-  for (let i = 0; i < lastLines; i++) {
-    process.stdout.write('\x1b[2K');  // 清除整行
-    if (i < lastLines - 1) {
-      process.stdout.write('\x1b[1A');  // 上移一行
+    // 清除上次渲染的所有行
+    for (let i = 0; i < lastLines; i++) {
+      process.stdout.write('\x1b[2K');  // 清除整行
+      if (i < lastLines - 1) {
+        process.stdout.write('\x1b[1A');  // 上移一行
+      }
     }
-  }
 
-  // 移到行首
-  process.stdout.write('\r');
+    // 移到行首
+    process.stdout.write('\r');
+  }
 
   // 绘制新的输入
   process.stdout.write(prompt + input);
 
   // 记录当前长度
   lastRenderLength = input.length;
+  isFirstRender = false;
 }
 
 /**
@@ -318,6 +325,7 @@ export function redrawInputWithPrompt(input: string, modeIndicator: string = '')
  */
 export function resetRenderLength(): void {
   lastRenderLength = 0;
+  isFirstRender = true;
 }
 
 /**
