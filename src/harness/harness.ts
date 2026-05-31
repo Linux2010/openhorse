@@ -261,10 +261,18 @@ export class HarnessEngine extends EventEmitter {
     try {
       taskResult = await this.executeWithTimeout(agent.execute(task), this.config.timeout);
       context.steps++;
-    } catch (error: any) {
+    } catch (error: unknown) {
+      // Issue #32 #2.3: 安全地处理未知错误类型
+      const errorMessage = error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+          ? error
+          : error && typeof error === 'object' && 'message' in error
+            ? String((error as Record<string, unknown>).message)
+            : 'Execution failed';
       taskResult = {
         success: false,
-        error: error.message ?? 'Execution failed',
+        error: errorMessage,
         duration: Date.now() - context.startedAt,
       };
     }

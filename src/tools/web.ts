@@ -3,9 +3,78 @@
  *
  * WebFetch: Fetch URL content and process with prompt
  * WebSearch: Search the web for information
+ *
+ * v0.1.11: 工具失败透明反馈 - 搜索失败时告知用户失败源、切换后的源、重试次数
+ * Issue #32 #3.7: SSRF 拦截 - 拒绝访问内网地址 + Content-Length 上限
  */
 
 import { buildTool, type OpenHorseTool } from '../framework/tool';
+
+// ============================================================================
+// SSRF Protection - Issue #32 #3.7
+// ============================================================================
+
+/** 内网 IP 地址范围（禁止访问） */
+const BLOCKED_IP_PATTERNS = [
+  /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/,       // 127.x.x.x (localhost range)
+  /^10\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/,        // 10.x.x.x (private class A)
+  /^192\.168\.(\d{1,3})\.(\d{1,3})$/,             // 192.168.x.x (private class C)
+  /^169\.254\.(\d{1,3})\.(\d{1,3})$/,             // 169.254.x.x (link-local)
+  /^172\.(1[6-9]|2\d|3[01])\.(\d{1,3})\.(\d{1,3})$/, // 172.16-31.x.x (private class B)
+  /^0\.0\.0\.0$/,                                  // 0.0.0.0
+  /^::1$/,                                         // IPv6 localhost
+  /^fc[0-9a-f]{2}:/i,                              // IPv6 unique local
+  /^fe[8-9a-f][0-9a-f]:/i,                         // IPv6 link-local
+];
+
+/** 禁止访问的主机名 */
+const BLOCKED_HOSTNAMES = [
+  'localhost',
+  'localhost.localdomain',
+  'ip6-localhost',
+  'ip6-loopback',
+  'metadata.google.internal',    // GCP metadata server
+  'metadata',                     // Azure metadata
+  'kubernetes.default',           // K8s internal
+  'kubernetes.default.svc',
+];
+
+/** 最大响应内容长度 (10MB) */
+const MAX_CONTENT_LENGTH = 10 * 1024 * 1024;
+
+/**
+ * 检查 URL 是否为内网地址
+ * @param url - 要检查的 URL
+ * @returns 是否为安全的（非内网）地址
+ */
+function isUrlSafeForSSRF(url: string): { safe: boolean; reason?: string } {
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.toLowerCase();
+
+    // 检查禁止的主机名
+    if (BLOCKED_HOSTNAMES.includes(hostname)) {
+      return { safe: false, reason: `Blocked hostname: ${hostname}` };
+    }
+
+    // 检查内网 IP 模式
+    for (const pattern of BLOCKED_IP_PATTERNS) {
+      if (pattern.test(hostname)) {
+        return { safe: false, reason: `Blocked IP range: ${hostname}` };
+      }
+    }
+
+    // 检查以 .internal, .local, .localhost 结尾的主机名
+    if (hostname.endsWith('.internal') || hostname.endsWith('.local') || hostname.endsWith('.localhost')) {
+      return { safe: false, reason: `Blocked internal hostname: ${hostname}` };
+    }
+
+    return { safe: true };
+  } catch {
+    // URL 解析失败
+    return { safe: false, reason: 'Invalid URL format' };
+  }
+}
 
 // ============================================================================
 // WebFetch Tool
@@ -129,6 +198,17 @@ async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchRes
   const cached = cacheGet(url);
   if (cached) return { ...cached, url };
 
+  // Issue #32 #3.7: SSRF 检查
+  const ssrfCheck = isUrlSafeForSSRF(url);
+  if (!ssrfCheck.safe) {
+    return {
+      content: `SSRF blocked: ${ssrfCheck.reason}`,
+      code: 403,
+      contentType: 'text/plain',
+      errorType: 'SSRF_BLOCKED',
+    };
+  }
+
   try {
     // Issue #20 修复：启用 redirect: 'follow' 自动跟随重定向
     const response = await fetch(url, {
@@ -138,6 +218,17 @@ async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchRes
       },
       redirect: 'follow',  // 自动跟随重定向（最多 20 次，由 fetch 内置限制）
     });
+
+    // Issue #32 #3.7: Content-Length 检查
+    const contentLength = response.headers.get('content-length');
+    if (contentLength && parseInt(contentLength, 10) > MAX_CONTENT_LENGTH) {
+      return {
+        content: `Response too large: Content-Length ${contentLength} exceeds ${MAX_CONTENT_LENGTH} bytes`,
+        code: 413,
+        contentType: 'text/plain',
+        errorType: 'CONTENT_TOO_LARGE',
+      };
+    }
 
     const contentType = response.headers.get('content-type') || 'text/plain';
     const finalUrl = response.url;
@@ -264,6 +355,7 @@ Before using this tool, check if the URL points to an authenticated service (e.g
     const { content, code, contentType, url: finalUrl, redirects, errorType } = await fetchUrl(url);
 
     // Issue #20 修复：返回结构化结果
+    // Issue #32 #3.7: SSRF 和 Content-Length 错误处理
     if (code !== 200) {
       const errorInfo = {
         type: errorType || 'HTTP_ERROR',
@@ -272,6 +364,23 @@ Before using this tool, check if the URL points to an authenticated service (e.g
         url: finalUrl,
         redirects: redirects || [],
       };
+
+      // SSRF 或 Content-Length 错误时返回更详细的错误
+      if (errorType === 'SSRF_BLOCKED') {
+        return {
+          success: false,
+          output: '',
+          error: `Security policy blocked access to internal network address. ${content}`,
+        };
+      }
+      if (errorType === 'CONTENT_TOO_LARGE') {
+        return {
+          success: false,
+          output: '',
+          error: `Response exceeds maximum allowed size (${MAX_CONTENT_LENGTH} bytes). ${content}`,
+        };
+      }
+
       return {
         success: false,
         output: '',
@@ -312,13 +421,15 @@ Before using this tool, check if the URL points to an authenticated service (e.g
 });
 
 // ============================================================================
-// WebSearch Tool
+// WebSearch Tool - v0.1.11 增强失败反馈
 // ============================================================================
 
 interface SearchError {
   type: string;
   message: string;
   retryable: boolean;
+  retryCount?: number;        // v0.1.11: 重试次数
+  switchedTo?: string;       // v0.1.11: 切换后的源
 }
 
 interface SearchResult {
@@ -326,72 +437,108 @@ interface SearchResult {
   results: Array<{ title: string; url: string; description: string }>;
   source: 'duckduckgo';
   error?: SearchError;
+  retryAttempts?: number;    // v0.1.11: 总重试次数
 }
 
-/** DuckDuckGo search (free, no API key required) */
-async function duckDuckGoSearch(query: string, limit: number): Promise<SearchResult> {
-  try {
-    const searchUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-    const response = await fetch(searchUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; OpenHorse/0.1.5)',
-      },
-    });
+interface SearchFallbackResult {
+  // v0.1.11: 当主搜索失败后尝试备用方法的结果
+  primaryFailed: boolean;
+  primaryError?: SearchError;
+  fallbackUsed?: string;
+  fallbackResults?: Array<{ title: string; url: string; description: string }>;
+}
 
-    if (!response.ok) {
-      return {
-        success: false,
-        results: [],
-        source: 'duckduckgo',
-        error: {
+/** DuckDuckGo search (free, no API key required) - v0.1.11 增强重试 */
+async function duckDuckGoSearch(query: string, limit: number, maxRetries: number = 3): Promise<SearchResult> {
+  let lastError: SearchError | undefined;
+  let retryCount = 0;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const searchUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+      const response = await fetch(searchUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; OpenHorse/0.1.5)',
+        },
+      });
+
+      if (!response.ok) {
+        lastError = {
           type: 'SEARCH_ENGINE_UNAVAILABLE',
           message: `HTTP ${response.status}: ${response.statusText}`,
           retryable: response.status >= 500 || response.status === 429,
-        },
-      };
-    }
+          retryCount: attempt + 1,
+        };
 
-    const html = await response.text();
-    const results: Array<{ title: string; url: string; description: string }> = [];
+        // Retry on server errors or rate limits
+        if (lastError.retryable && attempt < maxRetries - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+          retryCount++;
+          continue;
+        }
 
-    // Parse search results from HTML
-    const resultRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/g;
-    let match;
-    let count = 0;
-
-    while ((match = resultRegex.exec(html)) !== null && count < limit) {
-      const url = match[1];
-      const title = match[2].trim();
-
-      // DuckDuckGo redirects through their URL - extract actual URL
-      let actualUrl = url;
-      const uddgMatch = url.match(/uddg=([^&]+)/);
-      if (uddgMatch) {
-        actualUrl = decodeURIComponent(uddgMatch[1]);
+        return {
+          success: false,
+          results: [],
+          source: 'duckduckgo',
+          error: lastError,
+          retryAttempts: retryCount,
+        };
       }
 
-      results.push({
-        title,
-        url: actualUrl,
-        description: '',
-      });
-      count++;
-    }
+      const html = await response.text();
+      const results: Array<{ title: string; url: string; description: string }> = [];
 
-    return { success: true, results, source: 'duckduckgo' };
-  } catch (err: any) {
-    // Issue #19 修复：返回结构化错误信息
-    return {
-      success: false,
-      results: [],
-      source: 'duckduckgo',
-      error: {
+      // Parse search results from HTML
+      const resultRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/g;
+      let match;
+      let count = 0;
+
+      while ((match = resultRegex.exec(html)) !== null && count < limit) {
+        const url = match[1];
+        const title = match[2].trim();
+
+        // DuckDuckGo redirects through their URL - extract actual URL
+        let actualUrl = url;
+        const uddgMatch = url.match(/uddg=([^&]+)/);
+        if (uddgMatch) {
+          actualUrl = decodeURIComponent(uddgMatch[1]);
+        }
+
+        results.push({
+          title,
+          url: actualUrl,
+          description: '',
+        });
+        count++;
+      }
+
+      return { success: true, results, source: 'duckduckgo', retryAttempts: retryCount };
+    } catch (err: any) {
+      lastError = {
         type: 'SEARCH_ENGINE_UNAVAILABLE',
         message: err.message,
-        retryable: true,  // 网络错误通常可重试
-      },
-    };
+        retryable: true,
+        retryCount: attempt + 1,
+      };
+
+      // Retry on network errors
+      if (attempt < maxRetries - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+        retryCount++;
+        continue;
+      }
+    }
   }
+
+  // All retries exhausted
+  return {
+    success: false,
+    results: [],
+    source: 'duckduckgo',
+    error: lastError,
+    retryAttempts: retryCount,
+  };
 }
 
 /** Format search results */
@@ -453,25 +600,49 @@ You MUST include the Sources section with markdown hyperlinks in your response.`
       return { success: false, output: '', error: 'Query must be at least 2 characters' };
     }
 
-    // Issue #19 修复：返回结构化结果
-    const result = await duckDuckGoSearch(query, limit);
+    // v0.1.11: 使用增强的重试版本
+    const result = await duckDuckGoSearch(query, limit, 3);
 
     if (!result.success) {
-      // 返回结构化错误信息
+      // v0.1.11: 返回详细的失败信息
+      const errorInfo = result.error!;
+      const detailedError = {
+        type: errorInfo.type,
+        source: 'duckduckgo',
+        message: errorInfo.message,
+        retryCount: result.retryAttempts || 0,
+        suggestion: 'Try again later or use a different search query',
+      };
+
+      // 生成用户友好的错误消息
+      const userMessage = [
+        `⚠ Search failed: ${errorInfo.message}`,
+        `  Source: DuckDuckGo`,
+        `  Retry attempts: ${result.retryAttempts || 0}`,
+        '',
+        'Results may be incomplete. Consider:',
+        '  - Using a simpler query',
+        '  - Waiting a few seconds and retrying',
+      ].join('\n');
+
       return {
         success: false,
-        output: '',
-        error: result.error ? JSON.stringify(result.error) : 'Search failed',
-        metadata: { source: result.source, count: 0 },
+        output: userMessage,
+        error: JSON.stringify(detailedError),
+        metadata: { source: 'duckduckgo', count: 0, retries: result.retryAttempts },
       };
     }
 
-    const output = formatSearchResults(result.results, query);
+    // v0.1.11: 如果有重试，添加提示
+    let output = formatSearchResults(result.results, query);
+    if (result.retryAttempts && result.retryAttempts > 0) {
+      output = `ℹ Search completed after ${result.retryAttempts} retries\n\n${output}`;
+    }
 
     return {
       success: true,
       output,
-      metadata: { source: result.source, count: result.results.length },
+      metadata: { source: result.source, count: result.results.length, retries: result.retryAttempts },
     };
   },
   isReadOnly: () => true,

@@ -32,10 +32,11 @@ export class Brain {
 
   /**
    * 提交任务
+   * Issue #32 修复：返回 Promise，正确 await dispatch
    */
-  submitTask(task: Task): void {
+  async submitTask(task: Task): Promise<void> {
     this.taskQueue.push(task);
-    this.dispatch();
+    await this.dispatch();
   }
 
   /**

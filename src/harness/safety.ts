@@ -86,6 +86,12 @@ const DEFAULT_POLICY: SafetyPolicy = {
 };
 
 // ============================================================================
+// Constants - Issue #32 #3.1: auditLog 上限
+// ============================================================================
+
+const MAX_AUDIT_LOG_ENTRIES = 1000;
+
+// ============================================================================
 // SafetyChecker - 安全边界检查器
 // ============================================================================
 
@@ -239,6 +245,11 @@ export class SafetyChecker extends EventEmitter {
   // ---- Internal ----
 
   private record(check: SafetyCheck & { action: string }): SafetyCheck {
+    // Issue #32 #3.1: 添加 auditLog 上限
+    if (this.auditLog.length >= MAX_AUDIT_LOG_ENTRIES) {
+      this.auditLog.shift();  // 移除最旧的条目
+    }
+
     this.auditLog.push({
       timestamp: Date.now(),
       action: check.action,

@@ -55,16 +55,34 @@ export class EmbeddingService {
     }
   }
 
-  /** Embed batch of texts */
-  async embedBatch(texts: string[]): Promise<number[][]> {
-    // Process in parallel with rate limiting
-    const results: number[][] = [];
+  /** Embed batch of texts - Issue #32 #3.5: 添加 AbortSignal 支持 */
+  async embedBatch(texts: string[], signal?: AbortSignal): Promise<number[][]> {
+    // Issue #32 #3.5: 使用 Promise.allSettled + AbortSignal
     const batchSize = 10;
+    const results: number[][] = [];
 
     for (let i = 0; i < texts.length; i += batchSize) {
+      // 检查 abort signal
+      if (signal?.aborted) {
+        throw new Error('Embedding batch aborted');
+      }
+
       const batch = texts.slice(i, i + batchSize);
-      const batchResults = await Promise.all(batch.map(t => this.embed(t)));
-      results.push(...batchResults);
+
+      // 使用 Promise.allSettled 确保部分失败不影响整体
+      const batchResults = await Promise.allSettled(
+        batch.map(t => this.embed(t))
+      );
+
+      for (const result of batchResults) {
+        if (result.status === 'fulfilled') {
+          results.push(result.value);
+        } else {
+          // 失败时使用零向量
+          console.warn(`[Embedding] Batch item failed: ${result.reason}`);
+          results.push(new Array(this.dimension).fill(0));
+        }
+      }
     }
 
     return results;

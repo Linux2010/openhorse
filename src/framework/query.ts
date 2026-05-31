@@ -182,10 +182,26 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
               error: `Tool ${tc.function.name} requires user confirmation.`,
             });
           } else {
-            result = await toolExecutor(tc.function.name, args);
+            // Issue #32 修复：添加 try/catch
+            try {
+              result = await toolExecutor(tc.function.name, args);
+            } catch (err: any) {
+              result = JSON.stringify({
+                success: false,
+                error: `Tool execution error: ${err.message}`,
+              });
+            }
           }
         } else {
-          result = await toolExecutor(tc.function.name, args);
+          // Issue #32 修复：添加 try/catch
+          try {
+            result = await toolExecutor(tc.function.name, args);
+          } catch (err: any) {
+            result = JSON.stringify({
+              success: false,
+              error: `Tool execution error: ${err.message}`,
+            });
+          }
         }
 
         const duration = Date.now() - start;
