@@ -1,5 +1,5 @@
 import { Brain } from '../src/core/brain';
-import { BaseAgent, Task, AgentConfig } from '../src/core/agent';
+import { BaseAgent, Task, AgentConfig, TaskResultData } from '../src/core/agent';
 import { MAX_ENTRYPOINT_BYTES } from '../src/memory/storage';
 
 // Mock agent for Brain tests
@@ -13,7 +13,9 @@ class MockAgent extends BaseAgent {
     });
   }
   async execute(task: Task) {
-    return { success: true, data: 'test result' };
+    // Issue #32 #2.4: 返回正确的 TaskResultData 类型
+    const data: TaskResultData = { kind: 'generic', value: 'test result' };
+    return { success: true, data };
   }
 }
 

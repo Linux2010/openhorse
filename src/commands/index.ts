@@ -561,8 +561,9 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
   // 流式 Markdown 渲染器
   let streamRenderer: StreamMarkdownRenderer | null = null;
 
-  const toolExecutor = async (name: string, args: Record<string, unknown>) => {
-    const result = await executeTool(name, args);
+  // Issue #32 #3.2: toolExecutor 支持 abortSignal
+  const toolExecutor = async (name: string, args: Record<string, unknown>, abortSignal?: AbortSignal) => {
+    const result = await executeTool(name, args, abortSignal);
     // 不在这里打印，让 tool_result 事件处理
     return result;
   };

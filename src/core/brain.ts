@@ -2,13 +2,23 @@
  * x-agent - 决策引擎
  *
  * 负责 Agent 的任务分配、优先级排序和调度
+ *
+ * Issue #32 #2.4: 类型安全重构
  */
 
-import { Task, BaseAgent } from './agent';
+import { Task, BaseAgent, AgentStatus } from './agent';
 
 export interface BrainConfig {
   strategy?: 'fifo' | 'priority' | 'capability';
   maxConcurrent?: number;
+}
+
+// Issue #32 #2.4: BrainStatus 显式类型
+export interface BrainStatus {
+  agents: AgentStatus[];
+  pendingTasks: number;
+  strategy: string;
+  lastError?: string;
 }
 
 export class Brain {
@@ -94,13 +104,13 @@ export class Brain {
   }
 
   /**
-   * 获取状态
+   * 获取状态 (Issue #32 #2.4: 显式类型)
    */
-  getStatus(): any {
+  getStatus(): BrainStatus {
     return {
       agents: Array.from(this.agents.values()).map(a => a.getStatus()),
       pendingTasks: this.taskQueue.length,
-      strategy: this.config.strategy,
+      strategy: this.config.strategy || 'priority',
     };
   }
 }

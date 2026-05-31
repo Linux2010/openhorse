@@ -186,13 +186,14 @@ export const TOOLS: OpenHorseTool[] = [
       },
       required: ['command'],
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
       // Ensure command is a valid string
       const command = args.command;
       if (!command || typeof command !== 'string') {
         return { success: false, output: '', error: 'exec_command requires a command parameter' };
       }
-      return execCommand_(command, args.cwd as string | undefined, args.timeout as number | undefined, args.maxOutput as number | undefined);
+      // Issue #32 #3.2: 传递 abortSignal
+      return execCommand_(command, args.cwd as string | undefined, args.timeout as number | undefined, args.maxOutput as number | undefined, context.abortSignal);
     },
     isDestructive: (args) => {
       const cmd = (args.command as string) || '';
@@ -731,7 +732,8 @@ async function listFiles_(path: string, maxDepth?: number): Promise<ToolResult> 
   return { success: true, output: results.join('\n') };
 }
 
-async function execCommand_(command: string, cwd?: string, timeout?: number, maxOutput?: number): Promise<ToolResult> {
+// Issue #32 #3.2: execCommand_ 支持 abortSignal
+async function execCommand_(command: string, cwd?: string, timeout?: number, maxOutput?: number, abortSignal?: AbortSignal): Promise<ToolResult> {
   return new Promise((resolve) => {
     const workdir = cwd ? safePath(cwd) : process.cwd();
     const timeoutMs = timeout ?? 30000;
@@ -749,15 +751,35 @@ async function execCommand_(command: string, cwd?: string, timeout?: number, max
     // Issue #32 修复：使用独立计数器
     let stdoutBytes = 0;
     let stderrBytes = 0;
+    let aborted = false;
 
-    // Timeout handling
-    const timeoutId = setTimeout(() => {
-      child.kill();
+    // Issue #32 #3.2: AbortSignal 处理
+    const abortHandler = () => {
+      aborted = true;
+      if (child.pid) {
+        child.kill('SIGTERM');
+      }
       resolve({
         success: false,
         output: stdoutData.slice(0, maxBytes),
-        error: `Command timed out after ${timeoutMs}ms`,
+        error: 'Command aborted by user',
       });
+    };
+
+    if (abortSignal) {
+      abortSignal.addEventListener('abort', abortHandler);
+    }
+
+    // Timeout handling
+    const timeoutId = setTimeout(() => {
+      if (!aborted) {
+        child.kill();
+        resolve({
+          success: false,
+          output: stdoutData.slice(0, maxBytes),
+          error: `Command timed out after ${timeoutMs}ms`,
+        });
+      }
     }, timeoutMs);
 
     // Stream stdout with truncation
@@ -792,6 +814,13 @@ async function execCommand_(command: string, cwd?: string, timeout?: number, max
 
     child.on('close', (code) => {
       clearTimeout(timeoutId);
+      // Issue #32 #3.2: 清理 abortSignal 监听器
+      if (abortSignal) {
+        abortSignal.removeEventListener('abort', abortHandler);
+      }
+
+      // 如果已被 abort，不再处理结果
+      if (aborted) return;
 
       const output = stdoutData.trim();
       const errOutput = stderrData.trim();
@@ -1080,8 +1109,9 @@ async function grep_(pattern: string, basePath?: string, globPattern?: string, c
 
 /**
  * 执行一个工具调用，返回结构化结果字符串
+ * Issue #32 #3.2: 支持 abortSignal
  */
-export async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
+export async function executeTool(name: string, args: Record<string, unknown>, abortSignal?: AbortSignal): Promise<string> {
   const tool = TOOLS.find(t => t.name === name);
   if (!tool) {
     return JSON.stringify({
@@ -1096,6 +1126,7 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
       name: 'openhorse',
       mode: 'development',
     },
+    abortSignal,  // Issue #32 #3.2: 透传 abortSignal
   };
 
   const result = await tool.execute(args, context);

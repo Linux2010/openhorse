@@ -26,10 +26,12 @@ export interface ToolResult {
   error?: string;
 }
 
-/** Context passed to tool execute and permission checks */
+/** Context passed to tool execute and permission checks
+ *  Issue #32 #3.2: 支持 abortSignal */
 export interface ToolContext {
   cwd: string;
   config: ToolConfig;
+  abortSignal?: AbortSignal;
 }
 
 /** Minimal config needed by tools */
