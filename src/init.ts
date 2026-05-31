@@ -123,14 +123,16 @@ export class Harness extends EventEmitter {
   preCheck(task: Task): HarnessVerdict {
     // 检查被禁止的操作
     if (this.config.blockedActions.length > 0 && task.params?.actions) {
-      const actions: string[] = task.params.actions;
-      const blocked = actions.filter(a => this.config.blockedActions.includes(a));
-      if (blocked.length > 0) {
-        return {
-          passed: false,
-          stage: 'pre-exec',
-          reason: `Blocked actions detected: ${blocked.join(', ')}`,
-        };
+      const actions = task.params.actions;
+      if (Array.isArray(actions) && actions.every(a => typeof a === 'string')) {
+        const blocked = (actions as string[]).filter(a => this.config.blockedActions.includes(a));
+        if (blocked.length > 0) {
+          return {
+            passed: false,
+            stage: 'pre-exec',
+            reason: `Blocked actions detected: ${blocked.join(', ')}`,
+          };
+        }
       }
     }
 
@@ -139,14 +141,16 @@ export class Harness extends EventEmitter {
       this.config.allowedActions[0] !== '*' &&
       task.params?.actions
     ) {
-      const actions: string[] = task.params.actions;
-      const disallowed = actions.filter(a => !this.config.allowedActions.includes(a));
-      if (disallowed.length > 0) {
-        return {
-          passed: false,
-          stage: 'pre-exec',
-          reason: `Actions not in whitelist: ${disallowed.join(', ')}`,
-        };
+      const actions = task.params.actions;
+      if (Array.isArray(actions) && actions.every(a => typeof a === 'string')) {
+        const disallowed = (actions as string[]).filter(a => !this.config.allowedActions.includes(a));
+        if (disallowed.length > 0) {
+          return {
+            passed: false,
+            stage: 'pre-exec',
+            reason: `Actions not in whitelist: ${disallowed.join(', ')}`,
+          };
+        }
       }
     }
 

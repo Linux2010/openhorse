@@ -39,8 +39,9 @@ export interface QueryParams {
   messages: Message[];
   /** Available tools */
   tools: OpenHorseTool[];
-  /** Tool executor: (name, args) => result string */
-  toolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>;
+  /** Tool executor: (name, args, abortSignal?) => result string
+   *  Issue #32 #3.2: 支持 abortSignal 透传 */
+  toolExecutor: (name: string, args: Record<string, unknown>, abortSignal?: AbortSignal) => Promise<string>;
   /** LLM service instance */
   llm: LLMService;
   /** Maximum turns (default: no limit, relies on safety mechanisms) */
@@ -182,9 +183,9 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
               error: `Tool ${tc.function.name} requires user confirmation.`,
             });
           } else {
-            // Issue #32 修复：添加 try/catch
+            // Issue #32 #3.2: 透传 abortSignal
             try {
-              result = await toolExecutor(tc.function.name, args);
+              result = await toolExecutor(tc.function.name, args, abortSignal);
             } catch (err: any) {
               result = JSON.stringify({
                 success: false,
@@ -193,9 +194,9 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
             }
           }
         } else {
-          // Issue #32 修复：添加 try/catch
+          // Issue #32 #3.2: 透传 abortSignal
           try {
-            result = await toolExecutor(tc.function.name, args);
+            result = await toolExecutor(tc.function.name, args, abortSignal);
           } catch (err: any) {
             result = JSON.stringify({
               success: false,

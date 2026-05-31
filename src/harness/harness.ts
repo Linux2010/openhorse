@@ -135,29 +135,33 @@ export class HarnessEngine extends EventEmitter {
 
     // 2. 检查被禁止的操作
     if (this.config.blockedActions.length > 0 && task.params?.actions) {
-      const actions: string[] = task.params.actions;
-      const blocked = actions.filter(a => this.config.blockedActions.includes(a));
-      if (blocked.length > 0) {
-        return {
-          passed: false,
-          stage: 'pre-exec',
-          reason: `Blocked actions detected: ${blocked.join(', ')}`,
-          suggestion: 'Remove blocked actions or update harness policy.',
-        };
+      const actions = task.params.actions;
+      if (Array.isArray(actions) && actions.every(a => typeof a === 'string')) {
+        const blocked = (actions as string[]).filter(a => this.config.blockedActions.includes(a));
+        if (blocked.length > 0) {
+          return {
+            passed: false,
+            stage: 'pre-exec',
+            reason: `Blocked actions detected: ${blocked.join(', ')}`,
+            suggestion: 'Remove blocked actions or update harness policy.',
+          };
+        }
       }
     }
 
     // 3. 白名单检查
     if (this.config.allowedActions[0] !== '*' && task.params?.actions) {
-      const actions: string[] = task.params.actions;
-      const disallowed = actions.filter(a => !this.config.allowedActions.includes(a));
-      if (disallowed.length > 0) {
-        return {
-          passed: false,
-          stage: 'pre-exec',
-          reason: `Actions not in whitelist: ${disallowed.join(', ')}`,
-          suggestion: 'Add actions to allowed list or use wildcard "*".',
-        };
+      const actions = task.params.actions;
+      if (Array.isArray(actions) && actions.every(a => typeof a === 'string')) {
+        const disallowed = (actions as string[]).filter(a => !this.config.allowedActions.includes(a));
+        if (disallowed.length > 0) {
+          return {
+            passed: false,
+            stage: 'pre-exec',
+            reason: `Actions not in whitelist: ${disallowed.join(', ')}`,
+            suggestion: 'Add actions to allowed list or use wildcard "*".',
+          };
+        }
       }
     }
 

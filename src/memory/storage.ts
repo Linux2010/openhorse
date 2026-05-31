@@ -14,6 +14,7 @@ import { createHash } from 'crypto';
 import type { MemoryEntry, MemoryType } from './types';
 import { getConfigHome } from '../services/config-dir';
 import { atomicWriteFileSync } from '../services/atomic-write';
+import { getVectorStore, type SearchResult } from './vector-store';  // Issue #32 #3.8
 
 // Re-export types for convenience
 export type { MemoryEntry, MemoryType } from './types';
@@ -306,4 +307,31 @@ export function searchMemories(query: string, projectPath?: string): MemoryEntry
 export function getMemoriesByType(type: MemoryType, projectPath?: string): MemoryEntry[] {
   const memories = loadAllMemories(projectPath);
   return memories.filter(mem => mem.type === type);
+}
+
+// Issue #32 #3.8: 异步搜索版本，利用 VectorStore 索引
+/**
+ * Async search using VectorStore index (faster for large memory sets).
+ * Falls back to synchronous search if VectorStore not initialized.
+ */
+export async function searchMemoriesAsync(query: string, projectPath?: string, limit: number = 50): Promise<MemoryEntry[]> {
+  try {
+    const store = getVectorStore();
+    if (store.isVectorSearchAvailable()) {
+      const results = await store.search(query, limit, projectPath);
+      // Convert SearchResult to MemoryEntry
+      return results.map(r => ({
+        name: r.name,
+        description: r.description || '',
+        type: r.type as MemoryType,
+        content: r.content,
+        createdAt: r.createdAt || 0,
+        updatedAt: r.createdAt || 0,
+      }));
+    }
+  } catch {
+    // VectorStore not available, fall back
+  }
+  // Fallback: synchronous search
+  return searchMemories(query, projectPath);
 }
