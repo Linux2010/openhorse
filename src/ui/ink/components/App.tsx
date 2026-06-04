@@ -224,7 +224,7 @@ export function App({ model: initialModel }: AppProps) {
     }
   }, [llm, history]);
 
-  // Keyboard input handler — multi-line with cursor (mirrors OpenClaude's useTextInput)
+  // Keyboard input handler — full readline shortcuts (mirrors OpenClaude's useTextInput)
   useInput((char: string, key: Key) => {
     // Ctrl+C to exit
     if (key.ctrl && char === 'c') {
@@ -249,8 +249,191 @@ export function App({ model: initialModel }: AppProps) {
       return;
     }
 
-    // Shift+Enter or Meta+Enter inserts newline (multi-line input)
-    if (key.return && (key.shift || key.meta)) {
+    // Helper: move cursor to start of current line
+    const startOfLine = () => {
+      const text = input;
+      const pos = cursorOffset;
+      for (let i = pos - 1; i >= 0; i--) {
+        if (text[i] === '\n') { setCursorOffset(i + 1); return; }
+      }
+      setCursorOffset(0);
+    };
+
+    // Helper: move cursor to end of current line
+    const endOfLine = () => {
+      const nlIdx = input.indexOf('\n', cursorOffset);
+      setCursorOffset(nlIdx === -1 ? input.length : nlIdx);
+    };
+
+    // Helper: move cursor to previous word boundary
+    const prevWord = () => {
+      let i = cursorOffset - 1;
+      if (i < 0) return setCursorOffset(0);
+      // Skip whitespace
+      while (i >= 0 && input[i] === ' ') i--;
+      // Skip word characters
+      while (i >= 0 && input[i] !== ' ' && input[i] !== '\n') i--;
+      setCursorOffset(i + 1);
+    };
+
+    // Helper: move cursor to next word boundary
+    const nextWord = () => {
+      let i = cursorOffset;
+      // Skip non-whitespace
+      while (i < input.length && input[i] !== ' ') i++;
+      // Skip whitespace
+      while (i < input.length && input[i] === ' ') i++;
+      setCursorOffset(i);
+    };
+
+    // Helper: delete word before cursor
+    const deleteWordBefore = () => {
+      let i = cursorOffset - 1;
+      if (i < 0) return;
+      while (i >= 0 && input[i] === ' ') i--;
+      const end = i + 1;
+      while (i >= 0 && input[i] !== ' ' && input[i] !== '\n') i--;
+      const start = i + 1;
+      const before = input.slice(0, start);
+      const after = input.slice(end);
+      setInput(before + after);
+      setCursorOffset(start);
+    };
+
+    // Helper: kill to end of line
+    const killToLineEnd = () => {
+      const nlIdx = input.indexOf('\n', cursorOffset);
+      const end = nlIdx === -1 ? input.length : nlIdx;
+      if (end > cursorOffset) {
+        const killed = input.slice(cursorOffset, end);
+        killRing.unshift(killed);
+        if (killRing.length > 10) killRing.pop();
+        setInput(input.slice(0, cursorOffset) + input.slice(end));
+      }
+    };
+
+    // Helper: kill to start of line
+    const killToLineStart = () => {
+      let lineStart = 0;
+      for (let i = cursorOffset - 1; i >= 0; i--) {
+        if (input[i] === '\n') { lineStart = i + 1; break; }
+      }
+      if (cursorOffset > lineStart) {
+        const killed = input.slice(lineStart, cursorOffset);
+        killRing.unshift(killed);
+        if (killRing.length > 10) killRing.pop();
+        setInput(input.slice(0, lineStart) + input.slice(cursorOffset));
+        setCursorOffset(lineStart);
+      }
+    };
+
+    // Helper: yank (paste) from kill ring
+    const yank = () => {
+      if (killRing.length === 0) return;
+      const text = killRing[0];
+      const before = input.slice(0, cursorOffset);
+      const after = input.slice(cursorOffset);
+      setInput(before + text + after);
+      setCursorOffset(cursorOffset + text.length);
+    };
+
+    // ─── Ctrl shortcuts (readline/emacs style) ─────────────────────
+    if (key.ctrl) {
+      switch (char) {
+        case 'a': startOfLine(); return;          // Ctrl+A → start of line
+        case 'b': setCursorOffset(prev => Math.max(0, prev - 1)); return; // Ctrl+B ← left
+        case 'e': endOfLine(); return;             // Ctrl+E → end of line
+        case 'f': setCursorOffset(prev => Math.min(input.length, prev + 1)); return; // Ctrl+F → right
+        case 'h': // Ctrl+H = backspace
+          if (cursorOffset > 0) {
+            setInput(input.slice(0, cursorOffset - 1) + input.slice(cursorOffset));
+            setCursorOffset(cursorOffset - 1);
+          }
+          return;
+        case 'k': killToLineEnd(); return;         // Ctrl+K → kill to line end
+        case 'u': killToLineStart(); return;       // Ctrl+U → kill to line start
+        case 'w': deleteWordBefore(); return;      // Ctrl+W → delete word before
+        case 'y': yank(); return;                   // Ctrl+Y → yank (paste)
+        case 'n': // Ctrl+N → down
+          if (key.upArrow || key.downArrow) return; // handled below
+          // Move down one line
+          const ci_n = getCursorInfo(input, cursorOffset);
+          if (ci_n.line < ci_n.totalLines - 1) {
+            const nextLen = ci_n.lines[ci_n.line + 1]!.length;
+            const nc = Math.min(ci_n.col, nextLen);
+            let no = 0;
+            for (let j = 0; j <= ci_n.line; j++) no += ci_n.lines[j]!.length + 1;
+            setCursorOffset(no + nc);
+          }
+          return;
+        case 'p': // Ctrl+P → up
+          // Move up one line
+          const ci_p = getCursorInfo(input, cursorOffset);
+          if (ci_p.line > 0) {
+            const prevLen = ci_p.lines[ci_p.line - 1]!.length;
+            const pc = Math.min(ci_p.col, prevLen);
+            let po = 0;
+            for (let j = 0; j < ci_p.line - 1; j++) po += ci_p.lines[j]!.length + 1;
+            setCursorOffset(po + pc);
+          }
+          return;
+      }
+    }
+
+    // ─── Alt/Meta shortcuts ────────────────────────────────────────
+    if (key.meta) {
+      switch (char) {
+        case 'b': prevWord(); return;              // Alt+B → prev word
+        case 'f': nextWord(); return;              // Alt+F → next word
+        case 'd': { // Alt+D → delete word after
+          let i = cursorOffset;
+          while (i < input.length && input[i] !== ' ') i++;
+          const end = i;
+          i = cursorOffset;
+          while (i < input.length && input[i] === ' ') i++;
+          const wordEnd = i > end ? i : end;
+          if (wordEnd > cursorOffset) {
+            const killed = input.slice(cursorOffset, wordEnd);
+            killRing.unshift(killed);
+            if (killRing.length > 10) killRing.pop();
+            setInput(input.slice(0, cursorOffset) + input.slice(wordEnd));
+          }
+          return;
+        }
+        case 'y': { // Alt+Y → yank-pop (cycle kill ring)
+          if (killRing.length > 1) {
+            const last = killRing.shift();
+            if (last) killRing.push(last);
+            yank();
+          }
+          return;
+        }
+      }
+      // Meta+Enter inserts newline
+      if (key.return) {
+        const before = input.slice(0, cursorOffset);
+        const after = input.slice(cursorOffset);
+        const newText = before + '\n' + after;
+        setInput(newText);
+        setCursorOffset(cursorOffset + 1);
+        return;
+      }
+    }
+
+    // ─── Ctrl+Arrow / Home / End / Delete ──────────────────────────
+    if (key.ctrl && key.leftArrow) { prevWord(); return; }      // Ctrl+Left → prev word
+    if (key.ctrl && key.rightArrow) { nextWord(); return; }     // Ctrl+Right → next word
+    if (key.home) { startOfLine(); return; }                     // Home → start of line
+    if (key.end) { endOfLine(); return; }                         // End → end of line
+    if (key.delete) { // Delete → delete char after cursor
+      if (cursorOffset < input.length) {
+        setInput(input.slice(0, cursorOffset) + input.slice(cursorOffset + 1));
+      }
+      return;
+    }
+
+    // Shift+Enter inserts newline (multi-line input)
+    if (key.return && key.shift) {
       const before = input.slice(0, cursorOffset);
       const after = input.slice(cursorOffset);
       const newText = before + '\n' + after;
@@ -259,15 +442,12 @@ export function App({ model: initialModel }: AppProps) {
       return;
     }
 
-    // Enter to send (only if cursor is on last line — like OpenClaude)
+    // Enter to send (only if cursor is on last line)
     if (key.return) {
-      const lines = input.split('\n');
       const lastNewlineIdx = input.lastIndexOf('\n');
       const cursorOnLastLine = lastNewlineIdx === -1 || cursorOffset > lastNewlineIdx;
       if (cursorOnLastLine && input.trim()) {
         sendMessage(input);
-      } else if (cursorOnLastLine) {
-        return; // Empty input, don't send
       }
       return;
     }
@@ -284,36 +464,28 @@ export function App({ model: initialModel }: AppProps) {
       return;
     }
 
-    // Left arrow
+    // Arrow keys
     if (key.leftArrow) {
       setCursorOffset(prev => Math.max(0, prev - 1));
       return;
     }
-
-    // Right arrow
     if (key.rightArrow) {
       setCursorOffset(prev => Math.min(input.length, prev + 1));
       return;
     }
-
-    // Up arrow — move cursor up one line
     if (key.upArrow) {
       const cursorInfo = getCursorInfo(input, cursorOffset);
       if (cursorInfo.line > 0) {
-        // Move to previous line at same column
         const prevLineLen = cursorInfo.lines[cursorInfo.line - 1]!.length;
         const newCol = Math.min(cursorInfo.col, prevLineLen);
         let newOffset = 0;
         for (let i = 0; i < cursorInfo.line - 1; i++) {
           newOffset += cursorInfo.lines[i]!.length + 1;
         }
-        newOffset += newCol;
-        setCursorOffset(newOffset);
+        setCursorOffset(newOffset + newCol);
       }
       return;
     }
-
-    // Down arrow — move cursor down one line
     if (key.downArrow) {
       const cursorInfo = getCursorInfo(input, cursorOffset);
       if (cursorInfo.line < cursorInfo.totalLines - 1) {
@@ -323,8 +495,7 @@ export function App({ model: initialModel }: AppProps) {
         for (let i = 0; i <= cursorInfo.line; i++) {
           newOffset += cursorInfo.lines[i]!.length + 1;
         }
-        newOffset += newCol;
-        setCursorOffset(newOffset);
+        setCursorOffset(newOffset + newCol);
       }
       return;
     }
@@ -336,8 +507,8 @@ export function App({ model: initialModel }: AppProps) {
       return;
     }
 
-    // Ignore modifier keys, escape, tab
-    if (key.ctrl || key.meta || key.escape || key.tab) {
+    // Ignore escape, tab
+    if (key.escape || key.tab) {
       return;
     }
 
