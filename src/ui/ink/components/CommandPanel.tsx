@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
-import { Box, Text, useInput, type Key } from 'ink';
+import Box from '../../../ink/components/Box.js';
+import Text from '../../../ink/components/Text.js';
+import useInput from '../../../ink/hooks/use-input.js';
+import type { Key } from '../../../ink/events/input-event.js';
 
 export interface Command {
   name: string;
@@ -10,9 +13,10 @@ export interface Command {
 export interface CommandPanelProps {
   commands?: Command[];
   onSelect?: (command: Command) => void;
+  onCancel?: () => void;
 }
 
-const DEFAULT_COMMANDS: Command[] = [
+export const DEFAULT_COMMANDS: Command[] = [
   { name: 'help', description: 'Show available commands', type: 'cmd' },
   { name: 'exit', description: 'Exit the REPL', type: 'cmd' },
   { name: 'model', description: 'Show or change model', type: 'cmd' },
@@ -21,10 +25,14 @@ const DEFAULT_COMMANDS: Command[] = [
   { name: 'chat', description: 'Send message to LLM', type: 'chat' },
 ];
 
-export function CommandPanel({ commands = DEFAULT_COMMANDS, onSelect }: CommandPanelProps) {
+export function CommandPanel({ commands = DEFAULT_COMMANDS, onSelect, onCancel }: CommandPanelProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   useInput((_: string, key: Key) => {
+    if (key.escape) {
+      onCancel?.();
+      return;
+    }
     if (key.upArrow) {
       setSelectedIndex(Math.max(0, selectedIndex - 1));
     }

@@ -2,15 +2,15 @@
 /**
  * openhorse - Ink UI CLI Entry Point
  *
- * v0.1.13: Ink React-based terminal UI
+ * v0.1.13: Uses OpenClaude's custom Ink render engine
+ * (not npm `ink`) for proper terminal input handling.
  */
 
 import React from 'react';
-import { render } from 'ink';
-import { App } from './ui/ink/components/App';
+import render from './ink/root.js';
+import { App } from './ui/ink/components/App.js';
 
-// Get version from package.json
-const VERSION = require('../package.json').version;
+const VERSION = '0.1.13';
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -32,4 +32,10 @@ if (args.includes('--version') || args.includes('-v')) {
 }
 
 // Render Ink App
-render(<App model="glm-5" />);
+const instance = await render(<App model="glm-5" />);
+
+// Handle process exit
+process.on('SIGINT', () => {
+  instance.unmount();
+  process.exit(0);
+});
