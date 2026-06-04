@@ -314,19 +314,8 @@ export function App({ model: initialModel }: AppProps) {
   }, [input]);
 
   return (
-    <Box flexDirection="column" width="100%">
-      {/* Status bar */}
-      <StatusBar
-        model={activeModel}
-        tokens={tokens}
-        cost={cost}
-        ctxPercent={ctxPercent}
-      />
-
-      {/* Separator */}
-      <Text>{'─'.repeat(Math.max(0, process.stdout.columns || 80))}</Text>
-
-      {/* Messages area */}
+    <Box flexDirection="column" width="100%" height="100%">
+      {/* Messages area - takes all available space */}
       <Box flexDirection="column" flexGrow={1} paddingX={1}>
         {messages.length === 0 && streamingText === '' && (
           <Text dimColor>Type a message and press Enter. Press / for commands.</Text>
@@ -372,6 +361,14 @@ export function App({ model: initialModel }: AppProps) {
           </Box>
         </Box>
       )}
+
+      {/* Status bar - at the bottom */}
+      <StatusBar
+        model={activeModel}
+        tokens={tokens}
+        cost={cost}
+        ctxPercent={ctxPercent}
+      />
     </Box>
   );
 }
