@@ -5,6 +5,5 @@ package-lock.json
 tests/tmp/
 docs/*
 !docs/issues/
-!docs/roadmap/
 !docs/test/
 coverage/

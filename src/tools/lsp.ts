@@ -11,7 +11,7 @@
  */
 
 import { buildTool, type OpenHorseTool, type ToolResult, type ToolContext } from '../framework/tool';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, spawnSync, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 
 // ============================================================================
@@ -50,13 +50,38 @@ class LspClient extends EventEmitter {
   private pendingRequests: Map<number, { resolve: Function; reject: Function }> = new Map();
   private buffer: string = '';
   private initialized: boolean = false;
+  private lspCommand: { cmd: string; args: string[] } | null = null;
 
   constructor(private language: string, private projectRoot: string) {
     super();
   }
 
+  /**
+   * Probe whether a binary exists in PATH.
+   * Uses spawnSync with `which`/`where` to avoid async ENOENT race.
+   */
+  private static probeBinary(cmd: string): boolean {
+    const res = spawnSync(
+      process.platform === 'win32' ? 'where' : 'which',
+      [cmd],
+      { stdio: 'ignore' },
+    );
+    return res.status === 0;
+  }
+
   async start(): Promise<void> {
     const command = this.getLspCommand();
+    this.lspCommand = command;
+
+    // Pre-flight: check binary exists before spawn.
+    // This throws synchronously so the tool layer's try/catch catches it.
+    if (!LspClient.probeBinary(command.cmd)) {
+      throw new Error(
+        `LSP binary "${command.cmd}" not found in PATH. ` +
+        `Install it first: npm i -g ${command.cmd}` +
+        (command.cmd === 'typescript-language-server' ? ' typescript' : ''),
+      );
+    }
 
     this.process = spawn(command.cmd, command.args, {
       cwd: this.projectRoot,
@@ -67,12 +92,27 @@ class LspClient extends EventEmitter {
       this.handleData(data.toString());
     });
 
+    // stderr should NOT go through 'error' event — that's Node's reserved
+    // crash channel. Use a custom 'stderr' event instead.
     this.process.stderr?.on('data', (data: Buffer) => {
-      this.emit('error', data.toString());
+      if (this.listenerCount('stderr') > 0) {
+        this.emit('stderr', data.toString());
+      }
     });
 
-    this.process.on('error', (err) => {
-      this.emit('error', err.message);
+    // Guard against async ENOENT: if no listener is registered,
+    // warn instead of crashing. This is the last-resort safety net.
+    this.process.on('error', (err: NodeJS.ErrnoException) => {
+      const msg = err.code === 'ENOENT'
+        ? `LSP binary "${command.cmd}" failed to start (ENOENT). Is it installed?`
+        : `LSP process error: ${err.message}`;
+
+      if (this.listenerCount('error') === 0) {
+        console.warn(`[LSP] ${msg}`);
+      } else {
+        this.emit('error', msg);
+      }
+      this.process = null;
     });
 
     // 初始化 LSP
@@ -106,6 +146,19 @@ class LspClient extends EventEmitter {
       this.process.kill();
       this.process = null;
     }
+  }
+
+  /**
+   * Dispose the client without sending LSP shutdown messages.
+   * Used when start() fails to avoid caching a broken client.
+   */
+  dispose(): void {
+    if (this.process) {
+      this.process.kill();
+      this.process = null;
+    }
+    this.pendingRequests.forEach(({ reject }) => reject(new Error('Client disposed')));
+    this.pendingRequests.clear();
   }
 
   async getDefinition(uri: string, position: LspPosition): Promise<LspLocation[] | LspLocation | null> {
@@ -213,7 +266,12 @@ class LspClient extends EventEmitter {
         const response = JSON.parse(content);
         this.handleResponse(response);
       } catch (err) {
-        this.emit('error', `Failed to parse LSP response: ${err}`);
+        // Also guard parse errors — don't crash if no listener
+        if (this.listenerCount('error') === 0) {
+          console.warn(`[LSP] Failed to parse response: ${err}`);
+        } else {
+          this.emit('error', `Failed to parse LSP response: ${err}`);
+        }
       }
     }
   }
@@ -245,7 +303,21 @@ class LspManager {
 
     if (!this.clients.has(key)) {
       const client = new LspClient(language, projectRoot);
-      await client.start();
+
+      // Fallback error listener — ensures the client NEVER crashes the process
+      // due to an unhandled 'error' event emission.
+      client.on('error', (msg) => {
+        console.warn(`[LSP:${language}] ${msg}`);
+      });
+
+      try {
+        await client.start();
+      } catch (err) {
+        // Don't cache a broken client; re-throw so tool layer catches it.
+        client.dispose?.();
+        throw err;
+      }
+
       this.clients.set(key, client);
     }
 
