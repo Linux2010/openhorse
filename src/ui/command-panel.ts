@@ -279,44 +279,55 @@ function clearPanel(): void {
   }
 }
 
-/** 上次渲染的长度（用于计算清除行数） */
-let lastRenderLength = 0;
+/** 上次渲染的总长度（prompt + input） */
+let lastTotalRendered = 0;
 /** 是否是首次渲染（首次不清除） */
 let isFirstRender = true;
 
 /**
  * 重绘输入行（带 prompt）
- * Issue #26 修复：正确清除多行输入的重影
- * Issue #32 #3.11: 使用动态终端宽度
- * v0.1.11: 首次渲染跳过清除，避免 ANSI 码与初始化消息冲突
+ * v0.1.15: 修复换行残留 — 精确计算光标位置，逐行清除
  */
 export function redrawInputWithPrompt(input: string, modeIndicator: string = ''): void {
   const prompt = ACCENT('❯ ') + (modeIndicator ? DIM(modeIndicator) : '');
-  const promptLength = stripAnsi(prompt).length;
+  const promptLen = stripAnsi(prompt).length;
 
-  // 首次渲染跳过清除操作，直接绘制 prompt
   if (!isFirstRender) {
-    // 计算上次渲染占用的行数
-    const lastTotalLength = promptLength + lastRenderLength;
-    const lastLines = Math.max(1, Math.ceil(lastTotalLength / terminalWidth));
+    const lastTotal = lastTotalRendered;
 
-    // 清除上次渲染的所有行
-    for (let i = 0; i < lastLines; i++) {
-      process.stdout.write('\x1b[2K');  // 清除整行
-      if (i < lastLines - 1) {
-        process.stdout.write('\x1b[1A');  // 上移一行
-      }
+    // 精确计算上次渲染占用的行数（考虑终端自动换行）
+    let lines = 1;
+    if (lastTotal > 0) {
+      lines = Math.ceil(lastTotal / terminalWidth);
     }
 
-    // 移到行首
+    // 计算光标当前位置：如果 lastTotal 是 terminalWidth 的倍数，光标在下一行
+    const cursorOnNextLine = lastTotal > 0 && lastTotal % terminalWidth === 0;
+
+    // 光标在最后渲染行（或下一行），需要移动到第一行
+    // 先下移到最底行（如果光标已经在下一行，需要多移一行回来）
+    if (cursorOnNextLine) {
+      // 光标在下方的空行，先上移回到最后渲染行
+      process.stdout.write('\x1b[1A');
+    }
+
+    // 清除最后渲染行
+    process.stdout.write('\x1b[2K');
+
+    // 上移清除其余行
+    for (let i = 1; i < lines; i++) {
+      process.stdout.write('\x1b[1A\x1b[2K');
+    }
+
+    // 光标现在在第一行，确保在行首
     process.stdout.write('\r');
   }
 
   // 绘制新的输入
   process.stdout.write(prompt + input);
 
-  // 记录当前长度
-  lastRenderLength = input.length;
+  // 记录总渲染长度（prompt + input）
+  lastTotalRendered = promptLen + input.length;
   isFirstRender = false;
 }
 
@@ -324,7 +335,7 @@ export function redrawInputWithPrompt(input: string, modeIndicator: string = '')
  * 重置渲染长度跟踪
  */
 export function resetRenderLength(): void {
-  lastRenderLength = 0;
+  lastTotalRendered = 0;
   isFirstRender = true;
 }
 
