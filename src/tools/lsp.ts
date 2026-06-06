@@ -47,7 +47,7 @@ interface LspHover {
 class LspClient extends EventEmitter {
   private process: ChildProcess | null = null;
   private requestId: number = 0;
-  private pendingRequests: Map<number, { resolve: Function; reject: Function }> = new Map();
+  private pendingRequests: Map<number, { resolve: Function; reject: Function; timer: NodeJS.Timeout }> = new Map();
   private buffer: string = '';
   private initialized: boolean = false;
   private lspCommand: { cmd: string; args: string[] } | null = null;
@@ -157,7 +157,10 @@ class LspClient extends EventEmitter {
       this.process.kill();
       this.process = null;
     }
-    this.pendingRequests.forEach(({ reject }) => reject(new Error('Client disposed')));
+    this.pendingRequests.forEach(({ reject, timer }) => {
+      clearTimeout(timer);
+      reject(new Error('Client disposed'));
+    });
     this.pendingRequests.clear();
   }
 
@@ -216,18 +219,17 @@ class LspClient extends EventEmitter {
         params,
       });
 
-      this.pendingRequests.set(id, { resolve, reject });
-
-      const header = `Content-Length: ${Buffer.byteLength(message)}\r\n\r\n`;
-      this.process?.stdin?.write(header + message);
-
-      // 超时处理
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (this.pendingRequests.has(id)) {
           this.pendingRequests.delete(id);
           reject(new Error(`Request timeout: ${method}`));
         }
       }, 30000);
+
+      this.pendingRequests.set(id, { resolve, reject, timer });
+
+      const header = `Content-Length: ${Buffer.byteLength(message)}\r\n\r\n`;
+      this.process?.stdin?.write(header + message);
     });
   }
 
@@ -280,6 +282,7 @@ class LspClient extends EventEmitter {
     if (response.id !== undefined) {
       const pending = this.pendingRequests.get(response.id);
       if (pending) {
+        clearTimeout(pending.timer);
         this.pendingRequests.delete(response.id);
         if (response.error) {
           pending.reject(new Error(response.error.message));

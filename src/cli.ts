@@ -201,7 +201,9 @@ function handlePanelKeypress(k: KeyInfo, char: string | undefined): void {
         currentInput = cmd;
         redrawInputWithPrompt(currentInput);
         // 直接执行命令
-        handleInput(currentInput);
+        handleInput(currentInput).catch(err => {
+          console.log(ERROR(`Command error: ${err.message || String(err)}`));
+        });
         currentInput = '';
         clearPendingCommand();
       }
@@ -371,7 +373,9 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
 
             // Issue #32 fix: 重置渲染长度，防止后续 redrawInputWithPrompt 清除用户输入
             resetRenderLength();
-            handleInput(fullInput);
+            handleInput(fullInput).catch(err => {
+              console.log(ERROR(`Input error: ${err.message || String(err)}`));
+            });
             addToInputHistory(fullInput);
             inputHistory = getInputHistory();
           }
@@ -490,12 +494,12 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
 
 function updateHistorySearch(): void {
   if (searchQuery) {
-    const matches = inputHistory.filter(h => h.content.toLowerCase().includes(searchQuery.toLowerCase()));
-    inputHistory = matches;
+    const allHistory = getInputHistory();
+    const matches = allHistory.filter(h => h.content.toLowerCase().includes(searchQuery.toLowerCase()));
     historyIndex = 0;
     currentInput = matches[0]?.content || '';
+    // Don't replace inputHistory — just display filtered results
   } else {
-    inputHistory = getInputHistory();
     historyIndex = -1;
     currentInput = '';
   }
