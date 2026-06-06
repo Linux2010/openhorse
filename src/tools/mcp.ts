@@ -113,7 +113,7 @@ class SimpleMCPClient {
     await this.sendRequest('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
-      clientInfo: { name: 'openhorse', version: '0.1.4' },
+      clientInfo: { name: 'openhorse', version: '0.1.14' },
     });
 
     this.sendNotification('notifications/initialized', {});

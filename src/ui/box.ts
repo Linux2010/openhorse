@@ -2,15 +2,7 @@
  * openhorse - UI 组件
  *
  * 输出流设计：
- *   ╔════════════════════════════════════════════════════════╗
- *   │ Provider  Anthropic                                    │
- *   │ Model     glm-5                                        │
- *   │ Endpoint  https://coding.dashscope.aliyuncs.c...       │
- *   ╠════════════════════════════════════════════════════════╣
- *   │ ● cloud    Ready — type /help to begin                 │
- *   ╚════════════════════════════════════════════════════════╝
- *     openhorse v0.1.0
- *
+ *   openhorse v0.1.14  │  glm-5  │  Qwen  │  ●
  *   ─────────────────────────────────────────────────────────
  *   ❯
  *   ─────────────────────────────────────────────────────────
@@ -31,19 +23,6 @@ const RED = chalk.red;
 const YELLOW = chalk.yellow;
 const CYAN = chalk.cyan;
 
-// Box drawing characters (double-line)
-const BOX_TOP_LEFT = '╔';
-const BOX_TOP_RIGHT = '╗';
-const BOX_BOTTOM_LEFT = '╚';
-const BOX_BOTTOM_RIGHT = '╝';
-const BOX_LEFT = '║';
-const BOX_RIGHT = '║';
-const BOX_TOP = '═';
-const BOX_BOTTOM = '═';
-const BOX_MIDDLE_LEFT = '╠';
-const BOX_MIDDLE_RIGHT = '╣';
-const BOX_MIDDLE = '═';
-
 // Single line for separators
 const SEP_LINE = '─';
 
@@ -58,7 +37,7 @@ const CLEAR_LINE = '\x1b[2K\r';
 export interface HeaderBoxConfig {
   provider: string;
   model: string;
-  endpoint: string;
+  endpoint?: string;  // kept for backward compat, no longer shown
   status: 'ready' | 'loading' | 'error' | 'processing';
   statusText?: string;
   version: string;
@@ -66,52 +45,32 @@ export interface HeaderBoxConfig {
 }
 
 /**
- * Renders a header box with Provider/Model/Endpoint info
+ * Renders a compact header line with model info
  */
 export function renderHeaderBox(config: HeaderBoxConfig): string {
-  const width = config.width || 60;
-  const innerWidth = width - 4; // Account for ╔ and ╗
+  const parts: string[] = [];
 
-  const lines: string[] = [];
+  // Model name
+  parts.push(ACCENT(config.model));
 
-  // Top border
-  lines.push(`${BOX_TOP_LEFT}${BOX_TOP.repeat(innerWidth)}${BOX_TOP_RIGHT}`);
+  // Provider (shortened)
+  const providerShort = config.provider === 'Alibaba Cloud' ? 'Qwen'
+    : config.provider === 'Anthropic' ? 'Anthropic'
+    : config.provider === 'OpenAI' ? 'OpenAI'
+    : config.provider;
+  if (providerShort) {
+    parts.push(DIM(providerShort));
+  }
 
-  // Provider row
-  const providerVal = truncateRight(config.provider, innerWidth - 12);
-  lines.push(`${BOX_LEFT}${ACCENT(' Provider')}  ${DIM(' ' + providerVal.padEnd(innerWidth - 11))}${BOX_RIGHT}`);
-
-  // Model row
-  const modelVal = truncateRight(config.model, innerWidth - 12);
-  lines.push(`${BOX_LEFT}${ACCENT(' Model')}     ${DIM(' ' + modelVal.padEnd(innerWidth - 11))}${BOX_RIGHT}`);
-
-  // Endpoint row (truncate long URLs)
-  const endpointVal = truncateRight(config.endpoint, innerWidth - 12);
-  lines.push(`${BOX_LEFT}${ACCENT(' Endpoint')}  ${DIM(' ' + endpointVal.padEnd(innerWidth - 11))}${BOX_RIGHT}`);
-
-  // Middle separator
-  lines.push(`${BOX_MIDDLE_LEFT}${BOX_MIDDLE.repeat(innerWidth)}${BOX_MIDDLE_RIGHT}`);
-
-  // Status row
+  // Status
   const statusIcon = config.status === 'ready' ? GREEN('●')
     : config.status === 'loading' ? YELLOW('○')
     : config.status === 'error' ? RED('●')
     : config.status === 'processing' ? ACCENT('◌')
     : DIM('○');
-  const statusText = config.statusText || 'Ready — type /help to begin';
-  // Build status content: icon + " cloud    " + statusText
-  const statusContent = ` ${statusIcon} cloud    ${statusText}`;
-  const statusVisibleLen = stringWidth(statusContent);
-  const statusPadding = innerWidth - statusVisibleLen - 1; // -1 for left space
-  lines.push(`${BOX_LEFT}${DIM(' ' + statusIcon + ' cloud    ')}${DIM(statusText)}${' '.repeat(Math.max(0, statusPadding))}${BOX_RIGHT}`);
+  parts.push(statusIcon);
 
-  // Bottom border
-  lines.push(`${BOX_BOTTOM_LEFT}${BOX_BOTTOM.repeat(innerWidth)}${BOX_BOTTOM_RIGHT}`);
-
-  // Version line
-  lines.push(`  ${BRAND('openhorse')} ${DIM('v' + config.version)}`);
-
-  return lines.join('\n');
+  return `  ${BRAND('openhorse')} ${DIM('v' + config.version)}  ${DIM('│')} ${parts.join(` ${DIM('│')} `)}`;
 }
 
 /**

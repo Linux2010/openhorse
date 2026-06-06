@@ -6,7 +6,6 @@
 
 import 'dotenv/config';
 import chalk from 'chalk';
-import figlet from 'figlet';
 import readline from 'readline';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -66,9 +65,9 @@ const VERSION = (() => {
   try {
     const pkgPath = join(__dirname, '..', 'package.json');
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-    return pkg.version || '0.1.3';
+    return pkg.version || '0.1.14';
   } catch {
-    return '0.1.3';
+    return '0.1.14';
   }
 })();
 
@@ -537,13 +536,11 @@ async function handleCtrlC(): Promise<void> {
 // ============================================================================
 
 function showBanner() {
-  const art = figlet.textSync('OPENHORSE', { font: 'standard' });
-  console.log(BRAND(art));
-  console.log();
-
   const config = store.getSnapshot().config;
   const baseUrl = config.apiBaseUrl || '';
-  const headerBox = renderHeaderBox({
+
+  console.log();
+  console.log(renderHeaderBox({
     provider: baseUrl.includes('anthropic') ? 'Anthropic'
       : baseUrl.includes('openai') ? 'OpenAI'
       : baseUrl.includes('dashscope') ? 'Alibaba Cloud'
@@ -553,9 +550,7 @@ function showBanner() {
     status: llm ? 'ready' : 'loading',
     statusText: llm ? undefined : 'Set OPENHORSE_API_KEY in .env',
     version: VERSION,
-  });
-  console.log(headerBox);
-  console.log();
+  }));
 }
 
 // ============================================================================
