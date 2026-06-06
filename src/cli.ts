@@ -82,8 +82,19 @@ const ERROR = chalk.red;
 const WARN = chalk.yellow;
 const SUCCESS = chalk.green;
 
-/** User input background — semi-transparent slate fill (like Claude Code) */
-const USER_INPUT_BG = chalk.bgHex('#1E293B').hex('#E2E8F0');
+/** User input background — dark slate fill (like Claude Code).
+ *  Direct ANSI codes to bypass chalk's level detection.
+ *  48;2;30;41;59 = RGB bg #1E293B (slate-800)
+ *  38;2;226;232;240 = RGB fg #E2E8F0 (slate-200)
+ */
+function userInputFill(text: string): string {
+  return `\x1b[48;2;30;41;59m\x1b[38;2;226;232;240m ${text} \x1b[39;49m`;
+}
+
+/** Prompt symbol with input background */
+function userInputPrompt(): string {
+  return '\x1b[48;2;30;41;59m\x1b[38;2;0;212;170m❯\x1b[39;49m';
+}
 
 // ============================================================================
 // CLI Help
@@ -371,7 +382,7 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
             process.stdout.write('\x1b[2K\r');
             const lines = fullInput.split('\n');
             for (const line of lines) {
-              console.log(ACCENT('❯ ') + USER_INPUT_BG(' ' + line + ' '));
+              console.log(userInputPrompt() + userInputFill(line));
             }
 
             // Issue #32 fix: 重置渲染长度，防止后续 redrawInputWithPrompt 清除用户输入
@@ -404,7 +415,7 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
         // Echo user input with semi-transparent background fill (Claude Code style)
         const echoLines = currentInput.split('\n');
         for (const echoLine of echoLines) {
-          console.log(ACCENT('❯ ') + USER_INPUT_BG(' ' + echoLine + ' '));
+          console.log(userInputPrompt() + userInputFill(echoLine));
         }
 
         // Issue #32 fix: 重置渲染长度，防止后续 redrawInputWithPrompt 清除用户输入行
