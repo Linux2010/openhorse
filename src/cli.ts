@@ -75,6 +75,9 @@ const VERSION = (() => {
 // 颜色常量
 // ============================================================================
 
+// Force chalk to use full 24-bit color. Must be set BEFORE any chalk.hex/bgHex calls.
+chalk.level = 3;
+
 const BRAND = chalk.hex('#FF6B35');
 const ACCENT = chalk.hex('#00D4AA');
 const DIM = chalk.dim;
@@ -82,19 +85,9 @@ const ERROR = chalk.red;
 const WARN = chalk.yellow;
 const SUCCESS = chalk.green;
 
-/** User input background — dark slate fill (like Claude Code).
- *  Direct ANSI codes to bypass chalk's level detection.
- *  48;2;30;41;59 = RGB bg #1E293B (slate-800)
- *  38;2;226;232;240 = RGB fg #E2E8F0 (slate-200)
- */
-function userInputFill(text: string): string {
-  return `\x1b[48;2;30;41;59m\x1b[38;2;226;232;240m ${text} \x1b[39;49m`;
-}
-
-/** Prompt symbol with input background */
-function userInputPrompt(): string {
-  return '\x1b[48;2;30;41;59m\x1b[38;2;0;212;170m❯\x1b[39;49m';
-}
+/** User input background — dark slate fill (like Claude Code) */
+const USER_INPUT_BG = chalk.bgHex('#1E293B').hex('#E2E8F0');
+const USER_INPUT_ACCENT = chalk.bgHex('#1E293B').hex('#00D4AA');
 
 // ============================================================================
 // CLI Help
@@ -382,7 +375,7 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
             process.stdout.write('\x1b[2K\r');
             const lines = fullInput.split('\n');
             for (const line of lines) {
-              console.log(userInputPrompt() + userInputFill(line));
+              console.log(USER_INPUT_ACCENT('❯ ') + USER_INPUT_BG(' ' + line + ' '));
             }
 
             // Issue #32 fix: 重置渲染长度，防止后续 redrawInputWithPrompt 清除用户输入
@@ -415,7 +408,7 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
         // Echo user input with semi-transparent background fill (Claude Code style)
         const echoLines = currentInput.split('\n');
         for (const echoLine of echoLines) {
-          console.log(userInputPrompt() + userInputFill(echoLine));
+          console.log(USER_INPUT_ACCENT('❯ ') + USER_INPUT_BG(' ' + echoLine + ' '));
         }
 
         // Issue #32 fix: 重置渲染长度，防止后续 redrawInputWithPrompt 清除用户输入行
@@ -781,6 +774,11 @@ async function main(): Promise<void> {
     console.log(WARN('⚠ stdin is not TTY - interactive features disabled'));
   }
   process.stdin.resume();
+
+  // Force chalk to use full 24-bit color support.
+  // chalk.level is evaluated at module load time (before raw mode),
+  // so it defaults to 0. Set to 3 after raw mode is enabled.
+  chalk.level = 3;
 
   // 监听 keypress 事件
   process.stdin.on('keypress', (char: string | undefined, key: any) => {
