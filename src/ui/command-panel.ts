@@ -279,35 +279,57 @@ function clearPanel(): void {
   }
 }
 
-/** 上次渲染的总长度（prompt + input） */
+/** 上次渲染的总长度（prompt + input 的可见宽度） */
 let lastTotalRendered = 0;
 /** 是否是首次渲染（首次不清除） */
 let isFirstRender = true;
 
 /**
+ * 计算字符串在终端中的可见宽度（字符数，不含 ANSI 码）
+ * CJK 字符占 2 格，普通字符占 1 格
+ */
+function visualWidth(str: string): number {
+  let width = 0;
+  for (const ch of str) {
+    const cp = ch.codePointAt(0) || 0;
+    // CJK / CJK Unified Ideographs / Hangul / Full-width 占 2 格
+    width += (cp >= 0x1100 && (
+      cp <= 0x115F || cp === 0x2329 || cp === 0x232A ||
+      (cp >= 0x2E80 && cp <= 0xA4CF && cp !== 0x303F) ||
+      (cp >= 0xAC00 && cp <= 0xD7A3) ||
+      (cp >= 0xF900 && cp <= 0xFAFF) ||
+      (cp >= 0xFE10 && cp <= 0xFE19) ||
+      (cp >= 0xFE30 && cp <= 0xFE6F) ||
+      (cp >= 0xFF01 && cp <= 0xFF60) ||
+      (cp >= 0xFFE0 && cp <= 0xFFE6) ||
+      (cp >= 0x20000 && cp <= 0x2FFFD) ||
+      (cp >= 0x30000 && cp <= 0x3FFFD)
+    )) ? 2 : 1;
+  }
+  return width;
+}
+
+/**
  * 重绘输入行（带 prompt）
- * v0.1.15: 修复换行残留 — 精确计算光标位置，逐行清除
+ * v0.1.15: 修复换行残留 — 使用可见宽度计算（CJK 占 2 格）
  */
 export function redrawInputWithPrompt(input: string, modeIndicator: string = ''): void {
   const prompt = ACCENT('❯ ') + (modeIndicator ? DIM(modeIndicator) : '');
-  const promptLen = stripAnsi(prompt).length;
+  const promptWidth = visualWidth(stripAnsi(prompt));
 
   if (!isFirstRender) {
     const lastTotal = lastTotalRendered;
 
-    // 精确计算上次渲染占用的行数（考虑终端自动换行）
+    // 使用可见宽度计算上次渲染占用的行数
     let lines = 1;
     if (lastTotal > 0) {
       lines = Math.ceil(lastTotal / terminalWidth);
     }
 
-    // 计算光标当前位置：如果 lastTotal 是 terminalWidth 的倍数，光标在下一行
+    // 光标在最后渲染行的下一行（wrap 后）
     const cursorOnNextLine = lastTotal > 0 && lastTotal % terminalWidth === 0;
 
-    // 光标在最后渲染行（或下一行），需要移动到第一行
-    // 先下移到最底行（如果光标已经在下一行，需要多移一行回来）
     if (cursorOnNextLine) {
-      // 光标在下方的空行，先上移回到最后渲染行
       process.stdout.write('\x1b[1A');
     }
 
@@ -319,15 +341,14 @@ export function redrawInputWithPrompt(input: string, modeIndicator: string = '')
       process.stdout.write('\x1b[1A\x1b[2K');
     }
 
-    // 光标现在在第一行，确保在行首
     process.stdout.write('\r');
   }
 
   // 绘制新的输入
   process.stdout.write(prompt + input);
 
-  // 记录总渲染长度（prompt + input）
-  lastTotalRendered = promptLen + input.length;
+  // 记录可见总宽度（prompt + input）
+  lastTotalRendered = promptWidth + visualWidth(input);
   isFirstRender = false;
 }
 
