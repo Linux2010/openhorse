@@ -19,7 +19,7 @@ describe('StreamMarkdownRenderer', () => {
   });
 
   test('renders plain text immediately', () => {
-    const output = renderer.feed('Hello world');
+    const output = renderer.feed('Hello world\n');
     expect(output).toContain('Hello world');
   });
 
@@ -42,9 +42,7 @@ describe('StreamMarkdownRenderer', () => {
     renderer.feed('Some text');
     renderer.feed(' more text');
     const flush = renderer.flush();
-    // Plain text is rendered inline, flush may be empty if already rendered
-    // This test verifies flush doesn't throw
-    expect(typeof flush).toBe('string');
+    expect(flush).toContain('Some text more text');
   });
 
   test('reset clears all state', () => {
