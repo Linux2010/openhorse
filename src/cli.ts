@@ -82,6 +82,9 @@ const ERROR = chalk.red;
 const WARN = chalk.yellow;
 const SUCCESS = chalk.green;
 
+/** User input background — semi-transparent slate fill (like Claude Code) */
+const USER_INPUT_BG = chalk.bgHex('#1E293B').hex('#E2E8F0');
+
 // ============================================================================
 // CLI Help
 // ============================================================================
@@ -364,11 +367,11 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
           const fullInput = getMultilineInput();
           resetMultiline();
           if (fullInput.trim()) {
-            // 回显多行输入
+            // 回显多行输入（带半透明背景）
             process.stdout.write('\x1b[2K\r');
             const lines = fullInput.split('\n');
             for (const line of lines) {
-              console.log(DIM('  ') + line);
+              console.log(ACCENT('❯ ') + USER_INPUT_BG(' ' + line + ' '));
             }
 
             // Issue #32 fix: 重置渲染长度，防止后续 redrawInputWithPrompt 清除用户输入
@@ -398,7 +401,11 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
       if (currentInput.trim()) {
         // 先清除输入行的 prompt，然后打印用户输入（保存到终端历史）
         process.stdout.write('\x1b[2K\r');  // 清除当前 prompt 行
-        console.log(ACCENT('❯ ') + currentInput);  // 回显用户输入
+        // Echo user input with semi-transparent background fill (Claude Code style)
+        const echoLines = currentInput.split('\n');
+        for (const echoLine of echoLines) {
+          console.log(ACCENT('❯ ') + USER_INPUT_BG(' ' + echoLine + ' '));
+        }
 
         // Issue #32 fix: 重置渲染长度，防止后续 redrawInputWithPrompt 清除用户输入行
         // 因为 console.log 打印后光标在新行，redrawInputWithPrompt 会从当前位置向上清除
