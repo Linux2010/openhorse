@@ -540,9 +540,7 @@ function showBanner() {
   const baseUrl = config.apiBaseUrl || '';
 
   console.log();
-  console.log(`${BRAND('🐴')} ${BRAND('openhorse')} ${DIM(`v${VERSION}`)}`);
-
-  const headerBox = renderHeaderBox({
+  console.log(renderHeaderBox({
     provider: baseUrl.includes('anthropic') ? 'Anthropic'
       : baseUrl.includes('openai') ? 'OpenAI'
       : baseUrl.includes('dashscope') ? 'Alibaba Cloud'
@@ -552,8 +550,7 @@ function showBanner() {
     status: llm ? 'ready' : 'loading',
     statusText: llm ? undefined : 'Set OPENHORSE_API_KEY in .env',
     version: VERSION,
-  });
-  console.log(headerBox);
+  }));
 }
 
 // ============================================================================
