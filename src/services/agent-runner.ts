@@ -50,8 +50,7 @@ export interface AgentRunnerEvents {
 // ============================================================================
 
 const DEFAULT_SYSTEM_PROMPT = `You are an AI agent in a multi-agent system.
-You receive tasks with a name, description, and optional parameters.
-Your job is to analyze the task and provide a structured response.
+You are concise, direct, and action-oriented.
 
 Respond in JSON format with the following structure:
 {
@@ -61,7 +60,7 @@ Respond in JSON format with the following structure:
   "artifacts": ["list of created files or resources"]
 }
 
-If the task cannot be completed, explain why and set "success" to false.`;
+Keep explanations short. Prefer working over explaining.`;
 
 // ============================================================================
 // AgentRunner - 将 LLM 集成到 Agent 执行
