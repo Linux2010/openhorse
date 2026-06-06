@@ -18,4 +18,7 @@ module.exports = {
       },
     }],
   },
+  transformIgnorePatterns: [
+    '/node_modules/(?!(chalk|supports-color|ansi-styles|has-flag|is-unicode-supported)/)',
+  ],
 };

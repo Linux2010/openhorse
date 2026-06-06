@@ -27,7 +27,7 @@ describe('buildSystemPrompt', () => {
   test('static part contains intro and capabilities', () => {
     const result = buildSystemPrompt(baseContext);
     expect(result.static).toContain('You are OpenHorse');
-    expect(result.static).toContain('Read and write files');
+    expect(result.static).toContain('action-oriented');
   });
 
   test('static part contains tool names', () => {
