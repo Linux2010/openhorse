@@ -6,7 +6,6 @@
 
 import 'dotenv/config';
 import chalk from 'chalk';
-import figlet from 'figlet';
 import readline from 'readline';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -66,9 +65,9 @@ const VERSION = (() => {
   try {
     const pkgPath = join(__dirname, '..', 'package.json');
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-    return pkg.version || '0.1.3';
+    return pkg.version || '0.1.14';
   } catch {
-    return '0.1.3';
+    return '0.1.14';
   }
 })();
 
@@ -537,12 +536,12 @@ async function handleCtrlC(): Promise<void> {
 // ============================================================================
 
 function showBanner() {
-  const art = figlet.textSync('OPENHORSE', { font: 'standard' });
-  console.log(BRAND(art));
-  console.log();
-
   const config = store.getSnapshot().config;
   const baseUrl = config.apiBaseUrl || '';
+
+  console.log();
+  console.log(`${BRAND('🐴')} ${BRAND('openhorse')} ${DIM(`v${VERSION}`)}`);
+
   const headerBox = renderHeaderBox({
     provider: baseUrl.includes('anthropic') ? 'Anthropic'
       : baseUrl.includes('openai') ? 'OpenAI'
@@ -555,7 +554,6 @@ function showBanner() {
     version: VERSION,
   });
   console.log(headerBox);
-  console.log();
 }
 
 // ============================================================================

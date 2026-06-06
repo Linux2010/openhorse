@@ -213,7 +213,7 @@ async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchRes
     // Issue #20 修复：启用 redirect: 'follow' 自动跟随重定向
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'OpenHorse/0.1.5',
+        'User-Agent': 'OpenHorse/0.1.14',
         'Accept': 'text/html,application/xhtml+xml,text/markdown,text/plain,*/*',
       },
       redirect: 'follow',  // 自动跟随重定向（最多 20 次，由 fetch 内置限制）
