@@ -1,7 +1,7 @@
 /**
  * openhorse - 流式 Markdown 渲染器
  *
- * 支持流式渲染：标题、粗体、斜体、行内代码、列表、引用、链接、分割线、代码块
+ * 支持流式渲染：标题、粗体、斜体、行内代码、列表、引用、链接、分割线、表格、代码块
  */
 
 import chalk from 'chalk';
@@ -14,6 +14,38 @@ const CYAN = chalk.cyan;
 const GREEN = chalk.green;
 const MAGENTA = chalk.magenta;
 
+/**
+ * 去除 ANSI 颜色码
+ */
+function stripAnsi(str: string): string {
+  return str.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+/**
+ * 计算字符串在终端中的可见宽度（不含 ANSI 码）
+ * CJK 字符占 2 格，普通字符占 1 格
+ */
+function visualWidth(str: string): number {
+  const clean = stripAnsi(str);
+  let width = 0;
+  for (const ch of clean) {
+    const cp = ch.codePointAt(0) || 0;
+    width += (cp >= 0x1100 && (
+      cp <= 0x115F || cp === 0x2329 || cp === 0x232A ||
+      (cp >= 0x2E80 && cp <= 0xA4CF && cp !== 0x303F) ||
+      (cp >= 0xAC00 && cp <= 0xD7A3) ||
+      (cp >= 0xF900 && cp <= 0xFAFF) ||
+      (cp >= 0xFE10 && cp <= 0xFE19) ||
+      (cp >= 0xFE30 && cp <= 0xFE6F) ||
+      (cp >= 0xFF01 && cp <= 0xFF60) ||
+      (cp >= 0xFFE0 && cp <= 0xFFE6) ||
+      (cp >= 0x20000 && cp <= 0x2FFFD) ||
+      (cp >= 0x30000 && cp <= 0x3FFFD)
+    )) ? 2 : 1;
+  }
+  return width;
+}
+
 // ============================================================================
 // 类型定义
 // ============================================================================
@@ -23,6 +55,9 @@ export interface StreamRendererState {
   codeBlockLang: string;
   codeBlockBuffer: string;
   pendingInline: string;
+  // Table buffer state
+  inTable: boolean;
+  tableRows: string[];
 }
 
 // ============================================================================
@@ -35,6 +70,8 @@ export class StreamMarkdownRenderer {
     codeBlockLang: '',
     codeBlockBuffer: '',
     pendingInline: '',
+    inTable: false,
+    tableRows: [],
   };
 
   /**
@@ -55,7 +92,12 @@ export class StreamMarkdownRenderer {
         this.state.codeBlockBuffer = '';
 
         const langDisplay = this.state.codeBlockLang ? ` ${this.state.codeBlockLang}` : '';
-        return this.renderInlineBuffer(before) + '\n' + DIM(`┌─${langDisplay}`) + '\n';
+        // 结束任何缓冲的表格
+        let output = '';
+        if (this.state.inTable) {
+          output = this.flushTable();
+        }
+        return output + this.renderInlineBuffer(before) + '\n' + DIM(`┌─${langDisplay}`) + '\n';
       }
 
       // 非代码块：积累内容，遇到换行时渲染
@@ -103,16 +145,127 @@ export class StreamMarkdownRenderer {
   }
 
   /**
-   * 消耗 pendingInline 中已完成的部分（遇到 \n 的行）
+   * 消耗 pendingInline 中已完成的部分
+   * 表格行一直累积，遇到 `\n\n` 或非表格行时 flush
    */
   private consumePending(): string {
+    let output = '';
     const nlIndex = this.state.pendingInline.lastIndexOf('\n');
     if (nlIndex === -1) return '';
 
-    const complete = this.state.pendingInline.slice(0, nlIndex + 1);
-    this.state.pendingInline = this.state.pendingInline.slice(nlIndex + 1);
+    // 保留最后一个 \n（可能后面还有内容）
+    const complete = this.state.pendingInline.slice(0, nlIndex);
+    this.state.pendingInline = this.state.pendingInline.slice(nlIndex);
 
-    return this.renderInlineBuffer(complete);
+    const lines = complete.split('\n');
+    for (const line of lines) {
+      if (line === '') {
+        // 空行：结束并 flush 表格
+        if (this.state.inTable) {
+          output += this.flushTable() + '\n';
+        }
+        continue;
+      }
+
+      if (line.startsWith('|')) {
+        if (!this.state.inTable) {
+          this.state.inTable = true;
+          this.state.tableRows = [];
+        }
+        this.state.tableRows.push(line);
+      } else {
+        // 非表格行：flush 表格
+        if (this.state.inTable) {
+          output += this.flushTable() + '\n';
+        }
+        output += this.renderLine(line) + '\n';
+      }
+    }
+
+    return output;
+  }
+
+  /**
+   * 解析并渲染缓冲的表格
+   */
+  private flushTable(): string {
+    if (!this.state.inTable || this.state.tableRows.length === 0) {
+      this.state.inTable = false;
+      this.state.tableRows = [];
+      return '';
+    }
+
+    this.state.inTable = false;
+    const rows = this.state.tableRows;
+    this.state.tableRows = [];
+
+    // 解析表格行
+    const parsed: string[][] = [];
+    let headerRow = 0;
+
+    for (let i = 0; i < rows.length; i++) {
+      const cells = rows[i].split('|').slice(1, -1).map(c => c.trim());
+      // 跳过分隔符行 (|---|---|)
+      if (cells.every(c => /^[-:]+$/.test(c))) {
+        headerRow = i + 1;
+        continue;
+      }
+      parsed.push(cells);
+    }
+
+    if (parsed.length === 0) return '';
+
+    // 计算每列最大宽度（基于可见宽度，CJK = 2）
+    const colWidths: number[] = [];
+    for (const row of parsed) {
+      for (let c = 0; c < row.length; c++) {
+        const w = visualWidth(row[c] || '');
+        colWidths[c] = Math.max(colWidths[c] || 0, w);
+      }
+    }
+
+    // 渲染表格
+    const lines: string[] = [];
+
+    for (let r = 0; r < parsed.length; r++) {
+      const row = parsed[r]!;
+      let line = CYAN('│ ');
+      for (let c = 0; c < colWidths.length; c++) {
+        const cell = row[c] || '';
+        const rendered = r === 0 ? BOLD(this.renderInline(cell)) : this.renderInline(cell);
+        const vw = visualWidth(cell);
+        const pad = Math.max(0, (colWidths[c] || 0) - vw);
+        line += rendered + ' '.repeat(pad) + CYAN(' │ ');
+      }
+      // Remove trailing space before closing
+      line = line.slice(0, -1);
+      lines.push(line);
+
+      // 表头分隔线
+      if (r === headerRow - 1) {
+        let sepLine = DIM('├');
+        for (let c = 0; c < colWidths.length; c++) {
+          sepLine += DIM('─'.repeat((colWidths[c] || 0) + 2) + '┼');
+        }
+        sepLine = sepLine.slice(0, -1);
+        lines.push(sepLine);
+      }
+    }
+
+    // 顶部和底部边框
+    let topLine = DIM('┌');
+    for (let c = 0; c < colWidths.length; c++) {
+      topLine += DIM('─'.repeat((colWidths[c] || 0) + 2) + '┬');
+    }
+    topLine = topLine.slice(0, -1);
+
+    let botLine = DIM('└');
+    for (let c = 0; c < colWidths.length; c++) {
+      botLine += DIM('─'.repeat((colWidths[c] || 0) + 2) + '┴');
+    }
+    botLine = botLine.slice(0, -1);
+
+    return '\n' + topLine + '\n' + lines.join('\n') + '\n' + botLine;
   }
 
   /**
@@ -218,6 +371,10 @@ export class StreamMarkdownRenderer {
       output += DIM('└── (incomplete)') + '\n';
     }
 
+    if (this.state.inTable) {
+      output += this.flushTable() + '\n';
+    }
+
     if (this.state.pendingInline) {
       output += this.renderInlineBuffer(this.state.pendingInline);
       this.state.pendingInline = '';
@@ -235,6 +392,8 @@ export class StreamMarkdownRenderer {
       codeBlockLang: '',
       codeBlockBuffer: '',
       pendingInline: '',
+      inTable: false,
+      tableRows: [],
     };
   }
 }
