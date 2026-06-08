@@ -11,9 +11,6 @@
 
 import chalk from 'chalk';
 
-// Force full 24-bit color support. Must be set BEFORE any chalk.hex/bgHex calls.
-chalk.level = 3;
-
 // ============================================================================
 // 颜色常量
 // ============================================================================

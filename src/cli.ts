@@ -6,11 +6,6 @@
 
 import 'dotenv/config';
 import chalk from 'chalk';
-
-// Force full 24-bit color support. MUST be before any local module imports
-// because those modules create chalk.hex constants at load time.
-chalk.level = 3;
-
 import readline from 'readline';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -80,6 +75,9 @@ const VERSION = (() => {
 // 颜色常量
 // ============================================================================
 
+// Force chalk to use full 24-bit color. Must be set BEFORE any chalk.hex/bgHex calls.
+chalk.level = 3;
+
 const BRAND = chalk.hex('#FF6B35');
 const ACCENT = chalk.hex('#00D4AA');
 const DIM = chalk.dim;
@@ -87,19 +85,9 @@ const ERROR = chalk.red;
 const WARN = chalk.yellow;
 const SUCCESS = chalk.green;
 
-/** User input background fill (Claude Code style) — dark slate bg + light text.
- *  Uses raw ANSI escape codes to bypass chalk's level detection issues.
- */
-const _USER_INPUT_BG = '\x1b[48;2;30;41;59m\x1b[38;2;226;232;240m';
-const _USER_INPUT_ACCENT = '\x1b[48;2;30;41;59m\x1b[38;2;0;212;170m';
-const _USER_INPUT_RESET = '\x1b[0m';
-
-function userInputFill(text: string): string {
-  return `${_USER_INPUT_BG} ${text} ${_USER_INPUT_RESET}`;
-}
-function userInputPrompt(): string {
-  return `${_USER_INPUT_ACCENT}❯ ${_USER_INPUT_RESET}`;
-}
+/** User input background — dark slate fill (like Claude Code) */
+const USER_INPUT_BG = chalk.bgHex('#1E293B').hex('#E2E8F0');
+const USER_INPUT_ACCENT = chalk.bgHex('#1E293B').hex('#00D4AA');
 
 // ============================================================================
 // CLI Help
@@ -387,7 +375,7 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
             process.stdout.write('\x1b[2K\r');
             const lines = fullInput.split('\n');
             for (const line of lines) {
-              console.log(userInputPrompt() + userInputFill(line));
+              console.log(USER_INPUT_ACCENT('❯ ') + USER_INPUT_BG(' ' + line + ' '));
             }
 
             // Issue #32 fix: 重置渲染长度，防止后续 redrawInputWithPrompt 清除用户输入
@@ -420,7 +408,7 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
         // Echo user input with semi-transparent background fill (Claude Code style)
         const echoLines = currentInput.split('\n');
         for (const echoLine of echoLines) {
-          console.log(userInputPrompt() + userInputFill(echoLine));
+          console.log(USER_INPUT_ACCENT('❯ ') + USER_INPUT_BG(' ' + echoLine + ' '));
         }
 
         // Issue #32 fix: 重置渲染长度，防止后续 redrawInputWithPrompt 清除用户输入行
