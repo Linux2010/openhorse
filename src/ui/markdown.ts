@@ -204,14 +204,6 @@ export function renderMarkdownFallback(text: string, maxWidth = DEFAULT_MAX_WIDT
       continue;
     }
 
-    // Markdown 表格
-    if (line.includes('|') && i + 1 < lines.length && /^\|?[\s-:|]+\|?$/.test(lines[i + 1])) {
-      const tableResult = renderTable(lines, i);
-      result.push(...tableResult.lines);
-      i = tableResult.nextIndex;
-      continue;
-    }
-
     // 普通文本行 — 无首行缩进
     const content = renderInline(line.trim());
     if (content) {
