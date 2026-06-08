@@ -87,17 +87,18 @@ const ERROR = chalk.red;
 const WARN = chalk.yellow;
 const SUCCESS = chalk.green;
 
-/** User input background fill (Claude Code style).
- *  Uses chalk.bgHex for 24-bit color when terminal supports it.
+/** User input background fill (Claude Code style) — dark slate bg + light text.
+ *  Uses raw ANSI escape codes to bypass chalk's level detection issues.
  */
-const _USER_INPUT_BG = chalk.bgHex('#1E293B').hex('#E2E8F0');
-const _USER_INPUT_ACCENT = chalk.bgHex('#1E293B').hex('#00D4AA');
+const _USER_INPUT_BG = '\x1b[48;2;30;41;59m\x1b[38;2;226;232;240m';
+const _USER_INPUT_ACCENT = '\x1b[48;2;30;41;59m\x1b[38;2;0;212;170m';
+const _USER_INPUT_RESET = '\x1b[0m';
 
 function userInputFill(text: string): string {
-  return _USER_INPUT_BG(' ' + text + ' ');
+  return `${_USER_INPUT_BG} ${text} ${_USER_INPUT_RESET}`;
 }
 function userInputPrompt(): string {
-  return _USER_INPUT_ACCENT('❯ ');
+  return `${_USER_INPUT_ACCENT}❯ ${_USER_INPUT_RESET}`;
 }
 
 // ============================================================================
@@ -416,7 +417,7 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
       if (currentInput.trim()) {
         // 先清除输入行的 prompt，然后打印用户输入（保存到终端历史）
         process.stdout.write('\x1b[2K\r');  // 清除当前 prompt 行
-        // Echo user input with background fill (Claude Code style)
+        // Echo user input with semi-transparent background fill (Claude Code style)
         const echoLines = currentInput.split('\n');
         for (const echoLine of echoLines) {
           console.log(userInputPrompt() + userInputFill(echoLine));
