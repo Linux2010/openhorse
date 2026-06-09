@@ -711,10 +711,6 @@ async function main(): Promise<void> {
         baseUrl: cliConfig.apiBaseUrl,
         model: cliConfig.model,
         fallbackModel: cliConfig.fallbackModel,
-        maxTokens: cliConfig.maxTokens,
-        temperature: cliConfig.temperature,
-        maxRetries: cliConfig.maxRetries,
-        retryBaseDelay: cliConfig.retryBaseDelay,
       });
     } catch (err: any) {
       console.log(WARN(`⚠ LLM initialization warning: ${err.message}`));

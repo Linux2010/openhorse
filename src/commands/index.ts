@@ -248,8 +248,6 @@ function showConfig(ctx: CommandContext): CommandResult {
     model: ctx.config.model,
     apiBaseUrl: ctx.config.apiBaseUrl || '(default OpenAI)',
     apiKey: ctx.config.apiKey ? `${ctx.config.apiKey.slice(0, 7)}***` : '(not set)',
-    maxTokens: String(ctx.config.maxTokens),
-    temperature: String(ctx.config.temperature),
     mode: ctx.config.mode,
     logLevel: ctx.config.logLevel,
   };
