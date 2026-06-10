@@ -19,7 +19,8 @@ import { loadGlobalConfig, type GlobalConfig } from './global-config';
 
 /**
  * OpenHorse 运行时配置
- * 用户可配置的只有 3 项，其余由 Agent 控制
+ * 用户可配置 4 项：apiKey, apiBaseUrl, model, fallbackModel
+ * 其余由 Agent 内部控制
  */
 export interface OpenHorseCLIConfig {
   // ---- 用户配置 ----
@@ -62,13 +63,13 @@ const INTERNAL_DEFAULTS = {
 
 /**
  * 从多源加载配置
- * 优先级：命令行 > 配置文件 > 环境变量 > 内部默认值
+ * 优先级：命令行 > 配置文件 > 环境变量 > Agent 内部默认值
  */
 export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHorseCLIConfig {
   const globalConfig = loadGlobalConfig();
 
   const config: OpenHorseCLIConfig = {
-    // 用户核心配置 — 3 项
+    // 用户核心配置 — 4 项
     apiKey:
       overrides.apiKey ?? globalConfig.apiKey ?? process.env.OPENHORSE_API_KEY ?? '',
     apiBaseUrl:

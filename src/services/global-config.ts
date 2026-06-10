@@ -29,7 +29,7 @@ export interface ProjectConfig {
 }
 
 /**
- * 全局配置 — 用户只需关注 3 项
+ * 全局配置 — 用户只需关注 4 项
  * maxTokens/temperature/retries 等由 Agent 智能控制
  */
 export interface GlobalConfig {
@@ -39,7 +39,7 @@ export interface GlobalConfig {
   apiBaseUrl?: string;
   /** 默认模型 */
   defaultModel: string;
-  /** 备用模型 */
+  /** 备用模型（主模型过载时自动切换） */
   fallbackModel?: string;
 
   // ---- 内部统计 (自动生成，不由用户配置) ----

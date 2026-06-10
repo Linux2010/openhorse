@@ -8,7 +8,7 @@
 
 ## 配置原则
 
-**用户只需配置 3 项**，其余参数由 Agent 智能控制。
+**用户只需配置 4 项**，其余参数由 Agent 智能控制。
 
 ## 用户配置项
 
@@ -17,17 +17,18 @@
 | `apiKey` | string | `OPENHORSE_API_KEY` | `""` | LLM API Key |
 | `apiBaseUrl` | string | `OPENHORSE_API_BASE_URL` | `(OpenAI 默认)` | API 地址 |
 | `defaultModel` | string | `OPENHORSE_MODEL` | `gpt-4o` | 默认模型 |
+| `fallbackModel` | string | `OPENHORSE_FALLBACK_MODEL` | `(无)` | 备用模型（主模型过载时自动切换） |
 
 ## Agent 内部控制（用户无需关心）
 
 以下参数由 Agent 根据任务自动选择，**不暴露给用户配置**：
 
-| 参数 | Agent 自适应策略 |
-|------|-----------------|
-| `maxTokens` | 代码 8192 / 分析 4096 / 简短 512 |
-| `temperature` | 代码 0.1（确定性）/ 分析 0.3 / 创意 0.7 |
-| `maxRetries` | 指数退避，自动调整（529 最多 5 次） |
-| `retryBaseDelay` | 500ms → 1s → 2s → 4s 指数退避 |
+| 参数 | Agent 默认值 | 说明 |
+|------|-------------|------|
+| `maxTokens` | 8192 | 代码场景需要足够长输出 |
+| `temperature` | 0.1 | 代码场景需要确定性输出 |
+| `maxRetries` | 3 | 指数退避，自动调整 |
+| `retryBaseDelay` | 500ms | 500ms → 1s → 2s → 4s |
 
 ## 内部统计（自动生成）
 
@@ -47,7 +48,8 @@
 {
   "apiKey": "sk-xxx",
   "apiBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  "defaultModel": "glm-5"
+  "defaultModel": "glm-5",
+  "fallbackModel": "qwen-plus"
 }
 ```
 
@@ -69,18 +71,16 @@
 }
 ```
 
-### 带备用模型
-
-```json
-{
-  "apiKey": "sk-xxx",
-  "defaultModel": "glm-5",
-  "fallbackModel": "qwen-plus"
-}
-```
-
 ## 配置加载优先级
 
 ```
 命令行参数 > ~/.openhorse/openhorse.json > 环境变量 > Agent 内部默认值
 ```
+
+## OpenClaude 参考
+
+OpenClaude 的用户配置方式：
+- `--model` / 设置 → 主模型
+- `--fallback-model` → 备用模型（过载时自动切换）
+- Provider Profile → apiKey + baseUrl + model 持久化
+- 其余参数（temperature, max_tokens 等）由内部根据任务自动选择
