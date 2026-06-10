@@ -46,8 +46,6 @@ describe('global-config', () => {
       const config = loadGlobalConfig();
 
       expect(config.defaultModel).toBe('gpt-4o');
-      expect(config.maxTokens).toBe(4096);
-      expect(config.temperature).toBe(0.7);
       expect(config.totalSessions).toBe(0);
       expect(config.totalTokens).toBe(0);
       expect(config.totalCost).toBe(0);
@@ -57,7 +55,7 @@ describe('global-config', () => {
       // Create a config file
       const customConfig: Partial<GlobalConfig> = {
         defaultModel: 'claude-sonnet-4-6',
-        budgetLimit: 10,
+        fallbackModel: 'gpt-4o',
         apiKey: 'test-key',
       };
       saveGlobalConfig({ ...loadGlobalConfig(), ...customConfig });
@@ -65,7 +63,7 @@ describe('global-config', () => {
       const config = loadGlobalConfig();
 
       expect(config.defaultModel).toBe('claude-sonnet-4-6');
-      expect(config.budgetLimit).toBe(10);
+      expect(config.fallbackModel).toBe('gpt-4o');
       expect(config.apiKey).toBe('test-key');
     });
 
@@ -84,7 +82,7 @@ describe('global-config', () => {
     test('creates config file with correct content', () => {
       const config = loadGlobalConfig();
       config.defaultModel = 'glm-5';
-      config.budgetLimit = 5;
+      config.fallbackModel = 'qwen-plus';
 
       saveGlobalConfig(config);
 
@@ -95,7 +93,7 @@ describe('global-config', () => {
       const parsed = JSON.parse(content);
 
       expect(parsed.defaultModel).toBe('glm-5');
-      expect(parsed.budgetLimit).toBe(5);
+      expect(parsed.fallbackModel).toBe('qwen-plus');
     });
   });
 

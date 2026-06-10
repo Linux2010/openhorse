@@ -65,13 +65,11 @@ describe('LLMService fallback model', () => {
     expect(llm.isUsingFallback()).toBe(false);
   });
 
-  test('chatStream triggers fallback after 3 consecutive 529 errors', async () => {
+  test('chatStream triggers fallback after consecutive 529 errors', async () => {
     const llm = new LLMService({
       apiKey: 'test',
       model: 'primary-model',
       fallbackModel: 'fallback-model',
-      maxRetries: 5,
-      retryBaseDelay: 1, // speed up test
     });
 
     // Build a 529 APIError to throw

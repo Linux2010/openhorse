@@ -73,15 +73,13 @@ describe('LLMService', () => {
       const llm = new LLMService({
         apiKey: 'test-key',
         model: 'gpt-4o',
-        maxTokens: 2048,
-        temperature: 0.5,
       });
 
       const summary = llm.getConfigSummary();
 
       expect(summary.model).toBe('gpt-4o');
-      expect(summary.maxTokens).toBe('2048');
-      expect(summary.temperature).toBe('0.5');
+      expect(summary.maxTokens).toBe('8192');
+      expect(summary.temperature).toBe('0.1');
     });
   });
 
