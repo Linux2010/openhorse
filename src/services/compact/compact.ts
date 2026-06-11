@@ -46,7 +46,7 @@ const DEFAULT_OPTIONS: CompactOptions = {
   maxMessages: 20,
   keepToolCalls: true,
   keepSystemMessage: true,
-  threshold: 50,
+  threshold: 0, // 不再使用消息数阈值，由 auto-compact 基于 token 控制
 };
 
 // ============================================================================

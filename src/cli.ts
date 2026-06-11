@@ -16,6 +16,7 @@ import { mcpManager } from './tools/mcp';
 import { loadConfig, isConfigured } from './services/config';
 import { ensureConfigDir } from './services/config-dir';
 import { recordFirstStartTime, incrementSessionCount, addToInputHistory, getInputHistory } from './services/global-config';
+import { calculateCtxPercent } from './services/model-context';
 import { createSession, type SessionMeta, readSessionMessages, updateSessionSummary, endSession } from './services/session-storage';
 import { loadAllMemories } from './memory/storage';
 import { getSkillsRegistry } from './skills';
@@ -634,7 +635,10 @@ function updateStatusBar(): void {
     promptTokens: usage?.promptTokens || 0,
     completionTokens: usage?.completionTokens || 0,
     cost: costStats.totalCost,
-    ctxPercent: Math.round((snapshot.conversationHistory.length / 50) * 100), // 假设 50 条上限
+    ctxPercent: calculateCtxPercent(
+      usage ? usage.promptTokens + usage.completionTokens : 0,
+      snapshot.currentModel || 'gpt-4o'
+    ),
     mcpConnected: mcpStatus.filter(s => s.connected).length,
     mcpTotal: mcpStatus.length,
   };

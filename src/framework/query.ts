@@ -16,7 +16,6 @@ import type { CostTracker } from '../core/cost-tracker';
 import { toOpenAITools } from './tool';
 import { createStrategyTracker, type StrategyTracker, type StrategyResult } from '../core/strategy-tracker';
 import { getAutoCompact } from '../services/compact/auto-compact';
-import { needsCompact } from '../services/compact/compact';
 
 // ============================================================================
 // 事件类型
@@ -278,16 +277,13 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       costTracker.record(response.usage, { model: response.model });
     }
 
-    // Auto-compact: check if conversation exceeds threshold
-    const compactThreshold = 50;
-    if (needsCompact(messages, compactThreshold)) {
-      const autoCompact = getAutoCompact({ threshold: compactThreshold });
-      const compacted = await autoCompact.checkAndCompact(messages);
-      if (compacted.length < messages.length) {
-        // Replace messages array content (keep reference for caller)
-        messages.length = 0;
-        messages.push(...compacted);
-      }
+    // Auto-compact at 95% context usage (token-based)
+    const totalTokens = response.usage?.promptTokens ?? 0;
+    const autoCompact = getAutoCompact({ modelId: response.model || llm.getModel() });
+    const compacted = await autoCompact.checkAndCompact(messages, totalTokens);
+    if (compacted.length < messages.length) {
+      messages.length = 0;
+      messages.push(...compacted);
     }
 
     yield {

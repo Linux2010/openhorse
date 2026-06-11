@@ -1,149 +1,72 @@
-/**
- * Compact 服务测试
- */
-
+import { getAutoCompact, resetAutoCompact, AutoCompact } from '../src/services/compact/auto-compact';
 import type { Message } from '../src/services/llm';
-import { needsCompact, compactMessages } from '../src/services/compact/compact';
-import { getAutoCompact, resetAutoCompact } from '../src/services/compact/auto-compact';
 
-// Helper to create messages
-function createMessages(count: number, content: string = 'test message'): Message[] {
-  return Array(count).fill(null).map(() => ({
+function createMessages(count: number): Message[] {
+  return Array.from({ length: count }, (_, i) => ({
     role: 'user' as const,
-    content: content,
+    content: `Message ${i}`,
   }));
 }
 
-describe('Compact Service', () => {
-  beforeEach(() => {
-    resetAutoCompact();
-  });
+beforeEach(() => {
+  resetAutoCompact();
+});
 
-  describe('needsCompact', () => {
-    test('returns true for messages > threshold', () => {
-      const msgs = createMessages(60);
-      expect(needsCompact(msgs, 50)).toBe(true);
-    });
+afterEach(() => {
+  resetAutoCompact();
+});
 
-    test('returns false for messages <= threshold', () => {
+describe('AutoCompact', () => {
+  describe('token-based compact', () => {
+    test('triggers compact when token usage exceeds 95%', async () => {
+      const autoCompact = getAutoCompact({
+        modelId: 'test-model',
+        threshold: 0.95,
+        maxMessages: 5,
+      });
+
+      // 95% of 128000 (default) = 121600 tokens
       const msgs = createMessages(30);
-      expect(needsCompact(msgs, 50)).toBe(false);
-    });
-
-    test('returns false for messages exactly at threshold', () => {
-      const msgs = createMessages(50);
-      expect(needsCompact(msgs, 50)).toBe(false);
-    });
-
-    test('uses default threshold of 50', () => {
-      const msgs = createMessages(51);
-      expect(needsCompact(msgs)).toBe(true);
-    });
-
-    test('handles empty array', () => {
-      const msgs: Message[] = [];
-      expect(needsCompact(msgs, 50)).toBe(false);
-    });
-  });
-
-  describe('compactMessages', () => {
-    test('reduces message count', async () => {
-      const msgs = createMessages(60, 'test message content here');
-      const result = await compactMessages(msgs, { threshold: 50, maxMessages: 20 });
-
-      expect(result.messages.length).toBeLessThan(msgs.length);
-      expect(result.originalCount).toBe(60);
-      expect(result.compactedCount).toBeLessThan(60);
-      expect(result.ratio).toBeLessThan(1);
-    });
-
-    test('does not compact if below threshold', async () => {
-      const msgs = createMessages(30);
-      const result = await compactMessages(msgs, { threshold: 50 });
-
-      expect(result.messages.length).toBe(msgs.length);
-      expect(result.originalCount).toBe(30);
-    });
-
-    test('keeps system message', async () => {
-      const msgs: Message[] = [
-        { role: 'system', content: 'You are a helpful assistant' },
-        ...createMessages(60),
-      ];
-      const result = await compactMessages(msgs, { threshold: 50, keepSystemMessage: true });
-
-      expect(result.messages[0].role).toBe('system');
-    });
-
-    test('generates summary', async () => {
-      const msgs = createMessages(60, 'test message content');
-      const result = await compactMessages(msgs, { threshold: 50 });
-
-      expect(result.summary).toBeDefined();
-      expect(result.summary.length).toBeGreaterThan(0);
-    });
-
-    test('maxMessages controls how many recent messages to keep', async () => {
-      const msgs = createMessages(60);
-      const result = await compactMessages(msgs, { threshold: 50, maxMessages: 10 });
-
-      // Should have ~10 recent messages + summary (2 messages) = ~12
-      expect(result.messages.length).toBeLessThanOrEqual(14);
-    });
-  });
-
-  describe('AutoCompact', () => {
-    test('checkAndCompact triggers when above threshold', async () => {
-      // Use messages > maxMessages to see actual compaction
-      const autoCompact = getAutoCompact({ threshold: 10, maxMessages: 5 });
-      const msgs = createMessages(20);
-
-      const result = await autoCompact.checkAndCompact(msgs);
-      // Should be compacted to ~5 recent + 2 summary = ~7
+      const result = await autoCompact.checkAndCompact(msgs, 125000);
       expect(result.length).toBeLessThan(msgs.length);
     });
 
-    test('checkAndCompact does nothing when below threshold', async () => {
-      const autoCompact = getAutoCompact({ threshold: 50, maxMessages: 20 });
-      const msgs = createMessages(30);
+    test('does nothing when below 95%', async () => {
+      const autoCompact = getAutoCompact({
+        modelId: 'glm-5', // 202752 context
+        maxMessages: 5,
+      });
 
-      const result = await autoCompact.checkAndCompact(msgs);
+      const msgs = createMessages(30);
+      // Only 1000 tokens, well below 95% of 202752
+      const result = await autoCompact.checkAndCompact(msgs, 1000);
       expect(result.length).toBe(msgs.length);
     });
 
-    test('checkAndCompact does nothing when messages <= maxMessages', async () => {
-      // Even if threshold is exceeded, if maxMessages >= messages, no old messages to compact
-      // But summary is still added (2 messages), so result = msgs.length + 2
-      const autoCompact = getAutoCompact({ threshold: 5, maxMessages: 20 });
-      const msgs = createMessages(15);
-
-      const result = await autoCompact.checkAndCompact(msgs);
-      // 15 > threshold 5 triggers compact, but maxMessages 20 >= 15
-      // All 15 messages are "recent", but summary adds 2 messages
-      expect(result.length).toBe(msgs.length + 2); // 15 + 2 summary messages
-    });
-
     test('respects 30s interval between compacts', async () => {
-      const autoCompact = getAutoCompact({ threshold: 10, maxMessages: 5 });
-      const msgs = createMessages(30);
+      const autoCompact = getAutoCompact({
+        modelId: 'test-model',
+        maxMessages: 3,
+      });
 
-      // First compact should work
-      const result1 = await autoCompact.checkAndCompact(msgs);
+      const msgs = createMessages(30);
+      const result1 = await autoCompact.checkAndCompact(msgs, 200000);
       expect(result1.length).toBeLessThan(msgs.length);
 
       // Immediate second call should not compact (interval check)
-      // It returns the input messages unchanged
       const freshMsgs = createMessages(30);
-      const result2 = await autoCompact.checkAndCompact(freshMsgs);
-      expect(result2.length).toBe(freshMsgs.length); // interval prevented compact, returns input
+      const result2 = await autoCompact.checkAndCompact(freshMsgs, 200000);
+      expect(result2.length).toBe(freshMsgs.length);
     });
 
     test('forceCompact bypasses interval check', async () => {
-      const autoCompact = getAutoCompact({ threshold: 10, maxMessages: 5 });
-      const msgs = createMessages(30);
+      const autoCompact = getAutoCompact({
+        modelId: 'test-model',
+        maxMessages: 3,
+      });
 
-      // First compact
-      await autoCompact.checkAndCompact(msgs);
+      const msgs = createMessages(30);
+      await autoCompact.checkAndCompact(msgs, 200000);
 
       // Force compact should work even within interval
       const freshMsgs = createMessages(30);
@@ -152,32 +75,60 @@ describe('Compact Service', () => {
     });
 
     test('setEnabled(false) disables auto compact', async () => {
-      const autoCompact = getAutoCompact({ threshold: 10, maxMessages: 5, enabled: false });
+      const autoCompact = getAutoCompact({
+        modelId: 'test-model',
+        maxMessages: 5,
+        enabled: false,
+      });
       const msgs = createMessages(30);
 
-      const result = await autoCompact.checkAndCompact(msgs);
-      expect(result.length).toBe(msgs.length); // no compact
+      const result = await autoCompact.checkAndCompact(msgs, 200000);
+      expect(result.length).toBe(msgs.length);
     });
 
     test('getStats returns correct values', async () => {
-      const autoCompact = getAutoCompact({ threshold: 10, maxMessages: 5 });
+      const autoCompact = getAutoCompact({
+        modelId: 'glm-5',
+        maxMessages: 5,
+      });
       const msgs = createMessages(30);
 
-      await autoCompact.checkAndCompact(msgs);
+      await autoCompact.checkAndCompact(msgs, 200000);
       const stats = autoCompact.getStats();
 
       expect(stats.compactCount).toBe(1);
-      expect(stats.threshold).toBe(10);
+      expect(stats.threshold).toBe(0.95);
       expect(stats.enabled).toBe(true);
+      expect(stats.modelId).toBe('glm-5');
     });
 
-    test('setThreshold updates threshold', async () => {
-      const autoCompact = getAutoCompact({ threshold: 10 });
-      autoCompact.setThreshold(100);
+    test('uses model-specific context window', async () => {
+      const autoCompact = getAutoCompact({
+        modelId: 'glm-5', // 202752 context
+      });
 
       const msgs = createMessages(30);
-      const result = await autoCompact.checkAndCompact(msgs);
-      expect(result.length).toBe(msgs.length); // below new threshold
+
+      // 100k tokens is 49% of glm-5's 202752 — should NOT compact
+      const result = await autoCompact.checkAndCompact(msgs, 100000);
+      expect(result.length).toBe(msgs.length);
+
+      // Check ctxPercent
+      const pct = autoCompact.getCtxPercent(100000);
+      expect(pct).toBe(49);
+    });
+
+    test('setModel updates context window', async () => {
+      const autoCompact = getAutoCompact({
+        modelId: 'glm-5', // 202752
+      });
+
+      // 100k is 49% of glm-5
+      expect(autoCompact.getCtxPercent(100000)).toBe(49);
+
+      autoCompact.setModel('gpt-4o'); // 128000
+      // 100k is 78% of gpt-4o's 128000
+      expect(autoCompact.getCtxPercent(100000)).toBe(78);
     });
   });
 });
