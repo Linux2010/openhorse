@@ -89,10 +89,13 @@ export {
   query,
   buildSystemPrompt, getSystemPrompt,
   Store,
+  ContextHarness, createContextHarness, ContextLedger,
+  createContextCapsule, renderContextCapsule, assembleHarnessMessages,
 } from './framework';
 export type {
   OpenHorseTool, ToolResult, ToolContext, ToolConfig, PermissionResult, ToolInputJSONSchema, OpenAITool,
   QueryEvent, QueryParams,
   PromptContext, PromptSection,
   AppState,
+  ContextCapsule, ContextLedgerEntry, HarnessConfig as ContextHarnessConfig, HarnessState, TaskContract,
 } from './framework';

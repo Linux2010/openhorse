@@ -1,8 +1,7 @@
 /**
  * openhorse - 流式 Markdown 渲染器
  *
- * 只缓冲代码块，防止代码块断裂。
- * 其他内容直接透传，不做处理。
+ * 支持流式渲染：标题、粗体、斜体、行内代码、列表、引用、链接、分割线、代码块
  */
 
 import chalk from 'chalk';
@@ -10,6 +9,17 @@ import chalk from 'chalk';
 const CODE_BG = chalk.bgHex('#1E293B');
 const CODE_TEXT = chalk.hex('#E2E8F0');
 const DIM = chalk.dim;
+const BOLD = chalk.bold;
+const CYAN = chalk.cyan;
+const GREEN = chalk.green;
+const MAGENTA = chalk.magenta;
+
+/**
+ * 去除 ANSI 颜色码
+ */
+function stripAnsi(str: string): string {
+  return str.replace(/\x1b\[[0-9;]*m/g, '');
+}
 
 // ============================================================================
 // 类型定义
@@ -19,6 +29,7 @@ export interface StreamRendererState {
   inCodeBlock: boolean;
   codeBlockLang: string;
   codeBlockBuffer: string;
+  pendingInline: string;
 }
 
 // ============================================================================
@@ -30,50 +41,40 @@ export class StreamMarkdownRenderer {
     inCodeBlock: false,
     codeBlockLang: '',
     codeBlockBuffer: '',
+    pendingInline: '',
   };
 
   /**
    * 输入 chunk，返回渲染后的 ANSI 字符串
-   *
-   * 策略：
-   * - 代码块内：缓冲直到代码块结束
-   * - 代码块外：直接透传（不做任何处理）
    */
   feed(chunk: string): string {
     if (!chunk) return '';
 
-    // 检测代码块开始/结束
     if (!this.state.inCodeBlock) {
-      // 检测代码块开始
       const codeStart = chunk.indexOf('```');
       if (codeStart >= 0) {
-        // 输出代码块前的内容
+        // 先渲染代码块前的内容
         const before = chunk.slice(0, codeStart);
         const after = chunk.slice(codeStart);
-
-        // 解析语言
         const langMatch = after.match(/```(\w+)?/);
         this.state.codeBlockLang = langMatch?.[1] || '';
         this.state.inCodeBlock = true;
         this.state.codeBlockBuffer = '';
 
-        // 输出代码块开始标记
         const langDisplay = this.state.codeBlockLang ? ` ${this.state.codeBlockLang}` : '';
-        return before + '\n' + DIM(`┌─${langDisplay}`) + '\n';
+        return this.renderInlineBuffer(before) + '\n' + DIM(`┌─${langDisplay}`) + '\n';
       }
 
-      // 无代码块：直接透传
-      return chunk;
+      // 非代码块：积累内容，遇到换行时渲染
+      this.state.pendingInline += chunk;
+      return this.consumePending();
     }
 
-    // 代码块内：检测结束
+    // === 代码块内 ===
     const codeEnd = chunk.indexOf('```');
     if (codeEnd >= 0) {
-      // 代码块结束
       const codeContent = chunk.slice(0, codeEnd);
       const after = chunk.slice(codeEnd + 3);
-
-      // 输出累积的代码内容 + 当前 chunk 的代码部分
       const fullCode = this.state.codeBlockBuffer + codeContent;
       const lines = fullCode.split('\n');
 
@@ -85,55 +86,159 @@ export class StreamMarkdownRenderer {
       }
       output += DIM('└──') + '\n';
 
-      // 重置状态
       this.state.inCodeBlock = false;
       this.state.codeBlockLang = '';
       this.state.codeBlockBuffer = '';
 
-      // 输出代码块后的内容
       return output + after;
     }
 
-    // 代码块内但未结束：缓冲
     this.state.codeBlockBuffer += chunk;
 
-    // 按行输出已完成的行
+    // 输出已完成的行
     const lines = this.state.codeBlockBuffer.split('\n');
     if (lines.length > 1) {
-      // 输出除最后一行外的所有行
       let output = '';
       for (let i = 0; i < lines.length - 1; i++) {
-        const line = lines[i];
-        if (line.trim() || i < lines.length - 2) {
-          output += CODE_BG(' ') + CODE_TEXT(line) + '\n';
-        }
+        output += CODE_BG(' ') + CODE_TEXT(lines[i]) + '\n';
       }
-      // 最后一行保留在 buffer
       this.state.codeBlockBuffer = lines[lines.length - 1];
       return output;
     }
 
-    // 未完成一行：不输出
     return '';
+  }
+
+  /**
+   * 消耗 pendingInline 中已完成的部分
+   */
+  private consumePending(): string {
+    let output = '';
+    const nlIndex = this.state.pendingInline.lastIndexOf('\n');
+    if (nlIndex === -1) return '';
+
+    // 保留最后一个 \n（可能后面还有内容）
+    const complete = this.state.pendingInline.slice(0, nlIndex);
+    this.state.pendingInline = this.state.pendingInline.slice(nlIndex);
+
+    const lines = complete.split('\n');
+    for (const line of lines) {
+      if (line === '') continue;
+      output += this.renderLine(line) + '\n';
+    }
+
+    return output;
+  }
+
+  /**
+   * 渲染一段文本的 Markdown 元素
+   */
+  private renderInlineBuffer(text: string): string {
+    if (!text) return '';
+
+    const lines = text.split('\n');
+    const output: string[] = [];
+
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li];
+      if (line === '' && li < lines.length - 1) {
+        output.push('');
+        continue;
+      }
+      output.push(this.renderLine(line));
+    }
+
+    return output.join('\n');
+  }
+
+  /**
+   * 渲染单行 Markdown
+   */
+  private renderLine(line: string): string {
+    // Horizontal rule
+    if (/^(-{3,}|[*]{3,})$/.test(line.trim())) {
+      return DIM('─'.repeat(Math.min(line.length, 60)));
+    }
+
+    // Headings
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      const level = headingMatch[1].length;
+      const text = headingMatch[2];
+      const styled = this.renderInline(text);
+      if (level <= 2) return '\n' + BOLD(CYAN(styled));
+      if (level <= 4) return '\n' + BOLD(GREEN(styled));
+      return '\n' + MAGENTA(styled);
+    }
+
+    // Blockquote
+    if (line.startsWith('> ')) {
+      return DIM('│ ') + this.renderInline(line.slice(2));
+    }
+    if (line.startsWith('>')) {
+      return DIM('│ ') + this.renderInline(line.slice(1).trim());
+    }
+
+    // Unordered list
+    const listMatch = line.match(/^(\s*)([-*+])\s+(.*)$/);
+    if (listMatch) {
+      return listMatch[1] + CYAN('• ') + this.renderInline(listMatch[3]);
+    }
+
+    // Ordered list
+    const orderedMatch = line.match(/^(\s*)(\d+)\.\s+(.*)$/);
+    if (orderedMatch) {
+      return orderedMatch[1] + CYAN(orderedMatch[2] + '.') + ' ' + this.renderInline(orderedMatch[3]);
+    }
+
+    return this.renderInline(line);
+  }
+
+  /**
+   * 渲染 inline Markdown 元素
+   */
+  private renderInline(text: string): string {
+    // Inline code: `code`
+    text = text.replace(/`([^`]+)`/g, (_m, code) => CODE_BG(' ') + CODE_TEXT(code));
+
+    // Bold: **text** or __text__
+    text = text.replace(/\*\*(.+?)\*\*/g, (_m, b) => BOLD(b));
+    text = text.replace(/__(.+?)__/g, (_m, b) => BOLD(b));
+
+    // Italic: *text* or _text_
+    text = text.replace(/\*(.+?)\*/g, (_m, i) => chalk.italic(i));
+    text = text.replace(/(?<!\w)_(.+?)_(?!\w)/g, (_m, i) => chalk.italic(i));
+
+    // Links: [text](url)
+    text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, lt, url) => {
+      return BOLD(CYAN(lt)) + DIM(` (${url})`);
+    });
+
+    return text;
   }
 
   /**
    * 结束时输出剩余内容
    */
   flush(): string {
+    let output = '';
+
     if (this.state.inCodeBlock && this.state.codeBlockBuffer) {
-      // 代码块未正常结束：输出剩余内容
       const lines = this.state.codeBlockBuffer.split('\n');
-      let output = '';
       for (const line of lines) {
         if (line.trim()) {
           output += CODE_BG(' ') + CODE_TEXT(line) + '\n';
         }
       }
       output += DIM('└── (incomplete)') + '\n';
-      return output;
     }
-    return '';
+
+    if (this.state.pendingInline) {
+      output += this.renderInlineBuffer(this.state.pendingInline);
+      this.state.pendingInline = '';
+    }
+
+    return output;
   }
 
   /**
@@ -144,6 +249,7 @@ export class StreamMarkdownRenderer {
       inCodeBlock: false,
       codeBlockLang: '',
       codeBlockBuffer: '',
+      pendingInline: '',
     };
   }
 }

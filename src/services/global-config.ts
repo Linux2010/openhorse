@@ -1,6 +1,8 @@
 /**
  * openhorse - 全局配置管理
  *
+ * 用户只需配置 3 项：apiKey、apiBaseUrl、defaultModel
+ * 其他参数由 Agent 内部智能控制。
  * 配置存储在 ~/.openhorse/openhorse.json
  * 支持环境变量覆盖配置值。
  */
@@ -26,46 +28,30 @@ export interface ProjectConfig {
   hasTrustDialogAccepted?: boolean;
 }
 
-/** 全局配置 */
+/**
+ * 全局配置 — 用户只需关注 4 项
+ * maxTokens/temperature/retries 等由 Agent 智能控制
+ */
 export interface GlobalConfig {
-  // ---- LLM 配置 ----
-  /** API Key (可选，可由环境变量提供) */
+  /** LLM API Key */
   apiKey?: string;
   /** API Base URL */
   apiBaseUrl?: string;
   /** 默认模型 */
   defaultModel: string;
-  /** 备用模型 */
+  /** 备用模型（主模型过载时自动切换） */
   fallbackModel?: string;
-  /** 最大输出 token */
-  maxTokens: number;
-  /** 温度 */
-  temperature: number;
-  /** 最大重试次数 */
-  maxRetries?: number;
-  /** 重试基础延迟 (ms) */
-  retryBaseDelay?: number;
 
-  // ---- 预算 ----
-  /** 预算限制 (USD) */
-  budgetLimit?: number;
-
-  // ---- 统计 ----
-  /** 总会话数 */
+  // ---- 内部统计 (自动生成，不由用户配置) ----
   totalSessions: number;
-  /** 总 token 数 */
   totalTokens: number;
-  /** 总成本 (USD) */
   totalCost: number;
 
-  // ---- 用户 ----
-  /** 用户 ID */
+  // ---- 内部标识 ----
   userId?: string;
-  /** 首次启动时间 (ISO string) */
   firstStartTime?: string;
 
-  // ---- 项目 ----
-  /** 项目配置映射 (路径 -> 配置) */
+  // ---- 项目配置 ----
   projects?: Record<string, ProjectConfig>;
 }
 
@@ -75,8 +61,6 @@ export interface GlobalConfig {
 
 const DEFAULT_CONFIG: GlobalConfig = {
   defaultModel: 'gpt-4o',
-  maxTokens: 4096,
-  temperature: 0.7,
   totalSessions: 0,
   totalTokens: 0,
   totalCost: 0,
@@ -103,14 +87,12 @@ export function loadGlobalConfig(): GlobalConfig {
     const parsed = JSON.parse(content);
     return { ...DEFAULT_CONFIG, ...parsed };
   } catch {
-    // 文件损坏时返回默认配置
     return { ...DEFAULT_CONFIG };
   }
 }
 
 /**
  * 保存全局配置
- * 使用 0o600 权限（仅用户可读写）
  */
 export function saveGlobalConfig(config: GlobalConfig): void {
   ensureConfigDir();
@@ -132,20 +114,11 @@ export function updateGlobalConfig(updates: Partial<GlobalConfig>): GlobalConfig
 // 项目配置
 // ============================================================================
 
-/**
- * 获取项目配置
- * @param projectPath 项目路径
- */
 export function getProjectConfig(projectPath: string): ProjectConfig {
   const config = loadGlobalConfig();
   return config.projects?.[projectPath] ?? {};
 }
 
-/**
- * 保存项目配置
- * @param projectPath 项目路径
- * @param projectConfig 项目配置
- */
 export function saveProjectConfig(projectPath: string, projectConfig: ProjectConfig): void {
   const config = loadGlobalConfig();
   config.projects = {
@@ -159,10 +132,6 @@ export function saveProjectConfig(projectPath: string, projectConfig: ProjectCon
 // 用户 ID
 // ============================================================================
 
-/**
- * 获取或创建用户 ID
- * 首次调用时生成并保存
- */
 export function getOrCreateUserId(): string {
   const config = loadGlobalConfig();
 
@@ -175,9 +144,6 @@ export function getOrCreateUserId(): string {
   return userId;
 }
 
-/**
- * 记录首次启动时间
- */
 export function recordFirstStartTime(): void {
   const config = loadGlobalConfig();
   if (!config.firstStartTime) {
@@ -189,17 +155,11 @@ export function recordFirstStartTime(): void {
 // 统计更新
 // ============================================================================
 
-/**
- * 增加会话计数
- */
 export function incrementSessionCount(): void {
   const config = loadGlobalConfig();
   updateGlobalConfig({ totalSessions: config.totalSessions + 1 });
 }
 
-/**
- * 更新 token 和成本统计
- */
 export function updateTokenStats(tokens: number, cost: number): void {
   const config = loadGlobalConfig();
   updateGlobalConfig({
@@ -219,16 +179,10 @@ export interface InputHistoryEntry {
   timestamp: number;
 }
 
-/**
- * 获取输入历史文件路径
- */
 function getInputHistoryPath(): string {
   return join(getConfigDir(), 'input-history.json');
 }
 
-/**
- * 加载输入历史
- */
 export function getInputHistory(): InputHistoryEntry[] {
   const path = getInputHistoryPath();
   if (!existsSync(path)) {
@@ -242,24 +196,17 @@ export function getInputHistory(): InputHistoryEntry[] {
   }
 }
 
-/**
- * 保存输入历史
- */
 function saveInputHistory(history: InputHistoryEntry[]): void {
   ensureConfigDir();
   const path = getInputHistoryPath();
   writeFileSync(path, JSON.stringify(history, null, 2), { mode: 0o600 });
 }
 
-/**
- * 添加输入到历史
- */
 export function addToInputHistory(content: string): void {
   if (!content.trim()) return;
 
   const history = getInputHistory();
 
-  // 去重：相似输入只保留最新
   const existingIndex = history.findIndex(h => h.content === content);
   if (existingIndex >= 0) {
     history.splice(existingIndex, 1);
@@ -270,7 +217,6 @@ export function addToInputHistory(content: string): void {
     timestamp: Date.now(),
   });
 
-  // 限制数量
   if (history.length > MAX_INPUT_HISTORY) {
     history.splice(MAX_INPUT_HISTORY);
   }
@@ -278,9 +224,6 @@ export function addToInputHistory(content: string): void {
   saveInputHistory(history);
 }
 
-/**
- * 搜索输入历史
- */
 export function searchInputHistory(query: string): InputHistoryEntry[] {
   const history = getInputHistory();
   if (!query) return history.slice(0, 20);

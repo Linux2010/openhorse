@@ -14,13 +14,10 @@ function makeConfig(overrides = {}) {
   return {
     apiKey: 'test-key',
     model: 'gpt-4o',
-    maxTokens: 4096,
-    temperature: 0.7,
+    fallbackModel: 'backup-model',
     name: 'test',
     mode: 'development' as const,
     logLevel: 'info' as const,
-    maxRetries: 3,
-    retryBaseDelay: 500,
     ...overrides,
   };
 }

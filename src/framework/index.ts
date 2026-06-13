@@ -29,6 +29,22 @@ export { Store } from './store';
 export type { AppState } from './store';
 
 export {
+  ContextHarness,
+  createContextHarness,
+  ContextLedger,
+  createContextCapsule,
+  renderContextCapsule,
+  assembleHarnessMessages,
+} from '../harness';
+export type {
+  ContextCapsule,
+  ContextLedgerEntry,
+  HarnessConfig,
+  HarnessState,
+  TaskContract,
+} from '../harness';
+
+export {
   getToolState,
   setToolState,
   subscribeToolState,

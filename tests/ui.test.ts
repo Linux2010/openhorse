@@ -2,10 +2,11 @@
  * openhorse - UI 组件测试
  */
 
-import { describe, test, expect, beforeEach } from '@jest/globals';
+import { describe, test, expect, beforeEach, afterEach } from '@jest/globals';
 import { createStreamRenderer, StreamMarkdownRenderer } from '../src/ui/stream-markdown';
 import { renderToolCard, renderToolLine, renderDiffPreview, renderReadPreview } from '../src/ui/tool-preview';
 import { renderStatusBar, renderCompactStatusBar } from '../src/ui/status-bar';
+import { renderUserInputEcho } from '../src/ui/user-input';
 
 // ============================================================================
 // StreamMarkdownRenderer 测试
@@ -19,7 +20,7 @@ describe('StreamMarkdownRenderer', () => {
   });
 
   test('renders plain text immediately', () => {
-    const output = renderer.feed('Hello world');
+    const output = renderer.feed('Hello world\n');
     expect(output).toContain('Hello world');
   });
 
@@ -42,9 +43,7 @@ describe('StreamMarkdownRenderer', () => {
     renderer.feed('Some text');
     renderer.feed(' more text');
     const flush = renderer.flush();
-    // Plain text is rendered inline, flush may be empty if already rendered
-    // This test verifies flush doesn't throw
-    expect(typeof flush).toBe('string');
+    expect(flush).toContain('Some text more text');
   });
 
   test('reset clears all state', () => {
@@ -165,5 +164,62 @@ describe('Status Bar', () => {
 
     const bar = renderStatusBar(stats);
     expect(bar).toContain('OpenHorse');
+  });
+});
+
+// ============================================================================
+// User Input Echo 测试
+// ============================================================================
+
+describe('User Input Echo', () => {
+  const originalNoColor = process.env.NO_COLOR;
+  const originalTerm = process.env.TERM;
+  const stripAnsi = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, '');
+
+  afterEach(() => {
+    if (originalNoColor === undefined) {
+      delete process.env.NO_COLOR;
+    } else {
+      process.env.NO_COLOR = originalNoColor;
+    }
+    if (originalTerm === undefined) {
+      delete process.env.TERM;
+    } else {
+      process.env.TERM = originalTerm;
+    }
+  });
+
+  test('renders submitted input with true-color background', () => {
+    delete process.env.NO_COLOR;
+    process.env.TERM = 'xterm-256color';
+
+    const output = renderUserInputEcho('hello', 20);
+
+    expect(output).toContain('\x1b[48;2;56;56;56m');
+    expect(output).toContain('\x1b[38;2;226;232;240m');
+    expect(stripAnsi(output)).toHaveLength(20);
+    expect(stripAnsi(output)).toContain('hello');
+  });
+
+  test('fills every submitted line to the terminal width', () => {
+    delete process.env.NO_COLOR;
+    process.env.TERM = 'xterm-256color';
+
+    const output = renderUserInputEcho('hello\n世界', 12);
+    const lines = stripAnsi(output).split('\n');
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toHaveLength(12);
+    expect(lines[1]).toContain('世界');
+  });
+
+  test('falls back to plain text when colors are disabled', () => {
+    process.env.NO_COLOR = '1';
+
+    const output = renderUserInputEcho('hello', 20);
+
+    expect(output).toHaveLength(20);
+    expect(output).toContain('hello');
+    expect(output).not.toContain('\x1b[');
   });
 });

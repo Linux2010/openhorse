@@ -11,6 +11,7 @@ import { join } from 'path';
 import { ensureConfigDir, getHistoryPath, getSessionMetaPath, getSessionMessagesPath, getSessionsDir } from './config-dir';
 import { atomicWriteFileSync } from './atomic-write';
 import type { Message } from './llm';
+import type { ContextCapsule, HarnessState } from '../harness';
 
 // ============================================================================
 // 类型定义
@@ -51,6 +52,10 @@ export interface SessionMeta {
   toolsUsed?: string[];
   /** 修改过的文件列表 */
   filesModified?: string[];
+  /** Context Harness 状态摘要 */
+  harnessState?: HarnessState;
+  /** 最近一次可恢复上下文包 */
+  contextCapsule?: ContextCapsule;
 }
 
 /** 历史记录条目 */
@@ -140,6 +145,18 @@ export function updateSessionStats(sessionId: string, tokens: number, cost: numb
 
   session.tokenCount += tokens;
   session.cost += cost;
+  saveSessionMeta(session);
+}
+
+/**
+ * 更新会话 Harness 状态。
+ */
+export function updateSessionHarnessState(sessionId: string, harnessState: HarnessState): void {
+  const session = loadSessionMeta(sessionId);
+  if (!session) return;
+
+  session.harnessState = harnessState;
+  session.contextCapsule = harnessState.capsule;
   saveSessionMeta(session);
 }
 
@@ -397,4 +414,3 @@ export function deleteSession(sessionId: string): boolean {
 
   return deleted;
 }
-

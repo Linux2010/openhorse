@@ -1,25 +1,34 @@
 /**
  * openhorse - 自动压缩触发器
  *
- * 监控对话长度，自动触发压缩。
+ * 监控对话 token 使用量，当上下文达到模型限制的 95% 时自动触发压缩。
+ * 每个模型自动感知其上下文窗口大小。
  */
 
 import type { Message } from '../llm';
-import { compactMessages, needsCompact, type CompactOptions } from './compact';
+import { compactMessages, type CompactOptions } from './compact';
+import { getModelContextWindow, AUTO_COMPACT_THRESHOLD } from '../model-context';
+import type { ContextCapsule } from '../../harness';
 
 // ============================================================================
 // 类型定义
 // ============================================================================
 
 export interface AutoCompactConfig {
-  /** 触发阈值 */
+  /** 触发阈值（0-1，默认 0.95 即 95%） */
   threshold?: number;
+  /** 模型 ID（用于获取上下文窗口） */
+  modelId?: string;
   /** 压缩后保留消息数 */
   maxMessages?: number;
   /** 是否启用自动压缩 */
   enabled?: boolean;
   /** 压缩回调（通知用户） */
-  onCompact?: (result: { originalCount: number; compactedCount: number }) => void;
+  onCompact?: (result: { originalCount: number; compactedCount: number; ctxPercent: number }) => void;
+  /** 提前准备可恢复上下文的阈值（0-1，默认 0.8） */
+  preCompactThreshold?: number;
+  /** 获取最新 Context Capsule */
+  getContextCapsule?: () => ContextCapsule | undefined | null;
 }
 
 // ============================================================================
@@ -27,29 +36,67 @@ export interface AutoCompactConfig {
 // ============================================================================
 
 export class AutoCompact {
-  private config: AutoCompactConfig;
+  private config: Required<Pick<AutoCompactConfig, 'threshold' | 'modelId' | 'maxMessages' | 'enabled' | 'preCompactThreshold'>> & {
+    onCompact?: AutoCompactConfig['onCompact'];
+    getContextCapsule?: AutoCompactConfig['getContextCapsule'];
+  };
   private lastCompactTime: number = 0;
   private compactCount: number = 0;
+  /** 最后一次计算的 token 使用量 */
+  private lastTokenCount: number = 0;
 
   constructor(config?: AutoCompactConfig) {
     this.config = {
-      threshold: config?.threshold || 50,
-      maxMessages: config?.maxMessages || 20,
+      threshold: config?.threshold ?? AUTO_COMPACT_THRESHOLD,
+      modelId: config?.modelId ?? 'gpt-4o',
+      maxMessages: config?.maxMessages ?? 20,
       enabled: config?.enabled ?? true,
+      preCompactThreshold: config?.preCompactThreshold ?? 0.8,
       onCompact: config?.onCompact,
+      getContextCapsule: config?.getContextCapsule,
     };
   }
 
   /**
-   * 检查并触发自动压缩
+   * 更新配置。AutoCompact 是单例，query loop 每轮可能需要刷新 model
+   * 和 capsule provider。
    */
-  async checkAndCompact(messages: Message[]): Promise<Message[]> {
+  configure(config?: AutoCompactConfig): void {
+    if (!config) return;
+    if (config.threshold !== undefined) this.config.threshold = config.threshold;
+    if (config.modelId !== undefined) this.config.modelId = config.modelId;
+    if (config.maxMessages !== undefined) this.config.maxMessages = config.maxMessages;
+    if (config.enabled !== undefined) this.config.enabled = config.enabled;
+    if (config.preCompactThreshold !== undefined) this.config.preCompactThreshold = config.preCompactThreshold;
+    if (config.onCompact !== undefined) this.config.onCompact = config.onCompact;
+    if (config.getContextCapsule !== undefined) this.config.getContextCapsule = config.getContextCapsule;
+  }
+
+  /**
+   * 更新模型（切换模型时调用）
+   */
+  setModel(modelId: string): void {
+    this.config.modelId = modelId;
+  }
+
+  /**
+   * 检查并触发自动压缩（基于 token 百分比）
+   * @param messages 当前对话消息列表
+   * @param usedTokens 当前已使用的 token 数（来自 API usage 响应）
+   */
+  async checkAndCompact(messages: Message[], usedTokens?: number): Promise<Message[]> {
     if (!this.config.enabled) {
       return messages;
     }
 
-    // 检查是否需要压缩
-    if (!needsCompact(messages, this.config.threshold)) {
+    const ctxPercent = this.calculateCtxPercent(usedTokens);
+    const contextCapsule =
+      ctxPercent >= this.config.preCompactThreshold * 100
+        ? this.config.getContextCapsule?.() ?? undefined
+        : undefined;
+
+    // 达到阈值才触发
+    if (ctxPercent < this.config.threshold * 100) {
       return messages;
     }
 
@@ -61,8 +108,8 @@ export class AutoCompact {
 
     // 执行压缩
     const result = await compactMessages(messages, {
-      threshold: this.config.threshold,
       maxMessages: this.config.maxMessages,
+      contextCapsule,
     });
 
     // 更新状态
@@ -74,6 +121,7 @@ export class AutoCompact {
       this.config.onCompact({
         originalCount: result.originalCount,
         compactedCount: result.compactedCount,
+        ctxPercent,
       });
     }
 
@@ -81,12 +129,34 @@ export class AutoCompact {
   }
 
   /**
+   * 计算上下文使用百分比
+   */
+  private calculateCtxPercent(usedTokens?: number, messages?: Message[]): number {
+    const contextWindow = getModelContextWindow(this.config.modelId);
+    if (usedTokens) {
+      this.lastTokenCount = usedTokens;
+      return Math.min(100, Math.round((usedTokens / contextWindow) * 100));
+    }
+    // Fallback: 估算 token 数（平均每个消息 ~200 tokens）
+    const estimated = (messages?.length ?? 0) * 200;
+    this.lastTokenCount = estimated;
+    return Math.min(100, Math.round((estimated / contextWindow) * 100));
+  }
+
+  /**
+   * 获取当前上下文百分比
+   */
+  getCtxPercent(usedTokens?: number, messages?: Message[]): number {
+    return this.calculateCtxPercent(usedTokens, messages);
+  }
+
+  /**
    * 强制压缩
    */
   async forceCompact(messages: Message[]): Promise<Message[]> {
     const result = await compactMessages(messages, {
-      threshold: this.config.threshold,
       maxMessages: this.config.maxMessages,
+      contextCapsule: this.config.getContextCapsule?.() ?? undefined,
     });
 
     this.compactCount++;
@@ -95,6 +165,7 @@ export class AutoCompact {
       this.config.onCompact({
         originalCount: result.originalCount,
         compactedCount: result.compactedCount,
+        ctxPercent: this.getCtxPercent(),
       });
     }
 
@@ -108,13 +179,19 @@ export class AutoCompact {
     compactCount: number;
     lastCompactTime: number;
     threshold: number;
+    preCompactThreshold: number;
     enabled: boolean;
+    modelId: string;
+    ctxPercent: number;
   } {
     return {
       compactCount: this.compactCount,
       lastCompactTime: this.lastCompactTime,
-      threshold: this.config.threshold || 50,
-      enabled: this.config.enabled ?? true,
+      threshold: this.config.threshold,
+      preCompactThreshold: this.config.preCompactThreshold,
+      enabled: this.config.enabled,
+      modelId: this.config.modelId,
+      ctxPercent: this.getCtxPercent(),
     };
   }
 
@@ -123,13 +200,6 @@ export class AutoCompact {
    */
   setEnabled(enabled: boolean): void {
     this.config.enabled = enabled;
-  }
-
-  /**
-   * 更新阈值
-   */
-  setThreshold(threshold: number): void {
-    this.config.threshold = threshold;
   }
 }
 
@@ -142,6 +212,8 @@ let autoCompactInstance: AutoCompact | null = null;
 export function getAutoCompact(config?: AutoCompactConfig): AutoCompact {
   if (!autoCompactInstance) {
     autoCompactInstance = new AutoCompact(config);
+  } else if (config) {
+    autoCompactInstance.configure(config);
   }
   return autoCompactInstance;
 }

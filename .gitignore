@@ -6,4 +6,7 @@ tests/tmp/
 docs/*
 !docs/issues/
 !docs/test/
+!docs/version/
+!docs/config.md
+!docs/openhorse.example.json
 coverage/

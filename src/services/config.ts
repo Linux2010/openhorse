@@ -1,11 +1,14 @@
 /**
  * openhorse - 配置加载
  *
+ * 用户只需配置 3 项：apiKey、apiBaseUrl、defaultModel
+ * 其他参数由 Agent 内部智能控制。
+ *
  * 配置加载优先级：
  *   1. 命令行参数
  *   2. ~/.openhorse/openhorse.json (GlobalConfig)
  *   3. 环境变量
- *   4. 默认值
+ *   4. Agent 内部默认值
  */
 
 import { loadGlobalConfig, type GlobalConfig } from './global-config';
@@ -14,8 +17,13 @@ import { loadGlobalConfig, type GlobalConfig } from './global-config';
 // 类型定义
 // ============================================================================
 
-/** OpenHorse 运行时配置 */
+/**
+ * OpenHorse 运行时配置
+ * 用户可配置 4 项：apiKey, apiBaseUrl, model, fallbackModel
+ * 其余由 Agent 内部控制
+ */
 export interface OpenHorseCLIConfig {
+  // ---- 用户配置 ----
   /** LLM API Key */
   apiKey: string;
   /** LLM API Base URL */
@@ -24,38 +32,30 @@ export interface OpenHorseCLIConfig {
   model: string;
   /** 备用模型（主模型失败时切换） */
   fallbackModel?: string;
-  /** 最大输出 token */
-  maxTokens: number;
-  /** 温度 */
-  temperature: number;
-  /** 最大重试次数 */
-  maxRetries: number;
-  /** 重试基础延迟 (ms) */
-  retryBaseDelay: number;
+
+  // ---- Agent 内部参数 (不由用户配置) ----
   /** 实例名称 */
   name: string;
   /** 运行模式 */
   mode: 'development' | 'production';
   /** 日志级别 */
   logLevel: 'debug' | 'info' | 'warn' | 'error';
-  /** 预算限制 (USD) */
-  budgetLimit?: number;
 }
 
 // ============================================================================
-// 默认配置
+// Agent 内部默认值（用户无需关心）
 // ============================================================================
 
-const DEFAULTS: Partial<OpenHorseCLIConfig> = {
-  model: 'gpt-4o',
-  maxTokens: 4096,
-  temperature: 0.7,
-  maxRetries: 3,
-  retryBaseDelay: 500,
+const INTERNAL_DEFAULTS = {
+  // 以下参数由 Agent 根据任务自动选择，不暴露给用户配置
+  // maxTokens:    代码 8192 / 分析 4096 / 简短 512
+  // temperature:  代码 0.1 / 分析 0.3 / 创意 0.7
+  // maxRetries:   指数退避，自动调整
+  // retryDelay:   500ms → 1s → 2s → 4s
   name: 'openhorse',
   mode: 'development',
   logLevel: 'info',
-};
+} as const;
 
 // ============================================================================
 // 加载配置
@@ -63,37 +63,29 @@ const DEFAULTS: Partial<OpenHorseCLIConfig> = {
 
 /**
  * 从多源加载配置
- * 优先级：命令行 > 配置文件 > 环境变量 > 默认值
+ * 优先级：命令行 > 配置文件 > 环境变量 > Agent 内部默认值
  */
 export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHorseCLIConfig {
   const globalConfig = loadGlobalConfig();
 
   const config: OpenHorseCLIConfig = {
-    // 新优先级：overrides > globalConfig > env > defaults
+    // 用户核心配置 — 4 项
     apiKey:
       overrides.apiKey ?? globalConfig.apiKey ?? process.env.OPENHORSE_API_KEY ?? '',
     apiBaseUrl:
       overrides.apiBaseUrl ?? globalConfig.apiBaseUrl ?? process.env.OPENHORSE_API_BASE_URL ?? process.env.OPENHORSE_BASE_URL ?? undefined,
     model:
-      overrides.model ?? globalConfig.defaultModel ?? process.env.OPENHORSE_MODEL ?? DEFAULTS.model!,
+      overrides.model ?? globalConfig.defaultModel ?? process.env.OPENHORSE_MODEL ?? 'gpt-4o',
     fallbackModel:
       overrides.fallbackModel ?? globalConfig.fallbackModel ?? process.env.OPENHORSE_FALLBACK_MODEL ?? undefined,
-    maxTokens:
-      overrides.maxTokens ?? globalConfig.maxTokens ?? parseNum(process.env.OPENHORSE_MAX_TOKENS) ?? DEFAULTS.maxTokens!,
-    temperature:
-      overrides.temperature ?? globalConfig.temperature ?? parseNum(process.env.OPENHORSE_TEMPERATURE) ?? DEFAULTS.temperature!,
-    maxRetries:
-      overrides.maxRetries ?? globalConfig.maxRetries ?? parseNum(process.env.OPENHORSE_MAX_RETRIES) ?? DEFAULTS.maxRetries!,
-    retryBaseDelay:
-      overrides.retryBaseDelay ?? globalConfig.retryBaseDelay ?? parseNum(process.env.OPENHORSE_RETRY_BASE_DELAY) ?? DEFAULTS.retryBaseDelay!,
+
+    // Agent 内部参数
     name:
-      overrides.name ?? process.env.OPENHORSE_NAME ?? DEFAULTS.name!,
+      overrides.name ?? process.env.OPENHORSE_NAME ?? INTERNAL_DEFAULTS.name,
     mode:
-      (overrides.mode ?? process.env.OPENHORSE_MODE ?? DEFAULTS.mode!) as 'development' | 'production',
+      (overrides.mode ?? process.env.OPENHORSE_MODE ?? INTERNAL_DEFAULTS.mode) as 'development' | 'production',
     logLevel:
-      (overrides.logLevel ?? process.env.OPENHORSE_LOG_LEVEL ?? DEFAULTS.logLevel!) as OpenHorseCLIConfig['logLevel'],
-    budgetLimit:
-      overrides.budgetLimit ?? globalConfig.budgetLimit ?? parseNum(process.env.OPENHORSE_BUDGET),
+      (overrides.logLevel ?? process.env.OPENHORSE_LOG_LEVEL ?? INTERNAL_DEFAULTS.logLevel) as OpenHorseCLIConfig['logLevel'],
   };
 
   return config;
@@ -112,7 +104,7 @@ export function isConfigured(config: OpenHorseCLIConfig): boolean {
 export function getConfigErrors(config: OpenHorseCLIConfig): string[] {
   const errors: string[] = [];
   if (!config.apiKey) {
-    errors.push('Missing OPENHORSE_API_KEY. Set it in ~/.openhorse/openhorse.json, .env file, or environment variable.');
+    errors.push('Missing OPENHORSE_API_KEY. Set it in ~/.openhorse/openhorse.json or environment variable.');
   }
   return errors;
 }
@@ -127,20 +119,7 @@ export function getConfigSummary(config: OpenHorseCLIConfig): Record<string, str
     fallback: config.fallbackModel || '(none)',
     apiBaseUrl: config.apiBaseUrl || '(default OpenAI)',
     apiKey: config.apiKey ? `${config.apiKey.slice(0, 7)}***` : '(not set)',
-    maxTokens: String(config.maxTokens),
-    temperature: String(config.temperature),
-    maxRetries: String(config.maxRetries),
-    retryBaseDelay: String(config.retryBaseDelay) + 'ms',
     mode: config.mode,
     logLevel: config.logLevel,
-    budgetLimit: config.budgetLimit ? `$${config.budgetLimit}` : '(no limit)',
   };
-}
-
-// ---- Internal ----
-
-function parseNum(val: string | undefined): number | undefined {
-  if (!val) return undefined;
-  const num = Number(val);
-  return Number.isNaN(num) ? undefined : num;
 }

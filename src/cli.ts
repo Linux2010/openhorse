@@ -16,6 +16,7 @@ import { mcpManager } from './tools/mcp';
 import { loadConfig, isConfigured } from './services/config';
 import { ensureConfigDir } from './services/config-dir';
 import { recordFirstStartTime, incrementSessionCount, addToInputHistory, getInputHistory } from './services/global-config';
+import { calculateCtxPercent, discoverModelContexts } from './services/model-context';
 import { createSession, type SessionMeta, readSessionMessages, updateSessionSummary, endSession } from './services/session-storage';
 import { loadAllMemories } from './memory/storage';
 import { getSkillsRegistry } from './skills';
@@ -59,6 +60,7 @@ import {
   redrawInputWithFile,
 } from './ui/file-completion';
 import { renderStatusBar, type StatusBarStats } from './ui/status-bar';
+import { renderUserInputEcho } from './ui/user-input';
 
 // Get version from package.json
 const VERSION = (() => {
@@ -126,6 +128,26 @@ let inputHistory: { content: string; timestamp: number }[] = [];
 let historyIndex: number = -1;
 let historyMode: 'none' | 'navigate' | 'search' = 'none';
 let searchQuery: string = '';
+
+function echoSubmittedInput(input: string): void {
+  process.stdout.write('\x1b[2K\r');
+  console.log(renderUserInputEcho(input));
+  resetRenderLength();
+}
+
+function submitInput(input: string): void {
+  const submittedInput = input;
+  currentInput = '';
+  echoSubmittedInput(submittedInput);
+
+  handleInput(submittedInput).catch(err => {
+    console.log(ERROR(`Input error: ${err.message || String(err)}`));
+    redrawInputWithPrompt(currentInput);
+  });
+
+  addToInputHistory(submittedInput);
+  inputHistory = getInputHistory();
+}
 
 // ============================================================================
 // keypress 事件处理
@@ -198,11 +220,7 @@ function handlePanelKeypress(k: KeyInfo, char: string | undefined): void {
     case 'enter':
       const cmd = selectCommand();
       if (cmd) {
-        currentInput = cmd;
-        redrawInputWithPrompt(currentInput);
-        // 直接执行命令
-        handleInput(currentInput);
-        currentInput = '';
+        submitInput(cmd);
         clearPendingCommand();
       }
       break;
@@ -217,16 +235,16 @@ function handlePanelKeypress(k: KeyInfo, char: string | undefined): void {
         hideCommandPanel();
         redrawInputWithPrompt(currentInput);
       } else {
-        updatePanelFilter(currentInput.slice(1));
         redrawInputWithPrompt(currentInput);
+        updatePanelFilter(currentInput.slice(1));
       }
       break;
     default:
       // 添加字符到过滤
       if (char && char.length === 1 && !k.ctrl) {
         currentInput += char;
-        updatePanelFilter(currentInput.slice(1));
         redrawInputWithPrompt(currentInput);
+        updatePanelFilter(currentInput.slice(1));
       }
   }
 }
@@ -362,21 +380,9 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
           const fullInput = getMultilineInput();
           resetMultiline();
           if (fullInput.trim()) {
-            // 回显多行输入
-            process.stdout.write('\x1b[2K\r');
-            const lines = fullInput.split('\n');
-            for (const line of lines) {
-              console.log(DIM('  ') + line);
-            }
-
-            // Issue #32 fix: 重置渲染长度，防止后续 redrawInputWithPrompt 清除用户输入
-            resetRenderLength();
-            handleInput(fullInput);
-            addToInputHistory(fullInput);
-            inputHistory = getInputHistory();
+            submitInput(fullInput);
           }
           currentInput = '';
-          redrawInputWithPrompt('');
         }
         return;
       }
@@ -392,19 +398,7 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
 
       // 正常发送输入
       if (currentInput.trim()) {
-        // 先清除输入行的 prompt，然后打印用户输入（保存到终端历史）
-        process.stdout.write('\x1b[2K\r');  // 清除当前 prompt 行
-        console.log(ACCENT('❯ ') + currentInput);  // 回显用户输入
-
-        // Issue #32 fix: 重置渲染长度，防止后续 redrawInputWithPrompt 清除用户输入行
-        // 因为 console.log 打印后光标在新行，redrawInputWithPrompt 会从当前位置向上清除
-        resetRenderLength();
-
-        handleInput(currentInput);
-        addToInputHistory(currentInput);
-        inputHistory = getInputHistory();
-        currentInput = '';
-        redrawInputWithPrompt('');
+        submitInput(currentInput);
       }
       break;
     case 'backspace':
@@ -461,11 +455,9 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
       // 避免在 URL（http://）、路径（src/）、正则等场景误触发
       if (currentInput === '') {
         currentInput = '/';
-        showCommandPanel('');
-        // 命令面板已渲染，光标已在正确位置
-        // 重置渲染长度并写入 `/` 符号
         resetRenderLength();
-        process.stdout.write('/');
+        redrawInputWithPrompt(currentInput);
+        showCommandPanel('');
       } else {
         // 正常添加 `/` 到输入
         currentInput += '/';
@@ -490,12 +482,12 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
 
 function updateHistorySearch(): void {
   if (searchQuery) {
-    const matches = inputHistory.filter(h => h.content.toLowerCase().includes(searchQuery.toLowerCase()));
-    inputHistory = matches;
+    const allHistory = getInputHistory();
+    const matches = allHistory.filter(h => h.content.toLowerCase().includes(searchQuery.toLowerCase()));
     historyIndex = 0;
     currentInput = matches[0]?.content || '';
+    // Don't replace inputHistory — just display filtered results
   } else {
-    inputHistory = getInputHistory();
     historyIndex = -1;
     currentInput = '';
   }
@@ -630,7 +622,10 @@ function updateStatusBar(): void {
     promptTokens: usage?.promptTokens || 0,
     completionTokens: usage?.completionTokens || 0,
     cost: costStats.totalCost,
-    ctxPercent: Math.round((snapshot.conversationHistory.length / 50) * 100), // 假设 50 条上限
+    ctxPercent: calculateCtxPercent(
+      usage ? usage.promptTokens + usage.completionTokens : 0,
+      snapshot.currentModel || 'gpt-4o'
+    ),
     mcpConnected: mcpStatus.filter(s => s.connected).length,
     mcpTotal: mcpStatus.length,
   };
@@ -707,11 +702,18 @@ async function main(): Promise<void> {
         baseUrl: cliConfig.apiBaseUrl,
         model: cliConfig.model,
         fallbackModel: cliConfig.fallbackModel,
-        maxTokens: cliConfig.maxTokens,
-        temperature: cliConfig.temperature,
-        maxRetries: cliConfig.maxRetries,
-        retryBaseDelay: cliConfig.retryBaseDelay,
       });
+
+      // 动态发现模型上下文窗口（非阻塞）
+      if (cliConfig.apiBaseUrl) {
+        discoverModelContexts(cliConfig.apiBaseUrl, cliConfig.apiKey)
+          .then(models => {
+            if (models.length > 0) {
+              console.log(`  Discovered ${models.length} models from API`);
+            }
+          })
+          .catch(() => {}); // 静默失败，回退到内置数据库
+      }
     } catch (err: any) {
       console.log(WARN(`⚠ LLM initialization warning: ${err.message}`));
     }

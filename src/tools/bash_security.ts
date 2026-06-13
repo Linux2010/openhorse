@@ -127,6 +127,20 @@ export const READ_ONLY_COMMANDS = [
 ];
 
 /**
+ * Validation commands that are safe enough to run without an interactive
+ * confirmation prompt. They may read the project and execute local test code,
+ * but they are standard verification steps for coding-agent work.
+ */
+export const VALIDATION_COMMAND_PATTERNS = [
+  /^(npx\s+)?tsc\b.*--noEmit\b/,
+  /^npx\s+(jest|vitest|eslint)\b/,
+  /^(npm|pnpm|yarn)\s+test(\s|$)/,
+  /^(npm|pnpm|yarn)\s+run\s+(test|lint|typecheck|check)(\s|$)/,
+  /^pnpm\s+(test|lint|typecheck|check)(\s|$)/,
+  /^yarn\s+(test|lint|typecheck|check)(\s|$)/,
+];
+
+/**
  * Dangerous command patterns that should always be blocked or require confirmation.
  */
 export const DANGEROUS_PATTERNS = [
@@ -221,6 +235,14 @@ export function isReadOnlyCommand(cmd: string): boolean {
 }
 
 /**
+ * Check if a command is a bounded validation command.
+ */
+export function isValidationCommand(cmd: string): boolean {
+  const trimmedCmd = cmd.trim();
+  return VALIDATION_COMMAND_PATTERNS.some(pattern => pattern.test(trimmedCmd));
+}
+
+/**
  * Check if a command matches dangerous patterns.
  * Returns the first matched dangerous pattern, or null if safe.
  */
@@ -267,6 +289,15 @@ export function assessCommandSecurity(cmd: string): {
   if (isReadOnlyCommand(cmd)) {
     return {
       level: 'safe',
+      isReadOnly: true,
+    };
+  }
+
+  // Check for common verification commands explicitly requested by users.
+  if (isValidationCommand(cmd)) {
+    return {
+      level: 'safe',
+      reason: 'Validation command',
       isReadOnly: true,
     };
   }

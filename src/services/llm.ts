@@ -14,7 +14,7 @@ import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/reso
 // 类型定义
 // ============================================================================
 
-/** LLM 配置 */
+/** LLM 配置 — 用户只需关注 3 项 */
 export interface LLMConfig {
   /** API Key */
   apiKey: string;
@@ -24,16 +24,12 @@ export interface LLMConfig {
   model: string;
   /** 备用模型（主模型失败时切换） */
   fallbackModel?: string;
-  /** 最大输出 token 数 */
-  maxTokens?: number;
-  /** 温度 */
-  temperature?: number;
   /** 请求超时 (ms) */
   timeout?: number;
-  /** 最大重试次数 */
-  maxRetries?: number;
-  /** 重试基础延迟 (ms) */
-  retryBaseDelay?: number;
+  // 以下参数由 Agent 智能控制，不暴露给用户:
+  // maxTokens:    代码 8192 / 分析 4096 / 简短 512
+  // temperature:  代码 0.1 / 分析 0.3 / 创意 0.7
+  // maxRetries:   指数退避，自动调整
 }
 
 /** 重试配置 */
@@ -222,11 +218,26 @@ async function withRetry<T>(
 // LLMService
 // ============================================================================
 
+// ============================================================================
+// Agent 内部参数默认值（用户无需配置）
+// ============================================================================
+
+const DEFAULT_MAX_TOKENS = 8192;      // 代码场景需要足够长的输出
+const DEFAULT_TEMPERATURE = 0.1;       // 代码场景需要确定性输出
+const DEFAULT_MAX_RETRIES = DEFAULT_RETRY_CONFIG.maxRetries;
+const DEFAULT_RETRY_DELAY = DEFAULT_RETRY_CONFIG.baseDelayMs;
+
 export class LLMService {
   private client: OpenAI;
-  private config: Required<
-    Pick<LLMConfig, 'model' | 'maxTokens' | 'temperature' | 'timeout'>
-  > & { fallbackModel: string; maxRetries: number; retryBaseDelay: number };
+  private config: {
+    model: string;
+    fallbackModel: string;
+    maxTokens: number;
+    temperature: number;
+    timeout: number;
+    maxRetries: number;
+    retryBaseDelay: number;
+  };
   private consecutive529Errors = 0;
   private usingFallback = false;
 
@@ -238,14 +249,15 @@ export class LLMService {
       dangerouslyAllowBrowser: true,
     });
 
+    // Agent 内部控制参数，不由用户配置
     this.config = {
       model: config.model,
       fallbackModel: config.fallbackModel ?? '',
-      maxTokens: config.maxTokens ?? 4096,
-      temperature: config.temperature ?? 0.7,
+      maxTokens: DEFAULT_MAX_TOKENS,
+      temperature: DEFAULT_TEMPERATURE,
       timeout: config.timeout ?? 60000,
-      maxRetries: config.maxRetries ?? DEFAULT_RETRY_CONFIG.maxRetries,
-      retryBaseDelay: config.retryBaseDelay ?? DEFAULT_RETRY_CONFIG.baseDelayMs,
+      maxRetries: DEFAULT_MAX_RETRIES,
+      retryBaseDelay: DEFAULT_RETRY_DELAY,
     };
   }
 

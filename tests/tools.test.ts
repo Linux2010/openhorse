@@ -174,6 +174,16 @@ describe('exec_command tool', () => {
     expect(tool.isDestructive?.({ command: 'ls -la' })).toBe(false);
   });
 
+  test('checkPermissions allows bounded validation command', () => {
+    const perm = tool.checkPermissions?.({ command: 'npx tsc --noEmit' }, ctx);
+    expect(perm?.behavior).toBe('allow');
+  });
+
+  test('checkPermissions still asks for arbitrary commands', () => {
+    const perm = tool.checkPermissions?.({ command: 'npm run start' }, ctx);
+    expect(perm?.behavior).toBe('ask');
+  });
+
   test('userFacingName returns truncated command', () => {
     const name = tool.userFacingName?.({ command: 'echo hello world' });
     expect(name).toBe('Exec echo hello world');

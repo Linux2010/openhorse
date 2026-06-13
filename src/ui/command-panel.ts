@@ -35,6 +35,9 @@ const BRAND = colorize.brand;
 const DIM = colorize.dim;
 const SELECTED = colorize.selected;
 
+const DEFAULT_MATCH_LIMIT = 8;
+const FILTERED_MATCH_LIMIT = 6;
+
 // ============================================================================
 // SIGWINCH 处理 - Issue #32 #3.11
 // ============================================================================
@@ -184,11 +187,11 @@ export function clearPendingCommand(): void {
 function updateMatches(): void {
   const commands = getCommands();
   if (!state.filter) {
-    state.matches = commands.slice(0, 10);
+    state.matches = commands.slice(0, DEFAULT_MATCH_LIMIT);
   } else {
     state.matches = commands
       .filter(c => c.name.startsWith(state.filter) || c.aliases?.some(a => a.startsWith(state.filter)))
-      .slice(0, 10);
+      .slice(0, FILTERED_MATCH_LIMIT);
   }
 }
 
@@ -217,21 +220,17 @@ function render(): void {
     const cmd = state.matches[i];
     const isSelected = i === state.selectedIndex;
 
-    // 格式: /name [alias] - description
+    // 格式: /name (alias) description. Keep rows compact while users type.
     const aliases = cmd.aliases?.length ? ` (${cmd.aliases[0]})` : '';
-    const hint = cmd.argumentHint ? ` ${cmd.argumentHint}` : '';
-    const desc = cmd.description.length > 30 ? cmd.description.slice(0, 27) + '...' : cmd.description;
-
-    // 类型标签
-    const typeLabel = cmd.type === 'chat' ? '[Chat]' : '[Cmd]';
-
-    const content = `${cmd.name}${aliases}${hint}`;
-    const padding = innerWidth - content.length - desc.length - typeLabel.length - 4;
+    const content = `/${cmd.name}${aliases}`;
+    const desc = cmd.description.length > 28 ? cmd.description.slice(0, 25) + '...' : cmd.description;
+    const padding = innerWidth - content.length - desc.length - 2;
+    const gap = ' '.repeat(Math.max(1, padding));
 
     if (isSelected) {
-      lines.push(SELECTED(` ${'/' + content} `) + ' '.repeat(Math.max(0, padding)) + SELECTED(` ${desc} ${typeLabel} `));
+      lines.push(DIM('│ ') + SELECTED(content + gap + desc) + DIM(' │'));
     } else {
-      lines.push(DIM('│ ') + ACCENT('/' + content) + ' '.repeat(Math.max(0, padding)) + DIM(` ${desc} `) + DIM(typeLabel) + DIM(' │'));
+      lines.push(DIM('│ ') + ACCENT(content) + gap + DIM(desc) + DIM(' │'));
     }
   }
 
@@ -239,7 +238,7 @@ function render(): void {
   lines.push(DIM('└') + DIM('─'.repeat(innerWidth)) + DIM('┘'));
 
   // 操作提示
-  lines.push(DIM('  ↑↓ Navigate  Enter Select  Esc Cancel'));
+  lines.push(DIM('  ↑↓ Select  Enter  Esc'));
 
   // 保存行数用于下次清除
   lastPanelLines = lines;
@@ -279,44 +278,76 @@ function clearPanel(): void {
   }
 }
 
-/** 上次渲染的长度（用于计算清除行数） */
-let lastRenderLength = 0;
+/** 上次渲染的总长度（prompt + input 的可见宽度） */
+let lastTotalRendered = 0;
 /** 是否是首次渲染（首次不清除） */
 let isFirstRender = true;
 
 /**
+ * 计算字符串在终端中的可见宽度（字符数，不含 ANSI 码）
+ * CJK 字符占 2 格，普通字符占 1 格
+ */
+function visualWidth(str: string): number {
+  let width = 0;
+  for (const ch of str) {
+    const cp = ch.codePointAt(0) || 0;
+    // CJK / CJK Unified Ideographs / Hangul / Full-width 占 2 格
+    width += (cp >= 0x1100 && (
+      cp <= 0x115F || cp === 0x2329 || cp === 0x232A ||
+      (cp >= 0x2E80 && cp <= 0xA4CF && cp !== 0x303F) ||
+      (cp >= 0xAC00 && cp <= 0xD7A3) ||
+      (cp >= 0xF900 && cp <= 0xFAFF) ||
+      (cp >= 0xFE10 && cp <= 0xFE19) ||
+      (cp >= 0xFE30 && cp <= 0xFE6F) ||
+      (cp >= 0xFF01 && cp <= 0xFF60) ||
+      (cp >= 0xFFE0 && cp <= 0xFFE6) ||
+      (cp >= 0x20000 && cp <= 0x2FFFD) ||
+      (cp >= 0x30000 && cp <= 0x3FFFD)
+    )) ? 2 : 1;
+  }
+  return width;
+}
+
+/**
  * 重绘输入行（带 prompt）
- * Issue #26 修复：正确清除多行输入的重影
- * Issue #32 #3.11: 使用动态终端宽度
- * v0.1.11: 首次渲染跳过清除，避免 ANSI 码与初始化消息冲突
+ * v0.1.15: 修复换行残留 — 使用可见宽度计算（CJK 占 2 格）
  */
 export function redrawInputWithPrompt(input: string, modeIndicator: string = ''): void {
   const prompt = ACCENT('❯ ') + (modeIndicator ? DIM(modeIndicator) : '');
-  const promptLength = stripAnsi(prompt).length;
+  const promptWidth = visualWidth(stripAnsi(prompt));
 
-  // 首次渲染跳过清除操作，直接绘制 prompt
   if (!isFirstRender) {
-    // 计算上次渲染占用的行数
-    const lastTotalLength = promptLength + lastRenderLength;
-    const lastLines = Math.max(1, Math.ceil(lastTotalLength / terminalWidth));
+    const lastTotal = lastTotalRendered;
 
-    // 清除上次渲染的所有行
-    for (let i = 0; i < lastLines; i++) {
-      process.stdout.write('\x1b[2K');  // 清除整行
-      if (i < lastLines - 1) {
-        process.stdout.write('\x1b[1A');  // 上移一行
-      }
+    // 使用可见宽度计算上次渲染占用的行数
+    let lines = 1;
+    if (lastTotal > 0) {
+      lines = Math.ceil(lastTotal / terminalWidth);
     }
 
-    // 移到行首
+    // 光标在最后渲染行的下一行（wrap 后）
+    const cursorOnNextLine = lastTotal > 0 && lastTotal % terminalWidth === 0;
+
+    if (cursorOnNextLine) {
+      process.stdout.write('\x1b[1A');
+    }
+
+    // 清除最后渲染行
+    process.stdout.write('\x1b[2K');
+
+    // 上移清除其余行
+    for (let i = 1; i < lines; i++) {
+      process.stdout.write('\x1b[1A\x1b[2K');
+    }
+
     process.stdout.write('\r');
   }
 
   // 绘制新的输入
   process.stdout.write(prompt + input);
 
-  // 记录当前长度
-  lastRenderLength = input.length;
+  // 记录可见总宽度（prompt + input）
+  lastTotalRendered = promptWidth + visualWidth(input);
   isFirstRender = false;
 }
 
@@ -324,7 +355,7 @@ export function redrawInputWithPrompt(input: string, modeIndicator: string = '')
  * 重置渲染长度跟踪
  */
 export function resetRenderLength(): void {
-  lastRenderLength = 0;
+  lastTotalRendered = 0;
   isFirstRender = true;
 }
 
