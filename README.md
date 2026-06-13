@@ -1,219 +1,311 @@
 # OpenHorse
 
 > **OpenHorse — Universal Agent Harness Framework**
-> 一个完整的 Harness Coding CLI Agent
+> A CLI-driven coding agent with safety boundaries, tool orchestration, memory, and context management.
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0-green.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/typescript-5.0-blue.svg)](https://www.typescriptlang.org)
+[![npm](https://img.shields.io/npm/v/openhorse.svg)](https://www.npmjs.com/package/openhorse)
 
 ---
 
-## 🎯 项目定位
-
-**OpenHorse** — 一个完整的 Agent Harness Coding CLI 工具，提供安全边界、工具调用、记忆系统、MCP 协议支持。
-
-### 核心理念
-
-| 维度 | 说明 |
-|------|------|
-| **🐴 AI 如马** | 强大的 AI 模型需要引导和约束 |
-| **🪢 OpenHorse 如缰** | 精准控制方向，防止跑偏失控 |
-| **🎯 Harness 系统** | 安全边界、任务约束、结果验证 |
-| **🛠️ 工具调用** | LLM 自动调用工具完成任务 |
-| **🧠 记忆系统** | 分层记忆：Working / Short-term / Long-term |
-| **🔌 MCP 协议** | 支持 MCP 工具扩展 |
+**🌍 Language**: English | [简体中文](README.zh-CN.md)
 
 ---
 
-## ✨ 核心特性
+## Overview
 
-| 特性 | 说明 |
-|------|------|
-| **LLM 工具调用** | 支持 20+ 工具：文件读写、搜索、执行命令、网页抓取等 |
-| **多模型支持** | OpenAI、Claude、阿里百炼（GLM/Qwen/Kimi）、自定义 endpoint |
-| **MCP 协议** | 完整支持 MCP Server 连接和工具调用 |
-| **记忆系统** | 用户记忆、项目记忆、会话记忆三层存储 |
-| **会话管理** | 会话持久化、历史恢复、摘要生成 |
-| **安全边界** | Bash 命令白名单、危险模式检测、审计日志 |
-| **Todo/Plan** | 任务列表管理、计划模式切换 |
-| **流式输出** | 实时显示 LLM 响应，支持 Markdown 渲染 |
-| **状态栏** | Token 使用量、成本、MCP 连接状态实时显示 |
+**OpenHorse** is a terminal-based coding agent that wraps LLM APIs in a harness of safety checks, tool orchestration, session management, and context awareness.
+
+### Core Design
+
+| Dimension | Description |
+|-----------|-------------|
+| **AI as Horse** | Powerful models need guidance and constraints |
+| **OpenHorse as Reins** | Precise control to prevent runaway behavior |
+| **Harness System** | Safety boundaries, task constraints, result validation |
+| **Tool Calling** | LLM autonomously invokes tools to complete tasks |
+| **Memory System** | Layered memory: Working / Short-term / Long-term / Semantic |
+| **MCP Protocol** | Connect external MCP servers for tool extension |
 
 ---
 
-## 🏗️ 架构设计
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| **Tool Orchestration** | 20+ built-in tools: file I/O, search, shell, web, memory, todo, plan |
+| **Multi-Model** | OpenAI, Claude, DashScope (GLM/Qwen/Kimi), custom endpoints |
+| **Context Awareness** | Per-model context windows, token-based auto-compact at 95% |
+| **Dynamic Discovery** | Auto-discovers models via `/models` endpoint at startup |
+| **MCP Protocol** | Full MCP server connection with heartbeat + reconnect |
+| **Memory System** | User / Project / Session memory with semantic search |
+| **Session Management** | Persistent sessions, history restore, summary generation |
+| **Safety Boundaries** | Bash safety checks, audit logging, permission modes |
+| **Streaming Output** | Real-time LLM responses with Markdown rendering |
+| **Status Bar** | Live token usage, cost, model, context % display |
+| **Simplified Config** | Only 4 user fields — agent controls internals |
+
+---
+
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    CLI 交互层                             │
-│   readline + chalk + 流式 Markdown + 状态栏              │
+│                    CLI Layer                              │
+│   readline + chalk + streaming Markdown + status bar     │
 └────────────────────────────┬────────────────────────────┘
                              │
 ┌────────────────────────────▼────────────────────────────┐
-│                    Harness 驾驭层                         │
-│  目标约束 │ 边界检查 │ 结果验证 │ Bash 安全 │ 审计日志    │
+│                    Harness Layer                          │
+│  Goal constraints │ Safety checks │ Result validation   │
 └────────────────────────────┬────────────────────────────┘
                              │
 ┌────────────────────────────▼────────────────────────────┐
-│                    Query 查询引擎                         │
-│  LLM Stream │ Tool Calling │ Retry/Fallback │ Cost Tracker│
+│                    Query Engine                           │
+│  LLM Stream │ Tool Calling │ Retry/Fallback │ Compact    │
 └──────────┬─────────────────┬─────────────────┬──────────┘
            │                 │                 │
 ┌──────────▼─────┐ ┌─────────▼─────┐ ┌─────────▼──────────┐
-│   Tools 工具集  │ │  MCP Client   │ │   Skills 技能系统   │
-│  File/Bash/Web │ │  Server 连接  │ │  Builtin/User/Proj │
+│   Tools        │ │  MCP Client   │ │   Skills           │
+│  File/Bash/Web │ │  Server conn  │ │  Builtin/User/Proj │
 └─────────────────┘ └───────────────┘ └───────────────────┘
                              │
 ┌────────────────────────────▼────────────────────────────┐
-│                    Memory 记忆层                          │
-│  User Memory │ Project Memory │ Session Memory │ Semantic│
+│                    Memory Layer                           │
+│  User │ Project │ Session │ Semantic Search │ Embeddings │
 └─────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🚀 快速开始
+## Quick Start
 
-### 环境要求
+### Requirements
 
 - Node.js >= 18.0
 - npm >= 9.0
 
-### 安装与运行
+### Install & Run
 
 ```bash
-# 克隆项目
+# Clone
 git clone https://github.com/Linux2010/openhorse.git
 cd openhorse
 
-# 安装依赖
+# Install
 npm install
 
-# 构建
+# Build
 npm run build
 
-# 配置 API Key（任选一种）
-# 方式 1: 环境变量
+# Configure API Key (choose one)
+# Option 1: Environment variable
 export OPENHORSE_API_KEY=your-api-key
 
-# 方式 2: .env 文件
+# Option 2: .env file
 cp .env.example .env
-# 编辑 .env 设置 OPENHORSE_API_KEY
+# Edit .env and set OPENHORSE_API_KEY
 
-# 方式 3: ~/.openhorse/openhorse.json（推荐）
-# 运行后会自动创建配置文件
+# Option 3: ~/.openhorse/openhorse.json (recommended)
+# Created automatically on first run
 
-# 启动交互式 CLI
+# Start interactive CLI
 npm start
-
-# 或直接运行
+# or
 node dist/cli.js
 ```
 
-### 全局安装
+### Global Install
 
 ```bash
-# 本地链接
 npm link
-
-# 任意目录运行
+# Run from any directory
 openhorse
 ```
 
 ---
 
-## 📦 支持的模型
+## Configuration
 
-### OpenAI 系列
+### User Config (`~/.openhorse/openhorse.json`)
 
-```bash
-/model gpt-4o        # GPT-4 Omni
-/model gpt-3.5-turbo # GPT-3.5
+Only **4 fields** are user-configurable. The agent controls all internal parameters.
+
+```json
+{
+  "apiKey": "sk-xxx",
+  "apiBaseUrl": "https://coding.dashscope.aliyuncs.com/v1",
+  "defaultModel": "glm-5",
+  "fallbackModel": "qwen-plus"
+}
 ```
 
-### Claude 系列
+| Field | Required | Description |
+|-------|----------|-------------|
+| `apiKey` | Yes | LLM API key |
+| `apiBaseUrl` | No | API endpoint URL |
+| `defaultModel` | No | Default model (`glm-5`) |
+| `fallbackModel` | No | Fallback model on failure |
 
-```bash
-/model opus          # Claude Opus 4.7
-/model sonnet        # Claude Sonnet 4.6
-/model haiku         # Claude Haiku 4.5
+### Agent-Controlled Internals
+
+These parameters are managed by the agent, not exposed to users:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `maxTokens` | 8192 | Maximum output tokens |
+| `temperature` | 0.1 | Sampling temperature |
+| `maxRetries` | 3 | Retry attempts on failure |
+| `retryBaseDelay` | 1000ms | Base delay between retries |
+
+### Configuration Priority
+
+```
+CLI flags > ~/.openhorse/openhorse.json > env vars > internal defaults
 ```
 
-### 阿里百炼系列（coding.dashscope.aliyuncs.com）
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENHORSE_API_KEY` | - | LLM API key |
+| `OPENHORSE_API_BASE_URL` | - | API base URL |
+| `OPENHORSE_MODEL` | `glm-5` | Default model |
+| `OPENHORSE_MODE` | `development` | Run mode |
+| `OPENHORSE_LOG_LEVEL` | `info` | Log level |
+| `OPENHORSE_EMBEDDING_PROVIDER` | - | Embedding service (ollama/openai) |
+
+See [docs/config.md](docs/config.md) for full details.
+
+---
+
+## Models
+
+### Supported Model Families
+
+| Provider | Models | Endpoint |
+|----------|--------|----------|
+| **GLM (智谱)** | `glm-5`, `glm-4` | DashScope coding |
+| **Qwen (通义)** | `qwen-turbo`, `qwen-plus`, `qwen-max`, `qwen-long` | DashScope coding |
+| **OpenAI** | `gpt-4o`, `gpt-4o-mini`, `gpt-4` | OpenAI API |
+| **Claude** | `claude-sonnet-4-6`, `claude-opus-4-8` | Anthropic API |
+| **DeepSeek** | `deepseek-chat`, `deepseek-reasoner` | DeepSeek API |
+
+### Context Windows
+
+OpenHorse tracks each model's context window and auto-compacts at **95% usage**:
+
+| Model | Context | Max Output |
+|-------|---------|------------|
+| `glm-5` | 202,752 | 8,192 |
+| `qwen-long` | 1,000,000 | 8,192 |
+| `qwen-plus` | 131,072 | 8,192 |
+| `gpt-4o` | 128,000 | 16,384 |
+| `claude-sonnet-4-6` | 200,000 | 16,000 |
+| `claude-opus-4-8` | 200,000 | 32,000 |
+
+Unknown models default to **128,000** context.
+
+### Dynamic Discovery
+
+At startup, OpenHorse queries the `/models` endpoint for context window data. If unsupported (e.g., DashScope coding returns 404), it falls back to the builtin database silently.
+
+### Model Commands
 
 ```bash
-/model qwen          # Qwen 3.5 Plus
-/model qwenmax       # Qwen 3 Max
-/model coder         # Qwen 3 Coder Plus
-/model glm           # GLM-5（智谱）
-/model kimi          # Kimi K2.5（月之暗面）
-/model minimax       # MiniMax M2.5
-```
-
-### 模型命令
-
-```bash
-/model               # 显示当前模型
-/model list          # 显示所有可用模型
-/model sonnet        # 切换到 Sonnet
+/model               # Show current model
+/model list          # List all available models
+/model glm-5         # Switch to GLM-5
 ```
 
 ---
 
-## 🛠️ 工具列表
+## Tools
 
-OpenHorse 内置 20+ 工具，LLM 可自动调用：
+20+ built-in tools available for LLM invocation:
 
-### 文件操作
+### File Operations
 
-| 工具 | 功能 |
-|------|------|
-| `read_file` | 读取文件内容 |
-| `write_file` | 写入文件 |
-| `edit_file` | 编辑文件（行替换） |
-| `list_files` | 列出目录内容 |
-| `glob` | Glob 模式搜索文件 |
-| `grep` | 正则搜索文件内容 |
+| Tool | Description |
+|------|-------------|
+| `read_file` | Read file contents |
+| `write_file` | Write to a file |
+| `edit_file` | Edit file (line replacement) |
+| `list_files` | List directory contents |
+| `glob` | Glob pattern file search |
+| `grep` | Regex search file contents |
 
-### Shell 执行
+### Shell
 
-| 工具 | 功能 |
-|------|------|
-| `exec_command` | 执行 shell 命令（带安全检查） |
+| Tool | Description |
+|------|-------------|
+| `exec_command` | Execute shell command (with safety checks) |
 
-### 网络工具
+### Network
 
-| 工具 | 功能 |
-|------|------|
-| `web_fetch` | 抓取网页内容 |
-| `web_search` | 网络搜索 |
+| Tool | Description |
+|------|-------------|
+| `web_fetch` | Fetch web page content |
+| `web_search` | Web search |
 
-### 记忆系统
+### Memory
 
-| 工具 | 功能 |
-|------|------|
-| `memory_save` | 保存记忆 |
-| `memory_recall` | 搜索记忆 |
-| `memory_forget` | 删除记忆 |
+| Tool | Description |
+|------|-------------|
+| `memory_save` | Save a memory entry |
+| `memory_recall` | Search memories |
+| `memory_forget` | Delete a memory entry |
 
-### 任务管理
+### Task Management
 
-| 工具 | 功能 |
-|------|------|
-| `todo_write` | 创建/更新任务列表 |
-| `enter_plan_mode` | 进入计划模式 |
-| `exit_plan_mode` | 退出计划模式 |
+| Tool | Description |
+|------|-------------|
+| `todo_write` | Create/update todo list |
+| `enter_plan_mode` | Enter plan mode |
+| `exit_plan_mode` | Exit plan mode |
 
 ---
 
-## 🔌 MCP 协议支持
+## Context Management
 
-OpenHorse 完整支持 MCP（Model Context Protocol）协议：
+### Auto-Compact
 
-### 配置 MCP Server
+When context usage reaches **95%**, OpenHorse automatically compacts the conversation history:
 
-创建 `~/.openhorse/mcp.json`：
+1. **Generates a summary** of early messages via the LLM
+2. **Replaces** old messages with a `[Context Summary]` block
+3. **Preserves** the system message and recent messages
+4. **Displays** compact notification in the status bar
+
+```
+Compact: 30 → 8 messages | Context: 45% → 12%
+```
+
+### Token-Based Threshold
+
+Unlike message-count-based approaches, OpenHorse uses **actual token counts** from the API response for precise context awareness:
+
+```
+ctxPercent = (promptTokens / modelContextWindow) × 100
+```
+
+Compact triggers only when `ctxPercent >= 95%`, not based on message count.
+
+### 30-Second Interval
+
+To avoid over-compact, auto-compact runs at most once per 30 seconds. Manual `/compact` command bypasses this interval.
+
+---
+
+## MCP Protocol
+
+Full support for MCP (Model Context Protocol) servers:
+
+### Configure MCP Servers
+
+Create `~/.openhorse/mcp.json`:
 
 ```json
 {
@@ -225,236 +317,209 @@ OpenHorse 完整支持 MCP（Model Context Protocol）协议：
     },
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@anthropic/mcp-server-filesystem", "/path/to/allowed/dir"]
+      "args": ["-y", "@anthropic/mcp-server-filesystem", "/allowed/dir"]
     }
   }
 }
 ```
 
-### MCP 命令
+### MCP Commands
 
 ```bash
-/mcp                # 显示 MCP Server 连接状态
+/mcp                # Show MCP server connection status
 ```
 
-启动时自动连接所有配置的 MCP Server。
+Servers connect automatically at startup with heartbeat monitoring and exponential backoff reconnect.
 
 ---
 
-## 💬 交互命令
+## Interactive Commands
 
-| 命令 | 别名 | 说明 |
-|------|------|------|
-| `/help` | `/h` | 显示帮助信息 |
-| `/status` | `/s` | 系统状态总览 |
-| `/model` | - | 查看或切换模型 |
-| `/config` | - | 显示当前配置 |
-| `/cost` | - | 显示会话 token 使用量 |
-| `/usage` | `/stats` | 详细使用统计 |
-| `/sessions` | - | 列出最近会话 |
-| `/resume` | - | 恢复上次会话 |
-| `/memory` | - | 记忆系统状态 |
-| `/memory reindex` | - | 重建语义搜索索引 |
-| `/skills` | - | 列出加载的技能 |
-| `/mcp` | - | MCP Server 状态 |
-| `/agents` | - | Agent 列表 |
-| `/safety` | - | 安全检查配置 |
-| `/harness` | - | Harness 配置 |
-| `/task` | - | 任务管理 |
-| `/run` | - | 通过 Agent 执行任务 |
-| `/clear` | - | 清屏 |
-| `/clear-history` | `/reset` | 清除对话历史 |
-| `/exit` | `/q` | 退出 |
+| Command | Alias | Description |
+|---------|-------|-------------|
+| `/help` | `/h` | Show help information |
+| `/status` | `/s` | System status overview |
+| `/model` | - | View or switch models |
+| `/config` | - | Show current configuration |
+| `/cost` | - | Show session token usage and cost |
+| `/compact` | - | Manually trigger context compact |
+| `/sessions` | - | List recent sessions |
+| `/resume` | - | Resume last session |
+| `/memory` | - | Memory system status |
+| `/memory reindex` | - | Rebuild semantic search index |
+| `/skills` | - | List loaded skills |
+| `/mcp` | - | MCP server status |
+| `/agents` | - | List available agents |
+| `/safety` | - | Safety check configuration |
+| `/task` | - | Task management |
+| `/run` | - | Execute task via agent |
+| `/clear` | - | Clear screen |
+| `/clear-history` | `/reset` | Clear conversation history |
+| `/exit` | `/q` | Exit |
 
 ---
 
-## 📁 项目结构
+## Project Structure
 
 ```
 openhorse/
 ├── bin/
-│   └── openhorse            # CLI 入口
+│   └── openhorse                  # CLI entry point
 ├── src/
-│   ├── cli.ts               # 命令行交互入口
-│   ├── commands/
-│   │   ├── index.ts         # 命令注册表
-│   │   ├── parser.ts        # 输入解析
-│   │   └── types.ts         # 命令类型定义
-│   ├── core/
-│   │   ├── agent.ts         # Agent 基类
-│   │   ├── brain.ts         # 决策引擎
-│   │   └── strategy-tracker.ts  # 策略追踪
-│   ├── agents/
-│   │   ├── leader.ts        # 协调者 Agent
-│   │   ├── coder.ts         # 编码 Agent
-│   │   └── router.ts        # Agent 路由
+│   ├── cli.ts                     # CLI interactive entry
+│   ├── commands/                  # Slash commands
+│   │   ├── index.ts               # Command registry
+│   │   ├── parser.ts              # Input parser
+│   │   └── types.ts               # Command types
+│   ├── core/                      # Core logic
+│   │   ├── agent.ts               # Agent base class
+│   │   ├── brain.ts               # Decision engine
+│   │   └── strategy-tracker.ts    # Strategy tracking
+│   ├── agents/                    # Agent implementations
+│   │   ├── leader.ts              # Coordinator agent
+│   │   ├── coder.ts               # Coding agent
+│   │   └── router.ts              # Agent router
 │   ├── framework/
-│   │   ├── store.ts         # 状态管理
-│   │   ├── query.ts         # 查询引擎
-│   │   └── tool-state.ts    # 工具状态管理
-│   ├── harness/
-│   │   ├── safety.ts        # 安全边界检查
-│   │   └── bash-safety.ts   # Bash 命令安全
-│   │   └── harness.ts       # Harness 引擎
-│   ├── memory/
-│   │   ├── storage.ts       # 记忆存储
-│   │   ├── semantic-search.ts   # 语义搜索
-│   │   ├── embeddings.ts    # Embedding 生成
-│   │   └── vector-store.ts  # 向量存储
-│   ├── skills/
-│   │   ├── loader.ts        # 技能加载器
-│   │   └ registry.ts        # 技能注册表
+│   │   ├── store.ts               # State management
+│   │   ├── query.ts               # Query engine (async generator)
+│   │   └── tool-state.ts          # Tool state
+│   ├── harness/                   # Safety & constraints
+│   │   ├── safety.ts              # Safety boundary checks
+│   │   └── bash-safety.ts         # Bash command safety
+│   ├── memory/                    # Memory system
+│   │   ├── storage.ts             # Memory storage
+│   │   ├── semantic-search.ts     # Semantic search
+│   │   ├── embeddings.ts          # Embedding generation
+│   │   └── vector-store.ts        # Vector store (SQLite vec0)
+│   ├── skills/                    # Skill system
+│   │   ├── loader.ts              # Skill loader
+│   │   └── registry.ts            # Skill registry
 │   ├── services/
-│   │   ├── llm.ts           # LLM 服务（含 Retry/Fallback）
-│   │   ├── config.ts        # 配置加载
-│   │   ├── global-config.ts # 全局配置管理
-│   │   ├── session-storage.ts   # 会话持久化
-│   │   ├── atomic-write.ts  # 原子文件写入
-│   │   ├── agent-runner.ts  # Agent 执行器
-│   │   └ task-manager.ts    # 任务管理器
-│   │   ├── file-glob.ts     # 文件匹配
-│   │   └ mcp-bootstrap.ts   # MCP 启动
-│   ├── tools/
-│   │   ├── index.ts         # 工具集注册
-│   │   ├── mcp.ts           # MCP 客户端（心跳/重连）
-│   │   ├── todo.ts          # Todo 工具
-│   │   ├── plan.ts          # Plan 工具
-│   │   └ web.ts             # Web 工具
-│   │   └ memory.ts          # Memory 工具
-│   ├── ui/
-│   │   ├── box.ts           # UI 组件（Header/Spinner）
-│   │   ├── markdown.ts      # Markdown 渲染
-│   │   ├── status-bar.ts    # 状态栏
-│   │   ├── stream-markdown.ts   # 流式 Markdown
-│   │   ├── tool-preview.ts  # 工具预览卡片
-│   │   └ suggestions.ts     # 命令建议
-│   └── index.ts             # 公共 API 导出
-├── tests/
-│   ├── ui.test.ts           # UI 组件测试
-│   ├── config.test.ts       # 配置测试
-│   └ ...
-├── docs/
-│   ├── roadmap/             # 版本路线图
-│   │   ├── v0.1.1.md
-│   │   ├── v0.1.2.md
-│   │   ├── v0.1.3.md
-│   │   ├── v0.1.4.md
-│   │   ├── v0.1.4-plus.md
-│   │   └ v0.1.5.md
-│   │   └ ...
-│   ├── architecture.md      # 架构设计
-│   ├── harness-design.md    # Harness 系统
-│   └ memory-system.md       # 记忆系统
-│   └ agent-lifecycle.md     # Agent 生命周期
-├── .env.example             # 环境变量模板
+│   │   ├── llm.ts                 # LLM service (retry/fallback)
+│   │   ├── config.ts              # Config loading
+│   │   ├── global-config.ts       # Global config
+│   │   ├── model-context.ts       # Model context window DB + discovery
+│   │   ├── session-storage.ts     # Session persistence
+│   │   ├── atomic-write.ts        # Atomic file writes
+│   │   ├── agent-runner.ts        # Agent runner
+│   │   ├── task-manager.ts        # Task manager
+│   │   └── file-glob.ts           # File matching
+│   ├── services/compact/          # Context compaction
+│   │   ├── auto-compact.ts        # Token-based auto-compact
+│   │   ├── compact.ts             # Compact implementation
+│   │   └── summary-generator.ts   # Summary generation
+│   ├── tools/                     # Tool implementations
+│   │   ├── index.ts               # Tool registry
+│   │   ├── mcp.ts                 # MCP client
+│   │   ├── todo.ts                # Todo tool
+│   │   ├── plan.ts                # Plan tool
+│   │   ├── web.ts                 # Web tools
+│   │   └── memory.ts              # Memory tools
+│   └── ui/                        # UI components
+│       ├── box.ts                 # UI boxes
+│       ├── markdown.ts            # Markdown rendering
+│       ├── status-bar.ts          # Status bar
+│       ├── stream-markdown.ts     # Streaming Markdown
+│       ├── tool-preview.ts        # Tool preview cards
+│       └── suggestions.ts         # Command suggestions
+├── tests/                         # Test suite
+├── docs/                          # Documentation
+│   ├── version/                   # Version release notes
+│   ├── roadmap/                   # Version roadmaps
+│   └── config.md                  # Configuration guide
+├── .env.example                   # Environment template
 ├── package.json
-└ tsconfig.json
-└ LICENSE
-└ README.md
+└── tsconfig.json
 ```
 
 ---
 
-## 📝 环境变量
+## Version History
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `OPENHORSE_API_KEY` | - | LLM API Key |
-| `OPENHORSE_API_BASE_URL` | - | LLM API Base URL |
-| `OPENHORSE_MODEL` | `gpt-4o` | 默认模型 |
-| `OPENHORSE_MAX_TOKENS` | `4096` | 最大输出 token |
-| `OPENHORSE_TEMPERATURE` | `0.7` | 温度 |
-| `OPENHORSE_MODE` | `development` | 运行模式 |
-| `OPENHORSE_LOG_LEVEL` | `info` | 日志级别 |
-| `OPENHORSE_EMBEDDING_PROVIDER` | - | Embedding 服务（ollama/openai） |
-| `OPENHORSE_BUDGET_LIMIT` | - | 预算限制（USD） |
+### v0.1.16 (Current — in development)
 
----
+- **Token-based auto-compact** at 95% context usage (replaces message-count threshold)
+- **Model context awareness** — per-model context windows (15+ known models)
+- **Dynamic model discovery** — queries `/models` endpoint at startup
+- **Simplified user config** — only 4 fields: `apiKey`, `apiBaseUrl`, `defaultModel`, `fallbackModel`
+- **Agent-controlled internals** — `maxTokens`, `temperature`, `retries` managed internally
+- **Fallback model** configurable by user
+- **Streamlined command panel** rendering
+- **Context harness workflow** for multi-agent context orchestration
 
-## 📚 版本历史
+### v0.1.15
 
-### v0.1.5 - CLI 交互体验增强
+- **Full Markdown streaming** rendering with syntax highlighting
+- **CJK text width** calculation fix for terminal display
+- **Command panel** input clearing improvements
+- Table rendering removed (raw passthrough)
 
-- 状态栏：实时显示 token/cost/MCP 状态
-- 流式 Markdown 渲染：代码块缓冲防断裂
-- 工具预览卡片：工具执行结果可视化
-- UI 组件测试
+### v0.1.14
 
-### v0.1.4-plus - 集成与健壮性
+- LSP crash fix, compact UI, concise agent output
 
-- MCP 客户端：心跳、断线重连、自动启动
-- 状态管理：Todo/Plan 状态持久化
-- 语义搜索：Embedding + Vector Store
-- Skills 系统：技能加载与注入
-- 原子写入：防止数据损坏
-- 模型别名：Bailian 模型支持
+### v0.1.10 — v0.1.13
 
-### v0.1.4 - 工具扩展与 MCP
+- MCP client with heartbeat/reconnect, semantic search, skills system, atomic writes, model aliases (Bailian), storage fixes
 
-- 20+ 工具：File/Bash/Web/Memory/Todo/Plan
-- MCP 协议支持
-- 多模型支持
+### v0.1.1 — v0.1.9
 
-### v0.1.1 - v0.1.3 - 基础架构
+- CLI framework, harness system, memory system, session management, tool orchestration
 
-- CLI 交互框架
-- Harness 驾驭系统
-- 记忆系统
-- 会话管理
+See `docs/version/` for detailed release notes.
 
 ---
 
-## 🔧 开发
+## Development
 
 ```bash
-# 安装依赖
+# Install dependencies
 npm install
 
-# 开发模式（热重载）
+# Development mode (hot reload)
 npm run dev
 
-# 构建
+# Build
 npm run build
 
-# 运行测试
+# Run tests
 npm test
 
-# 代码检查
+# Lint
 npm run lint
 
-# 格式化
+# Format
 npm run format
 ```
 
 ---
 
-## 📖 Roadmap
+## Roadmap
 
-| 版本 | 目标 |
-|------|------|
-| v0.1.5 | CLI UX：状态栏、流式 Markdown、工具卡片 |
-| v0.1.6 | Agent 增强：Router、多 Agent 协作 |
-| v0.1.7 | Hooks 系统：工具调用前后钩子 |
-| v0.1.8 | Cron 定时任务：定时执行、提醒 |
-| v0.1.9 | VS Code 扩展 |
-| v0.1.10 | Web UI |
+| Version | Target |
+|---------|--------|
+| v0.1.16 | Context awareness, auto-compact, config simplification |
+| v0.1.17 | Agent lifecycle improvements, enhanced tool orchestration |
+| v0.1.18 | Plugin/hook system for extensibility |
+| v0.1.19 | VS Code extension |
+| v0.1.20 | Web UI dashboard |
 
-详见 `docs/roadmap/` 目录。
-
----
-
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！
+See `docs/roadmap/` for details.
 
 ---
 
-## 📝 许可
+## Contributing
 
-MIT License - See [LICENSE](LICENSE) for details
+Issues and Pull Requests are welcome!
+
+---
+
+## License
+
+MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
 **OpenHorse — Universal Agent Harness Framework.**
 
-*"AI 如马，OpenHorse 如缰。"*
+*"AI as a horse, OpenHorse as the reins."*
