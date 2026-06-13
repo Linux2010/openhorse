@@ -16,7 +16,7 @@ import { mcpManager } from './tools/mcp';
 import { loadConfig, isConfigured } from './services/config';
 import { ensureConfigDir } from './services/config-dir';
 import { recordFirstStartTime, incrementSessionCount, addToInputHistory, getInputHistory } from './services/global-config';
-import { calculateCtxPercent } from './services/model-context';
+import { calculateCtxPercent, discoverModelContexts } from './services/model-context';
 import { createSession, type SessionMeta, readSessionMessages, updateSessionSummary, endSession } from './services/session-storage';
 import { loadAllMemories } from './memory/storage';
 import { getSkillsRegistry } from './skills';
@@ -716,6 +716,17 @@ async function main(): Promise<void> {
         model: cliConfig.model,
         fallbackModel: cliConfig.fallbackModel,
       });
+
+      // 动态发现模型上下文窗口（非阻塞）
+      if (cliConfig.apiBaseUrl) {
+        discoverModelContexts(cliConfig.apiBaseUrl, cliConfig.apiKey)
+          .then(models => {
+            if (models.length > 0) {
+              console.log(`  Discovered ${models.length} models from API`);
+            }
+          })
+          .catch(() => {}); // 静默失败，回退到内置数据库
+      }
     } catch (err: any) {
       console.log(WARN(`⚠ LLM initialization warning: ${err.message}`));
     }

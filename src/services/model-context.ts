@@ -1,58 +1,48 @@
 /**
- * openhorse - 模型上下文窗口数据库
+ * openhorse - 模型上下文窗口数据库 + 动态发现
  *
- * 每个模型的最大上下文 token 数。
- * 用于计算 ctxPercent 和触发自动 compact。
+ * 混合策略：
+ * 1. 内置数据库（兜底）
+ * 2. 启动时尝试 /models 端点动态获取
+ * 3. 每次 API 调用使用实际 token 数
  */
+
+import type { LLMService } from './llm';
 
 export interface ModelContextInfo {
-  /** 模型 ID */
   id: string;
-  /** 显示名称 */
   label: string;
-  /** 最大上下文 token 数 */
   contextWindow: number;
-  /** 最大输出 token 数 */
   maxOutputTokens?: number;
-  /** 提供商 */
   provider?: string;
+  discovered?: boolean; // true = 来自 /models 端点
 }
 
-/**
- * 已知模型上下文窗口数据库
- * 数据来源：各厂商官方文档
- */
-export const MODEL_CONTEXT_WINDOWS: Record<string, ModelContextInfo> = {
-  // ---- 通义千问 (DashScope) ----
+// ============================================================================
+// 内置数据库（兜底）
+// ============================================================================
+
+export const BUILTIN_MODELS: Record<string, ModelContextInfo> = {
+  // DashScope (coding + standard)
+  'glm-5': { id: 'glm-5', label: 'GLM-5', contextWindow: 202752, maxOutputTokens: 8192, provider: 'glm' },
+  'glm-4': { id: 'glm-4', label: 'GLM-4', contextWindow: 131072, maxOutputTokens: 4096, provider: 'glm' },
   'qwen-turbo': { id: 'qwen-turbo', label: 'Qwen Turbo', contextWindow: 131072, maxOutputTokens: 8192, provider: 'qwen' },
   'qwen-plus': { id: 'qwen-plus', label: 'Qwen Plus', contextWindow: 131072, maxOutputTokens: 8192, provider: 'qwen' },
   'qwen-max': { id: 'qwen-max', label: 'Qwen Max', contextWindow: 32768, maxOutputTokens: 8192, provider: 'qwen' },
   'qwen-long': { id: 'qwen-long', label: 'Qwen Long', contextWindow: 1000000, maxOutputTokens: 8192, provider: 'qwen' },
 
-  // ---- GLM (智谱) ----
-  'glm-4': { id: 'glm-4', label: 'GLM-4', contextWindow: 131072, maxOutputTokens: 4096, provider: 'glm' },
-  'glm-5': { id: 'glm-5', label: 'GLM-5', contextWindow: 202752, maxOutputTokens: 8192, provider: 'glm' },
-
-  // ---- OpenAI ----
+  // OpenAI
   'gpt-4o': { id: 'gpt-4o', label: 'GPT-4o', contextWindow: 128000, maxOutputTokens: 16384, provider: 'openai' },
   'gpt-4o-mini': { id: 'gpt-4o-mini', label: 'GPT-4o Mini', contextWindow: 128000, maxOutputTokens: 16384, provider: 'openai' },
   'gpt-4': { id: 'gpt-4', label: 'GPT-4', contextWindow: 8192, maxOutputTokens: 8192, provider: 'openai' },
-  'gpt-3.5-turbo': { id: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo', contextWindow: 16385, maxOutputTokens: 4096, provider: 'openai' },
 
-  // ---- Claude ----
+  // Claude
   'claude-sonnet-4-6': { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', contextWindow: 200000, maxOutputTokens: 16000, provider: 'anthropic' },
   'claude-opus-4-8': { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', contextWindow: 200000, maxOutputTokens: 32000, provider: 'anthropic' },
-  'claude-haiku-4-5-20251001': { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', contextWindow: 200000, maxOutputTokens: 8192, provider: 'anthropic' },
 
-  // ---- DeepSeek ----
+  // DeepSeek
   'deepseek-chat': { id: 'deepseek-chat', label: 'DeepSeek Chat', contextWindow: 64000, maxOutputTokens: 8192, provider: 'deepseek' },
   'deepseek-reasoner': { id: 'deepseek-reasoner', label: 'DeepSeek Reasoner', contextWindow: 64000, maxOutputTokens: 8192, provider: 'deepseek' },
-
-  // ---- Ollama (本地，常见模型) ----
-  'llama3.1:8b': { id: 'llama3.1:8b', label: 'Llama 3.1 8B', contextWindow: 128000, provider: 'ollama' },
-  'llama3.1:70b': { id: 'llama3.1:70b', label: 'Llama 3.1 70B', contextWindow: 128000, provider: 'ollama' },
-  'qwen2.5-coder': { id: 'qwen2.5-coder', label: 'Qwen 2.5 Coder', contextWindow: 128000, provider: 'ollama' },
-  'qwen2.5-coder:latest': { id: 'qwen2.5-coder:latest', label: 'Qwen 2.5 Coder', contextWindow: 128000, provider: 'ollama' },
 };
 
 /** 默认上下文窗口（未知模型） */
@@ -61,21 +51,79 @@ export const DEFAULT_CONTEXT_WINDOW = 128000;
 /** 自动 compact 阈值（95%） */
 export const AUTO_COMPACT_THRESHOLD = 0.95;
 
+// ============================================================================
+// 运行时发现模型（从 /models 端点）
+// ============================================================================
+
+/** 运行时发现的模型上下文窗口 */
+const discoveredModels: Map<string, ModelContextInfo> = new Map();
+
 /**
- * 获取模型的上下文窗口大小
+ * 尝试从 API 端点动态发现模型上下文
+ * 调用 OpenAI 兼容的 /models 端点
+ */
+export async function discoverModelContexts(
+  baseUrl: string,
+  apiKey: string,
+): Promise<ModelContextInfo[]> {
+  try {
+    const url = baseUrl.endsWith('/') ? baseUrl + 'models' : baseUrl + '/models';
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!response.ok) return [];
+
+    const data = await response.json() as { data?: Array<Record<string, unknown>> };
+    const models: ModelContextInfo[] = [];
+
+    for (const m of data.data || []) {
+      const id = String(m.id || '');
+      const contextWindow = (m.context_window ?? m.max_context_length) as number | undefined;
+      if (contextWindow && id) {
+        const info: ModelContextInfo = {
+          id,
+          label: id,
+          contextWindow: Number(contextWindow),
+          discovered: true,
+        };
+        discoveredModels.set(id, info);
+        models.push(info);
+      }
+    }
+
+    return models;
+  } catch {
+    return []; // 静默失败，回退到内置数据库
+  }
+}
+
+/**
+ * 获取模型上下文窗口
+ * 优先级：动态发现 > 内置数据库 > 默认值
  */
 export function getModelContextWindow(modelId: string): number {
-  const info = MODEL_CONTEXT_WINDOWS[modelId];
-  if (info) return info.contextWindow;
+  // 1. 动态发现的模型
+  const discovered = discoveredModels.get(modelId);
+  if (discovered) return discovered.contextWindow;
 
-  // 尝试模糊匹配
+  // 2. 内置数据库
+  const builtin = BUILTIN_MODELS[modelId];
+  if (builtin) return builtin.contextWindow;
+
+  // 3. 模糊匹配
   const normalized = modelId.toLowerCase();
-  for (const [id, model] of Object.entries(MODEL_CONTEXT_WINDOWS)) {
+  for (const [id, model] of Object.entries(BUILTIN_MODELS)) {
     if (normalized.includes(id) || id.includes(normalized.split(':')[0])) {
       return model.contextWindow;
     }
   }
 
+  // 4. 默认值
   return DEFAULT_CONTEXT_WINDOW;
 }
 
@@ -83,13 +131,26 @@ export function getModelContextWindow(modelId: string): number {
  * 获取模型信息
  */
 export function getModelInfo(modelId: string): ModelContextInfo | null {
-  return MODEL_CONTEXT_WINDOWS[modelId] || null;
+  return discoveredModels.get(modelId) || BUILTIN_MODELS[modelId] || null;
 }
 
 /**
- * 计算上下文使用百分比（基于 token 数）
+ * 计算上下文使用百分比
  */
 export function calculateCtxPercent(usedTokens: number, modelId: string): number {
   const contextWindow = getModelContextWindow(modelId);
   return Math.min(100, Math.round((usedTokens / contextWindow) * 100));
+}
+
+/**
+ * 获取所有已知模型列表（内置 + 动态发现）
+ */
+export function getAllKnownModels(): ModelContextInfo[] {
+  const all = [...Object.values(BUILTIN_MODELS)];
+  for (const [, discovered] of discoveredModels) {
+    if (!all.some(m => m.id === discovered.id)) {
+      all.push(discovered);
+    }
+  }
+  return all;
 }
