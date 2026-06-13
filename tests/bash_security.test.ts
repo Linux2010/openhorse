@@ -4,6 +4,7 @@ import {
   isReadOnlyCommand,
   checkDangerousCommand,
   isPotentiallyDestructive,
+  isValidationCommand,
   assessCommandSecurity,
   wrapForSandbox,
   DEFAULT_SANDBOX_OPTIONS,
@@ -49,6 +50,21 @@ describe('bash_security', () => {
     test('returns false for destructive commands', () => {
       expect(isReadOnlyCommand('rm -rf node_modules')).toBe(false);
       expect(isReadOnlyCommand('chmod 777 file.txt')).toBe(false);
+    });
+  });
+
+  describe('isValidationCommand', () => {
+    test('allows common bounded verification commands', () => {
+      expect(isValidationCommand('npx tsc --noEmit')).toBe(true);
+      expect(isValidationCommand('npm test -- --no-coverage')).toBe(true);
+      expect(isValidationCommand('npm run lint')).toBe(true);
+      expect(isValidationCommand('npx jest tests/harness.test.ts --no-coverage')).toBe(true);
+    });
+
+    test('does not allow arbitrary npx or install commands', () => {
+      expect(isValidationCommand('npx some-random-package')).toBe(false);
+      expect(isValidationCommand('npm install')).toBe(false);
+      expect(isValidationCommand('npm run start')).toBe(false);
     });
   });
 
@@ -125,6 +141,12 @@ describe('bash_security', () => {
 
     test('returns safe for git read commands', () => {
       const result = assessCommandSecurity('git log --oneline -10');
+      expect(result.level).toBe('safe');
+      expect(result.isReadOnly).toBe(true);
+    });
+
+    test('returns safe for validation commands', () => {
+      const result = assessCommandSecurity('npx tsc --noEmit');
       expect(result.level).toBe('safe');
       expect(result.isReadOnly).toBe(true);
     });

@@ -16,6 +16,7 @@ import type { CostTracker } from '../core/cost-tracker';
 import { toOpenAITools } from './tool';
 import { createStrategyTracker, type StrategyTracker, type StrategyResult } from '../core/strategy-tracker';
 import { getAutoCompact } from '../services/compact/auto-compact';
+import type { ContextHarness } from '../harness';
 
 // ============================================================================
 // 事件类型
@@ -57,6 +58,8 @@ export interface QueryParams {
   costTracker?: CostTracker;
   /** Strategy tracker for alternative approaches */
   strategyTracker?: StrategyTracker;
+  /** Optional Context Harness for turn-level context, ledger, and completion gates */
+  harness?: ContextHarness;
 }
 
 // ============================================================================
@@ -89,6 +92,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     streamCallbacks,
     costTracker,
     strategyTracker = createStrategyTracker({ maxAttempts: 5 }),  // 增加到 5 次
+    harness,
   } = params;
 
   const openaiTools = toOpenAITools(tools) as unknown as Tool[];
@@ -121,8 +125,10 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       return;
     }
 
-    // Stream the LLM response
-    const response = await llm.chatStream(messages, streamCallbacks, openaiTools);
+    // Stream the LLM response. Harness context is injected into a cloned
+    // request payload so the durable conversation history stays clean.
+    const requestMessages = harness ? harness.assembleMessages(messages) : messages;
+    const response = await llm.chatStream(requestMessages, streamCallbacks, openaiTools);
 
     // Save assistant message to history
     const assistantMsg: Message = {
@@ -133,6 +139,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       assistantMsg.tool_calls = response.toolCalls;
     }
     messages.push(assistantMsg);
+    harness?.recordAssistantResponse(response);
 
     // Handle tool calls
     if (response.toolCalls && response.toolCalls.length > 0) {
@@ -164,11 +171,15 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
         const start = Date.now();
 
+        const drift = harness?.beforeToolUse({ name: tc.function.name, args });
+
         // Permission check before execution
         let result: string;
         const tool = tools.find(t => t.name === tc.function.name);
 
-        if (tool?.checkPermissions && params.toolContext) {
+        if (drift?.status === 'block') {
+          result = harness!.asToolBlockedResult(drift);
+        } else if (tool?.checkPermissions && params.toolContext) {
           const perm = tool.checkPermissions(args, params.toolContext);
 
           if (perm.behavior === 'deny') {
@@ -226,6 +237,14 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           toolError = 'Invalid JSON result';
         }
         strategyTracker.recordResult(attemptId, strategyResult, errorMsg, duration);
+        harness?.recordToolResult({
+          name: tc.function.name,
+          args,
+          result,
+          duration,
+          success: toolSuccess,
+          error: toolError,
+        });
 
         yield {
           type: 'tool_result',
@@ -269,7 +288,13 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       continue;
     }
 
-    // No tool calls — done
+    // No tool calls — done, unless the harness requires one more pass.
+    const completionGate = harness?.beforeComplete();
+    if (completionGate && !completionGate.canComplete) {
+      messages.push(harness!.asCompletionBlockedMessage(completionGate));
+      continue;
+    }
+
     yield { type: 'message', role: 'assistant', content: response.content };
 
     // Record usage to cost tracker
@@ -279,7 +304,10 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
     // Auto-compact at 95% context usage (token-based)
     const totalTokens = response.usage?.promptTokens ?? 0;
-    const autoCompact = getAutoCompact({ modelId: response.model || llm.getModel() });
+    const autoCompact = getAutoCompact({
+      modelId: response.model || llm.getModel(),
+      getContextCapsule: harness ? () => harness.getCapsule() : undefined,
+    });
     const compacted = await autoCompact.checkAndCompact(messages, totalTokens);
     if (compacted.length < messages.length) {
       messages.length = 0;

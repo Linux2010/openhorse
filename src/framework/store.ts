@@ -11,6 +11,7 @@ import type { OpenHorseCLIConfig } from '../services/config';
 import type { PermissionMode } from '../commands/types';
 import { CostTracker } from '../core/cost-tracker';
 import type { TodoItem } from './tool-state';
+import type { HarnessState } from '../harness';
 
 // ============================================================================
 // 状态结构
@@ -35,6 +36,8 @@ export interface AppState {
   planMode: boolean;
   /** Latest plan from exit_plan_mode (mirrored from tool-state) */
   currentPlan: string | null;
+  /** Context Harness serializable state */
+  harnessState?: HarnessState;
 }
 
 // ============================================================================

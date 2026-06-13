@@ -26,12 +26,14 @@ import {
   appendSessionMessages,
   endSession,
   updateSessionSummary,
+  updateSessionHarnessState,
   readSessionMessages,
   type SessionMeta,
   type SessionMessage,
   type ToolCallRecord,
 } from '../services/session-storage';
 import { getAutoCompact } from '../services/compact/auto-compact';
+import { createContextHarness } from '../harness';
 
 // ============================================================================
 // 颜色常量
@@ -113,6 +115,22 @@ function showStatus(ctx: CommandContext): CommandResult {
   console.log(`    Working    ${storeStats.working} entries`);
   console.log(`    Short-term ${storeStats['short-term']} entries`);
   console.log(`    Long-term  ${storeStats['long-term']} entries`);
+
+  const harnessState = ctx.store.getSnapshot().harnessState;
+  if (harnessState?.contract || harnessState?.capsule) {
+    console.log();
+    console.log(`  Harness:`);
+    if (harnessState.contract) {
+      console.log(`    Objective  ${ACCENT(harnessState.contract.objective)}`);
+    }
+    console.log(`    Ledger     ${DIM(`${harnessState.ledger.length} entries`)}`);
+    if (harnessState.capsule) {
+      console.log(`    Next       ${DIM(harnessState.capsule.nextAction)}`);
+      const passed = harnessState.capsule.verification.passed.length;
+      const failed = harnessState.capsule.verification.failed.length;
+      console.log(`    Verify     ${SUCCESS(`${passed} passed`)} / ${failed > 0 ? ERROR(`${failed} failed`) : DIM('0 failed')}`);
+    }
+  }
   console.log();
   return { success: true };
 }
@@ -527,6 +545,17 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
 
   ctx.store.addMessage({ role: 'user', content: input });
   const snapshot = ctx.store.getSnapshot();
+  const harness = createContextHarness({
+    cwd: ctx.cwd,
+    modelId: ctx.llm.getModel(),
+    state: snapshot.harnessState,
+    config: {
+      enabled: true,
+      driftGuard: 'warn',
+      completionGate: true,
+    },
+  });
+  harness.updateContractFromUserInput(input);
 
   const promptCtx: PromptContext = {
     cwd: ctx.cwd,
@@ -599,6 +628,15 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       llm: ctx.llm,
       streamCallbacks,
       costTracker: snapshot.costTracker,
+      permissionMode: snapshot.permissionMode,
+      toolContext: {
+        cwd: ctx.cwd,
+        config: {
+          name: ctx.config.name,
+          mode: ctx.config.mode,
+        },
+      },
+      harness,
     })) {
       switch (event.type) {
         case 'request_start':
@@ -729,6 +767,12 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
 
     if (finalUsage) {
       ctx.store.setTokenUsage(finalUsage);
+    }
+
+    const harnessState = harness.toJSON();
+    ctx.store.setState({ harnessState });
+    if (ctx.sessionId) {
+      updateSessionHarnessState(ctx.sessionId, harnessState);
     }
 
     if (responseStarted) {
@@ -919,8 +963,19 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
   console.log(`  Threshold: ${threshold}`);
   console.log();
 
+  if (history.length <= threshold) {
+    console.log(DIM(`Conversation has ${history.length} messages, below compact threshold ${threshold}.`));
+    console.log(DIM('Nothing compacted.'));
+    console.log();
+    return { success: true };
+  }
+
   try {
-    const autoCompact = getAutoCompact({ threshold });
+    const autoCompact = getAutoCompact();
+    autoCompact.configure({
+      maxMessages: threshold,
+      getContextCapsule: () => ctx.store.getSnapshot().harnessState?.capsule,
+    });
     const compacted = await autoCompact.forceCompact(history);
 
     // 更新 store
@@ -1049,6 +1104,7 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
         console.log();
 
         ctx.store.setState({ conversationHistory: history });
+        ctx.store.setState({ harnessState: lastSession.harnessState });
         resetToolState();
         console.log(SUCCESS(`✔ Restored ${history.length} messages from session`));
       } else {
@@ -1089,6 +1145,7 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
     console.log();
 
     ctx.store.setState({ conversationHistory: history });
+    ctx.store.setState({ harnessState: session.harnessState });
     resetToolState();
     console.log(SUCCESS(`✔ Restored ${history.length} messages`));
   } else {

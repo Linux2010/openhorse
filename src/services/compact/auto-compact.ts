@@ -8,6 +8,7 @@
 import type { Message } from '../llm';
 import { compactMessages, type CompactOptions } from './compact';
 import { getModelContextWindow, AUTO_COMPACT_THRESHOLD } from '../model-context';
+import type { ContextCapsule } from '../../harness';
 
 // ============================================================================
 // 类型定义
@@ -24,6 +25,10 @@ export interface AutoCompactConfig {
   enabled?: boolean;
   /** 压缩回调（通知用户） */
   onCompact?: (result: { originalCount: number; compactedCount: number; ctxPercent: number }) => void;
+  /** 提前准备可恢复上下文的阈值（0-1，默认 0.8） */
+  preCompactThreshold?: number;
+  /** 获取最新 Context Capsule */
+  getContextCapsule?: () => ContextCapsule | undefined | null;
 }
 
 // ============================================================================
@@ -31,8 +36,9 @@ export interface AutoCompactConfig {
 // ============================================================================
 
 export class AutoCompact {
-  private config: Required<Pick<AutoCompactConfig, 'threshold' | 'modelId' | 'maxMessages' | 'enabled'>> & {
+  private config: Required<Pick<AutoCompactConfig, 'threshold' | 'modelId' | 'maxMessages' | 'enabled' | 'preCompactThreshold'>> & {
     onCompact?: AutoCompactConfig['onCompact'];
+    getContextCapsule?: AutoCompactConfig['getContextCapsule'];
   };
   private lastCompactTime: number = 0;
   private compactCount: number = 0;
@@ -45,8 +51,25 @@ export class AutoCompact {
       modelId: config?.modelId ?? 'gpt-4o',
       maxMessages: config?.maxMessages ?? 20,
       enabled: config?.enabled ?? true,
+      preCompactThreshold: config?.preCompactThreshold ?? 0.8,
       onCompact: config?.onCompact,
+      getContextCapsule: config?.getContextCapsule,
     };
+  }
+
+  /**
+   * 更新配置。AutoCompact 是单例，query loop 每轮可能需要刷新 model
+   * 和 capsule provider。
+   */
+  configure(config?: AutoCompactConfig): void {
+    if (!config) return;
+    if (config.threshold !== undefined) this.config.threshold = config.threshold;
+    if (config.modelId !== undefined) this.config.modelId = config.modelId;
+    if (config.maxMessages !== undefined) this.config.maxMessages = config.maxMessages;
+    if (config.enabled !== undefined) this.config.enabled = config.enabled;
+    if (config.preCompactThreshold !== undefined) this.config.preCompactThreshold = config.preCompactThreshold;
+    if (config.onCompact !== undefined) this.config.onCompact = config.onCompact;
+    if (config.getContextCapsule !== undefined) this.config.getContextCapsule = config.getContextCapsule;
   }
 
   /**
@@ -67,6 +90,10 @@ export class AutoCompact {
     }
 
     const ctxPercent = this.calculateCtxPercent(usedTokens);
+    const contextCapsule =
+      ctxPercent >= this.config.preCompactThreshold * 100
+        ? this.config.getContextCapsule?.() ?? undefined
+        : undefined;
 
     // 达到阈值才触发
     if (ctxPercent < this.config.threshold * 100) {
@@ -82,6 +109,7 @@ export class AutoCompact {
     // 执行压缩
     const result = await compactMessages(messages, {
       maxMessages: this.config.maxMessages,
+      contextCapsule,
     });
 
     // 更新状态
@@ -128,6 +156,7 @@ export class AutoCompact {
   async forceCompact(messages: Message[]): Promise<Message[]> {
     const result = await compactMessages(messages, {
       maxMessages: this.config.maxMessages,
+      contextCapsule: this.config.getContextCapsule?.() ?? undefined,
     });
 
     this.compactCount++;
@@ -150,6 +179,7 @@ export class AutoCompact {
     compactCount: number;
     lastCompactTime: number;
     threshold: number;
+    preCompactThreshold: number;
     enabled: boolean;
     modelId: string;
     ctxPercent: number;
@@ -158,6 +188,7 @@ export class AutoCompact {
       compactCount: this.compactCount,
       lastCompactTime: this.lastCompactTime,
       threshold: this.config.threshold,
+      preCompactThreshold: this.config.preCompactThreshold,
       enabled: this.config.enabled,
       modelId: this.config.modelId,
       ctxPercent: this.getCtxPercent(),
@@ -181,6 +212,8 @@ let autoCompactInstance: AutoCompact | null = null;
 export function getAutoCompact(config?: AutoCompactConfig): AutoCompact {
   if (!autoCompactInstance) {
     autoCompactInstance = new AutoCompact(config);
+  } else if (config) {
+    autoCompactInstance.configure(config);
   }
   return autoCompactInstance;
 }

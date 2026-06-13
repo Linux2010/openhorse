@@ -7,6 +7,7 @@
 
 import type { Message } from '../llm';
 import { summaryGenerator, type SummaryOptions } from './summary-generator';
+import { renderContextCapsule, type ContextCapsule } from '../../harness';
 
 // ============================================================================
 // 类型定义
@@ -23,6 +24,8 @@ export interface CompactOptions {
   threshold?: number;
   /** 自定义摘要生成选项 */
   summaryOptions?: SummaryOptions;
+  /** Harness capsule that must survive compaction */
+  contextCapsule?: ContextCapsule;
 }
 
 export interface CompactResult {
@@ -101,6 +104,18 @@ export async function compactMessages(
 
   if (systemMessage) {
     compactedMessages.push(systemMessage);
+  }
+
+  // Preserve structured task state before the lossy natural-language summary.
+  if (opts.contextCapsule) {
+    compactedMessages.push({
+      role: 'user',
+      content: renderContextCapsule(opts.contextCapsule),
+    });
+    compactedMessages.push({
+      role: 'assistant',
+      content: 'I will continue from this Context Capsule and preserve its open todos, constraints, and verification state.',
+    });
   }
 
   // 添加摘要作为 user 消息（作为上下文背景）

@@ -60,6 +60,7 @@ import {
   redrawInputWithFile,
 } from './ui/file-completion';
 import { renderStatusBar, type StatusBarStats } from './ui/status-bar';
+import { renderUserInputEcho } from './ui/user-input';
 
 // Get version from package.json
 const VERSION = (() => {
@@ -127,6 +128,26 @@ let inputHistory: { content: string; timestamp: number }[] = [];
 let historyIndex: number = -1;
 let historyMode: 'none' | 'navigate' | 'search' = 'none';
 let searchQuery: string = '';
+
+function echoSubmittedInput(input: string): void {
+  process.stdout.write('\x1b[2K\r');
+  console.log(renderUserInputEcho(input));
+  resetRenderLength();
+}
+
+function submitInput(input: string): void {
+  const submittedInput = input;
+  currentInput = '';
+  echoSubmittedInput(submittedInput);
+
+  handleInput(submittedInput).catch(err => {
+    console.log(ERROR(`Input error: ${err.message || String(err)}`));
+    redrawInputWithPrompt(currentInput);
+  });
+
+  addToInputHistory(submittedInput);
+  inputHistory = getInputHistory();
+}
 
 // ============================================================================
 // keypress 事件处理
@@ -199,13 +220,7 @@ function handlePanelKeypress(k: KeyInfo, char: string | undefined): void {
     case 'enter':
       const cmd = selectCommand();
       if (cmd) {
-        currentInput = cmd;
-        redrawInputWithPrompt(currentInput);
-        // 直接执行命令
-        handleInput(currentInput).catch(err => {
-          console.log(ERROR(`Command error: ${err.message || String(err)}`));
-        });
-        currentInput = '';
+        submitInput(cmd);
         clearPendingCommand();
       }
       break;
@@ -365,23 +380,9 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
           const fullInput = getMultilineInput();
           resetMultiline();
           if (fullInput.trim()) {
-            // 回显多行输入
-            process.stdout.write('\x1b[2K\r');
-            const lines = fullInput.split('\n');
-            for (const line of lines) {
-              console.log(DIM('  ') + line);
-            }
-
-            // Issue #32 fix: 重置渲染长度，防止后续 redrawInputWithPrompt 清除用户输入
-            resetRenderLength();
-            handleInput(fullInput).catch(err => {
-              console.log(ERROR(`Input error: ${err.message || String(err)}`));
-            });
-            addToInputHistory(fullInput);
-            inputHistory = getInputHistory();
+            submitInput(fullInput);
           }
           currentInput = '';
-          redrawInputWithPrompt('');
         }
         return;
       }
@@ -397,19 +398,7 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
 
       // 正常发送输入
       if (currentInput.trim()) {
-        // 先清除输入行的 prompt，然后打印用户输入（保存到终端历史）
-        process.stdout.write('\x1b[2K\r');  // 清除当前 prompt 行
-        console.log(ACCENT('❯ ') + currentInput);  // 回显用户输入
-
-        // Issue #32 fix: 重置渲染长度，防止后续 redrawInputWithPrompt 清除用户输入行
-        // 因为 console.log 打印后光标在新行，redrawInputWithPrompt 会从当前位置向上清除
-        resetRenderLength();
-
-        handleInput(currentInput);
-        addToInputHistory(currentInput);
-        inputHistory = getInputHistory();
-        currentInput = '';
-        redrawInputWithPrompt('');
+        submitInput(currentInput);
       }
       break;
     case 'backspace':
