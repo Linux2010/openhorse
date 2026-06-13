@@ -19,12 +19,12 @@ export async function listSessions(limit?: number): Promise<SDKSessionInfo[]> {
     const { listSessions: storageListSessions } = require('../services/session-storage');
     const sessions = storageListSessions(maxLimit);
 
-    return sessions.map((s: { id: string; createdAt: string; updatedAt: string; messageCount?: number; projectRoot?: string }) => ({
+    return sessions.map((s: { id: string; updatedAt?: number; startTime?: number; messageCount?: number; projectPath?: string; projectRoot?: string }) => ({
       id: s.id,
-      createdAt: s.createdAt,
-      updatedAt: s.updatedAt,
+      createdAt: s.startTime ?? Date.now(),
+      updatedAt: s.updatedAt ?? s.startTime ?? Date.now(),
       messageCount: s.messageCount || 0,
-      projectRoot: s.projectRoot,
+      projectRoot: s.projectPath ?? s.projectRoot,
     }));
   } catch {
     // Return empty list if session storage not available
@@ -46,10 +46,10 @@ export async function getSessionInfo(sessionId: string): Promise<SDKSessionInfo 
 
     return {
       id: meta.id,
-      createdAt: meta.createdAt,
-      updatedAt: meta.updatedAt,
+      createdAt: meta.startTime ?? Date.now(),
+      updatedAt: meta.updatedAt ?? meta.startTime ?? Date.now(),
       messageCount: meta.messageCount || 0,
-      projectRoot: meta.projectRoot,
+      projectRoot: meta.projectPath ?? meta.projectRoot,
     };
   } catch {
     return null;

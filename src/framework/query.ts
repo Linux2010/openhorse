@@ -24,6 +24,7 @@ import type { ContextHarness } from '../harness';
 
 export type QueryEvent =
   | { type: 'request_start'; model: string; turn: number }
+  | { type: 'assistant_tool_calls'; content: string; toolCalls: NonNullable<Message['tool_calls']> }
   | { type: 'tool_call'; name: string; args: Record<string, unknown>; callId: string; batchCount?: number; batchIndex?: number }
   | { type: 'tool_result'; name: string; result: string; duration: number; success: boolean; error?: string }
   | { type: 'strategy_exhausted'; suggestion: string }
@@ -143,7 +144,14 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
     // Handle tool calls
     if (response.toolCalls && response.toolCalls.length > 0) {
-      for (const tc of response.toolCalls) {
+      yield {
+        type: 'assistant_tool_calls',
+        content: response.content,
+        toolCalls: response.toolCalls,
+      };
+
+      for (let i = 0; i < response.toolCalls.length; i++) {
+        const tc = response.toolCalls[i];
         // Ensure arguments is valid JSON (some APIs like DashScope require this)
         let args: Record<string, unknown> = {};
         const rawArgs = tc.function.arguments || '';
@@ -167,6 +175,8 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           name: tc.function.name,
           args,
           callId: tc.id,
+          batchCount: response.toolCalls.length,
+          batchIndex: i,
         };
 
         const start = Date.now();
