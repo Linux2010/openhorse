@@ -235,16 +235,16 @@ function handlePanelKeypress(k: KeyInfo, char: string | undefined): void {
         hideCommandPanel();
         redrawInputWithPrompt(currentInput);
       } else {
-        updatePanelFilter(currentInput.slice(1));
         redrawInputWithPrompt(currentInput);
+        updatePanelFilter(currentInput.slice(1));
       }
       break;
     default:
       // 添加字符到过滤
       if (char && char.length === 1 && !k.ctrl) {
         currentInput += char;
-        updatePanelFilter(currentInput.slice(1));
         redrawInputWithPrompt(currentInput);
+        updatePanelFilter(currentInput.slice(1));
       }
   }
 }
@@ -455,11 +455,9 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
       // 避免在 URL（http://）、路径（src/）、正则等场景误触发
       if (currentInput === '') {
         currentInput = '/';
-        showCommandPanel('');
-        // 命令面板已渲染，光标已在正确位置
-        // 重置渲染长度并写入 `/` 符号
         resetRenderLength();
-        process.stdout.write('/');
+        redrawInputWithPrompt(currentInput);
+        showCommandPanel('');
       } else {
         // 正常添加 `/` 到输入
         currentInput += '/';

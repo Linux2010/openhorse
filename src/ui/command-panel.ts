@@ -35,6 +35,9 @@ const BRAND = colorize.brand;
 const DIM = colorize.dim;
 const SELECTED = colorize.selected;
 
+const DEFAULT_MATCH_LIMIT = 8;
+const FILTERED_MATCH_LIMIT = 6;
+
 // ============================================================================
 // SIGWINCH 处理 - Issue #32 #3.11
 // ============================================================================
@@ -184,11 +187,11 @@ export function clearPendingCommand(): void {
 function updateMatches(): void {
   const commands = getCommands();
   if (!state.filter) {
-    state.matches = commands.slice(0, 10);
+    state.matches = commands.slice(0, DEFAULT_MATCH_LIMIT);
   } else {
     state.matches = commands
       .filter(c => c.name.startsWith(state.filter) || c.aliases?.some(a => a.startsWith(state.filter)))
-      .slice(0, 10);
+      .slice(0, FILTERED_MATCH_LIMIT);
   }
 }
 
@@ -217,21 +220,17 @@ function render(): void {
     const cmd = state.matches[i];
     const isSelected = i === state.selectedIndex;
 
-    // 格式: /name [alias] - description
+    // 格式: /name (alias) description. Keep rows compact while users type.
     const aliases = cmd.aliases?.length ? ` (${cmd.aliases[0]})` : '';
-    const hint = cmd.argumentHint ? ` ${cmd.argumentHint}` : '';
-    const desc = cmd.description.length > 30 ? cmd.description.slice(0, 27) + '...' : cmd.description;
-
-    // 类型标签
-    const typeLabel = cmd.type === 'chat' ? '[Chat]' : '[Cmd]';
-
-    const content = `${cmd.name}${aliases}${hint}`;
-    const padding = innerWidth - content.length - desc.length - typeLabel.length - 4;
+    const content = `/${cmd.name}${aliases}`;
+    const desc = cmd.description.length > 28 ? cmd.description.slice(0, 25) + '...' : cmd.description;
+    const padding = innerWidth - content.length - desc.length - 2;
+    const gap = ' '.repeat(Math.max(1, padding));
 
     if (isSelected) {
-      lines.push(SELECTED(` ${'/' + content} `) + ' '.repeat(Math.max(0, padding)) + SELECTED(` ${desc} ${typeLabel} `));
+      lines.push(DIM('│ ') + SELECTED(content + gap + desc) + DIM(' │'));
     } else {
-      lines.push(DIM('│ ') + ACCENT('/' + content) + ' '.repeat(Math.max(0, padding)) + DIM(` ${desc} `) + DIM(typeLabel) + DIM(' │'));
+      lines.push(DIM('│ ') + ACCENT(content) + gap + DIM(desc) + DIM(' │'));
     }
   }
 
@@ -239,7 +238,7 @@ function render(): void {
   lines.push(DIM('└') + DIM('─'.repeat(innerWidth)) + DIM('┘'));
 
   // 操作提示
-  lines.push(DIM('  ↑↓ Navigate  Enter Select  Esc Cancel'));
+  lines.push(DIM('  ↑↓ Select  Enter  Esc'));
 
   // 保存行数用于下次清除
   lastPanelLines = lines;

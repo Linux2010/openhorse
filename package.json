@@ -1,6 +1,6 @@
 {
   "name": "openhorse",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "OpenHorse - Universal Agent Harness Framework. A complete coding CLI agent with tools, MCP, memory system.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
