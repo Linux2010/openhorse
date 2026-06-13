@@ -9,13 +9,21 @@ import {
   readProjectHistory,
   appendSessionMessage,
   readSessionMessages,
+  listProjectSessions,
+  findSession,
+  lookupSessionRef,
+  renameSession,
+  getLastSession,
+  resumeSession,
+  resolveProjectPath,
   type SessionMeta,
   type HistoryEntry,
   type SessionMessage,
 } from '../src/services/session-storage';
-import { existsSync, rmSync, readFileSync } from 'fs';
+import { existsSync, rmSync, realpathSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { getProjectSessionMessagesPath, getProjectSessionMetaPath } from '../src/services/config-dir';
 
 describe('session-storage', () => {
   // Use a unique test directory based on timestamp to avoid conflicts
@@ -57,11 +65,12 @@ describe('session-storage', () => {
       expect(session.endTime).toBeUndefined();
     });
 
-    test('saves session meta file', () => {
+    test('stores session meta in the project scope only', () => {
       const session = createSession('/tmp/project2', 'claude-sonnet');
 
-      const path = join(testDir, 'sessions', `${session.id}.json`);
-      expect(existsSync(path)).toBe(true);
+      expect(session.projectKey).toBeDefined();
+      expect(existsSync(getProjectSessionMetaPath(session.projectPath, session.id))).toBe(true);
+      expect(existsSync(join(testDir, 'sessions', `${session.id}.json`))).toBe(false);
     });
   });
 
@@ -241,6 +250,22 @@ describe('session-storage', () => {
       expect(existsSync(path)).toBe(true);
     });
 
+    test('appendSessionMessage mirrors project transcript and updates message count', () => {
+      const session = createSession('/tmp/project-msg-count', 'gpt-4o');
+
+      appendSessionMessage(session.id, {
+        role: 'user',
+        content: 'Hello project session',
+        timestamp: Date.now(),
+      });
+
+      const loaded = loadSessionMeta(session.id);
+      expect(loaded?.messageCount).toBe(1);
+      expect(loaded?.updatedAt).toBeGreaterThanOrEqual(session.startTime);
+      expect(existsSync(getProjectSessionMessagesPath(session.projectPath, session.id))).toBe(true);
+      expect(existsSync(join(testDir, 'sessions', `${session.id}.jsonl`))).toBe(false);
+    });
+
     test('readSessionMessages returns all messages', () => {
       const sessionId = 'test-msg-session-2';
 
@@ -264,6 +289,133 @@ describe('session-storage', () => {
     test('readSessionMessages returns empty array for non-existent session', () => {
       const messages = readSessionMessages('non-existent');
       expect(messages).toEqual([]);
+    });
+  });
+
+  describe('project session lookup', () => {
+    test('listProjectSessions filters by canonical project path', () => {
+      const sessionA = createSession('/tmp/project-filter-A', 'gpt-4o');
+      const sessionB = createSession('/tmp/project-filter-B', 'gpt-4o');
+
+      appendSessionMessage(sessionA.id, {
+        role: 'user',
+        content: 'A',
+        timestamp: Date.now(),
+      });
+      appendSessionMessage(sessionB.id, {
+        role: 'user',
+        content: 'B',
+        timestamp: Date.now(),
+      });
+
+      const sessionsA = listProjectSessions('/tmp/project-filter-A');
+      expect(sessionsA.some(s => s.id === sessionA.id)).toBe(true);
+      expect(sessionsA.some(s => s.id === sessionB.id)).toBe(false);
+    });
+
+    test('listProjectSessions does not include legacy global session files', () => {
+      const project = '/tmp/project-ignore-global';
+      const legacySession: SessionMeta = {
+        id: 'legacy-global-session',
+        projectPath: project,
+        model: 'gpt-4o',
+        startTime: Date.now(),
+        messageCount: 1,
+        tokenCount: 0,
+        cost: 0,
+      };
+
+      writeFileSync(
+        join(testDir, 'sessions', `${legacySession.id}.json`),
+        JSON.stringify(legacySession, null, 2)
+      );
+
+      const projectSessions = listProjectSessions(project);
+      const allProjectsMatch = findSession(legacySession.id, project, { allProjects: true });
+
+      expect(projectSessions.some(s => s.id === legacySession.id)).toBe(false);
+      expect(allProjectsMatch?.id).toBe(legacySession.id);
+    });
+
+    test('findSession defaults to the provided project scope', () => {
+      const projectSession = createSession('/tmp/project-find-current', 'gpt-4o');
+      const otherSession = createSession('/tmp/project-find-other', 'gpt-4o');
+
+      const projectMatch = findSession(projectSession.id.slice(0, 8), '/tmp/project-find-current');
+      const wrongProjectMatch = findSession(otherSession.id.slice(0, 8), '/tmp/project-find-current');
+      const allProjectsMatch = findSession(otherSession.id.slice(0, 8), '/tmp/project-find-current', { allProjects: true });
+
+      expect(projectMatch?.id).toBe(projectSession.id);
+      expect(wrongProjectMatch).toBeNull();
+      expect(allProjectsMatch?.id).toBe(otherSession.id);
+    });
+
+    test('lookupSessionRef reports ambiguous id prefixes', () => {
+      const project = '/tmp/project-ambiguous-prefix';
+      const base = createSession(project, 'gpt-4o');
+      const sessionA: SessionMeta = {
+        ...base,
+        id: 'abc111-session',
+        startTime: base.startTime + 1,
+      };
+      const sessionB: SessionMeta = {
+        ...base,
+        id: 'abc222-session',
+        startTime: base.startTime + 2,
+      };
+      saveSessionMeta(sessionA);
+      saveSessionMeta(sessionB);
+
+      const result = lookupSessionRef('abc', project);
+      expect(result.status).toBe('ambiguous');
+      if (result.status === 'ambiguous') {
+        expect(result.matches.map(s => s.id)).toEqual(expect.arrayContaining(['abc111-session', 'abc222-session']));
+      }
+      expect(findSession('abc', project)).toBeNull();
+    });
+
+    test('renameSession updates the display name and lookup by exact name', () => {
+      const session = createSession('/tmp/project-rename-session', 'gpt-4o');
+
+      const renamed = renameSession(session.id, 'api cleanup');
+      const loaded = loadSessionMeta(session.id);
+      const byName = findSession('api cleanup', '/tmp/project-rename-session');
+
+      expect(renamed?.name).toBe('api cleanup');
+      expect(loaded?.name).toBe('api cleanup');
+      expect(byName?.id).toBe(session.id);
+    });
+
+    test('getLastSession ignores empty sessions and returns most recently updated project session', () => {
+      const project = '/tmp/project-last-session';
+      const empty = createSession(project, 'gpt-4o');
+      const withMessages = createSession(project, 'gpt-4o');
+
+      appendSessionMessage(withMessages.id, {
+        role: 'user',
+        content: 'restorable',
+        timestamp: Date.now(),
+      });
+
+      const last = getLastSession(project);
+      expect(last?.id).toBe(withMessages.id);
+      expect(last?.id).not.toBe(empty.id);
+    });
+
+    test('resumeSession clears endTime and refreshes updatedAt', () => {
+      const session = createSession('/tmp/project-resume-session', 'gpt-4o');
+      endSession(session.id);
+
+      const ended = loadSessionMeta(session.id);
+      expect(ended?.endTime).toBeDefined();
+
+      const resumed = resumeSession(session.id);
+      expect(resumed?.endTime).toBeUndefined();
+      expect(resumed?.updatedAt).toBeGreaterThanOrEqual(session.startTime);
+    });
+
+    test('resolveProjectPath returns a stable absolute path for non-git folders', () => {
+      expect(resolveProjectPath('/tmp')).toBe(realpathSync('/tmp'));
     });
   });
 });

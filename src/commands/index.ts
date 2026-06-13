@@ -19,7 +19,8 @@ import { mcpManager } from '../tools/mcp';
 import type { Message, StreamCallbacks } from '../services/llm';
 import {
   listSessions,
-  getLastSession,
+  listProjectSessions,
+  lookupSessionRef,
   loadSessionHistory,
   loadSessionMeta,
   appendSessionMessage,
@@ -27,10 +28,12 @@ import {
   endSession,
   updateSessionSummary,
   updateSessionHarnessState,
+  resumeSession,
+  renameSession,
+  resolveProjectPath,
   readSessionMessages,
   type SessionMeta,
   type SessionMessage,
-  type ToolCallRecord,
 } from '../services/session-storage';
 import { getAutoCompact } from '../services/compact/auto-compact';
 import { createContextHarness } from '../harness';
@@ -534,9 +537,12 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
     return { success: false };
   }
 
+  const activeSession = ctx.getSession?.() ?? ctx.ensureSession?.() ?? (ctx.sessionId ? loadSessionMeta(ctx.sessionId) : null);
+  const sessionId = activeSession?.id ?? ctx.sessionId;
+
   // Record user message to session
-  if (ctx.sessionId) {
-    appendSessionMessage(ctx.sessionId, {
+  if (sessionId) {
+    appendSessionMessage(sessionId, {
       role: 'user',
       content: input,
       timestamp: Date.now(),
@@ -577,9 +583,6 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
   const sessionMessagesToRecord: SessionMessage[] = [];
   let lastToolCallId = '';
   let lastToolArgs: Record<string, unknown> = {};
-  // 收集当前 turn 的所有 tool_calls，用于构建完整的 assistant 消息
-  let pendingToolCalls: ToolCallRecord[] = [];
-  let currentAssistantContent = '';
 
   // Issue #22: 批量工具调用进度显示
   let toolCallCount = 0;
@@ -605,7 +608,6 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
         // 初始化流式渲染器
         streamRenderer = createStreamRenderer();
       }
-      currentAssistantContent += chunk;
       // 使用流式渲染器处理 chunk
       if (streamRenderer) {
         const rendered = streamRenderer.feed(chunk);
@@ -644,14 +646,20 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           spinner.stop();
           console.log();
           console.log(DIM(`Turn ${event.turn}...`));
-          // 重置当前 turn 的状态
-          pendingToolCalls = [];
-          currentAssistantContent = '';
           // 重置流式渲染器
           streamRenderer = createStreamRenderer();
           // Issue #22: 重置工具调用计数器
           toolCallCount = 0;
           lastProgressUpdate = 0;
+          break;
+
+        case 'assistant_tool_calls':
+          sessionMessagesToRecord.push({
+            role: 'assistant',
+            content: event.content || '',
+            timestamp: Date.now(),
+            tool_calls: event.toolCalls,
+          });
           break;
 
         case 'tool_call':
@@ -664,14 +672,6 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           // 收集完整的 tool_call 信息
           lastToolCallId = event.callId;
           lastToolArgs = event.args;
-          pendingToolCalls.push({
-            id: event.callId,
-            type: 'function',
-            function: {
-              name: event.name,
-              arguments: JSON.stringify(event.args),
-            },
-          });
           break;
 
         case 'tool_result':
@@ -700,16 +700,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           break;
 
         case 'message':
-          // 收到 assistant 文本消息，如果有 pending tool_calls，先记录带 tool_calls 的消息
-          if (pendingToolCalls.length > 0) {
-            sessionMessagesToRecord.push({
-              role: 'assistant',
-              content: event.content || '',
-              timestamp: Date.now(),
-              tool_calls: pendingToolCalls,
-            });
-            pendingToolCalls = [];
-          } else if (event.content) {
+          if (event.content) {
             sessionMessagesToRecord.push({
               role: 'assistant',
               content: event.content,
@@ -726,16 +717,6 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           finalContent = event.content;
           finalModel = event.model;
           finalUsage = event.usage;
-          // 如果 complete 时还有 pending tool_calls（没有 message 事件），记录它们
-          if (pendingToolCalls.length > 0) {
-            sessionMessagesToRecord.push({
-              role: 'assistant',
-              content: finalContent || '',
-              timestamp: Date.now(),
-              tool_calls: pendingToolCalls,
-            });
-            pendingToolCalls = [];
-          }
           break;
       }
     }
@@ -751,18 +732,10 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
 
     if (finalContent) {
       ctx.store.addMessage({ role: 'assistant', content: finalContent });
-      // Record assistant message to session
-      if (ctx.sessionId) {
-        appendSessionMessage(ctx.sessionId, {
-          role: 'assistant',
-          content: finalContent,
-          timestamp: Date.now(),
-        });
-        // Record any tool messages
-        if (sessionMessagesToRecord.length > 0) {
-          appendSessionMessages(ctx.sessionId, sessionMessagesToRecord);
-        }
-      }
+    }
+
+    if (sessionId && sessionMessagesToRecord.length > 0) {
+      appendSessionMessages(sessionId, sessionMessagesToRecord);
     }
 
     if (finalUsage) {
@@ -771,8 +744,12 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
 
     const harnessState = harness.toJSON();
     ctx.store.setState({ harnessState });
-    if (ctx.sessionId) {
-      updateSessionHarnessState(ctx.sessionId, harnessState);
+    if (sessionId) {
+      updateSessionHarnessState(sessionId, harnessState);
+      const recordedMessages = readSessionMessages(sessionId);
+      if (recordedMessages.length > 0) {
+        updateSessionSummary(sessionId, recordedMessages);
+      }
     }
 
     if (responseStarted) {
@@ -1051,101 +1028,188 @@ function handleUsage(ctx: CommandContext): CommandResult {
 // Session 命令
 // ============================================================================
 
-function handleSessions(ctx: CommandContext): CommandResult {
+function parseSessionScopeArgs(args: string, cwd: string): { allProjects: boolean; projectPath: string; query: string; last: boolean } {
+  const parts = args.trim().split(/\s+/).filter(Boolean);
+  let allProjects = false;
+  let last = false;
+  let projectPath = resolveProjectPath(cwd);
+  const queryParts: string[] = [];
+
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (part === '--all' || part === '-a') {
+      allProjects = true;
+      continue;
+    }
+    if (part === '--last' || part === '-l') {
+      last = true;
+      continue;
+    }
+    if ((part === '--project' || part === '-p') && parts[i + 1]) {
+      projectPath = resolveProjectPath(parts[i + 1]);
+      i++;
+      continue;
+    }
+    queryParts.push(part);
+  }
+
+  return {
+    allProjects,
+    projectPath,
+    last,
+    query: queryParts.join(' '),
+  };
+}
+
+function sessionTitle(session: SessionMeta): string {
+  return session.name || session.taskSummary || '(untitled)';
+}
+
+function truncateText(text: string, max: number): string {
+  return text.length > max ? text.slice(0, max - 3) + '...' : text;
+}
+
+function printSessionRows(sessions: SessionMeta[], options: { showProject?: boolean; indexed?: boolean } = {}): void {
+  for (let i = 0; i < sessions.length; i++) {
+    const session = sessions[i];
+    const startTime = new Date(session.startTime).toLocaleString();
+    const updatedTime = new Date(session.updatedAt ?? session.startTime).toLocaleString();
+    const duration = session.endTime
+      ? Math.round((session.endTime - session.startTime) / 1000) + 's'
+      : 'active';
+    const status = session.endTime ? DIM('completed') : ACCENT('active');
+    const index = options.indexed ? `${String(i + 1).padStart(2, ' ')}. ` : '  ';
+    const name = session.name ? ` ${ACCENT(`"${session.name}"`)}` : '';
+
+    console.log(`${index}${status} ${BRAND(session.id.slice(0, 8))}${name} ${DIM(session.model)}`);
+    console.log(`    ${truncateText(sessionTitle(session), 96)}`);
+    console.log(`    ${DIM(`Started: ${startTime}`)} ${DIM(`Updated: ${updatedTime}`)} ${DIM(`Duration: ${duration}`)}`);
+    console.log(`    ${DIM(`Messages: ${session.messageCount ?? 0}`)} ${DIM(`Tokens: ${session.tokenCount}`)} ${DIM(`Cost: $${session.cost.toFixed(4)}`)}`);
+    if (options.showProject) {
+      console.log(`    ${DIM(`Project: ${session.projectPath}`)}`);
+    }
+    console.log();
+  }
+}
+
+function parsePickerIndex(ref: string, max: number): number | null {
+  const trimmed = ref.trim();
+  const match = trimmed.match(/^#?(\d+)$/);
+  if (!match) return null;
+
+  const index = Number(match[1]);
+  if (!Number.isInteger(index) || index < 1 || index > max) return null;
+  return index - 1;
+}
+
+function printSessionConflict(ref: string, matches: SessionMeta[]): void {
+  console.log(ERROR(`Session reference is ambiguous: ${ref}`));
+  console.log(DIM('Use a longer id prefix, exact session name, or pick one of these:'));
   console.log();
-  console.log(HEADER('Sessions'));
+  printSessionRows(matches.slice(0, 10), { indexed: true, showProject: true });
+  console.log(DIM('Example: /resume <longer-session-id>'));
+  console.log();
+}
+
+function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
+  const scope = parseSessionScopeArgs(args, ctx.cwd);
+  console.log();
+  console.log(HEADER(scope.allProjects ? 'Sessions (all projects)' : 'Sessions'));
   console.log(DIM('─'.repeat(40)));
 
-  const sessions = listSessions(10);
+  const sessions = scope.allProjects
+    ? listSessions(10)
+    : listProjectSessions(scope.projectPath, 10);
 
   if (sessions.length === 0) {
-    console.log(DIM('  No sessions found'));
+    console.log(DIM(scope.allProjects ? '  No sessions found' : '  No sessions found for this project'));
     console.log();
     return { success: true };
   }
 
   console.log();
-  for (const session of sessions) {
-    const startTime = new Date(session.startTime).toLocaleString();
-    const duration = session.endTime
-      ? Math.round((session.endTime - session.startTime) / 1000) + 's'
-      : 'active';
-    const status = session.endTime ? DIM('completed') : ACCENT('active');
+  printSessionRows(sessions, { indexed: true, showProject: scope.allProjects });
 
-    console.log(`  ${status} ${BRAND(session.id.slice(0, 8))} ${DIM(session.model)}`);
-    console.log(`    ${DIM(`Started: ${startTime}`)} ${DIM(`Duration: ${duration}`)}`);
-    console.log(`    ${DIM(`Tokens: ${session.tokenCount}`)} ${DIM(`Cost: $${session.cost.toFixed(4)}`)}`);
-    console.log();
-  }
-
-  console.log(DIM('Use /resume <session-id> to restore a session'));
+  console.log(DIM('Use /resume <number|session-id|name> to restore a session'));
+  console.log(DIM('Use /session-rename <number|session-id|name> <new name> to rename'));
+  console.log(DIM('Use /sessions --all to list sessions from every project'));
   console.log();
   return { success: true };
 }
 
 function handleResume(ctx: CommandContext, args: string): CommandResult {
-  const sessionId = args.trim();
+  const scope = parseSessionScopeArgs(args, ctx.cwd);
+  const sessionRef = scope.query;
+  const scopedSessions = (scope.allProjects ? listSessions() : listProjectSessions(scope.projectPath))
+    .filter(session => (session.messageCount ?? 0) > 0);
 
-  if (!sessionId) {
-    // Try to resume last session for current project
-    const lastSession = getLastSession(process.cwd());
-    if (lastSession) {
-      console.log();
-      console.log(HEADER(`Resuming last session`));
-      console.log(DIM(`  ID: ${lastSession.id.slice(0, 8)}`));
-      console.log(DIM(`  Model: ${lastSession.model}`));
-      console.log(DIM(`  Started: ${new Date(lastSession.startTime).toLocaleString()}`));
-
-      // Load history and show summary
-      const history = loadSessionHistory(lastSession.id);
-      if (history.length > 0) {
-        const summary = generateHistorySummary(history);
-        console.log(DIM(`  Summary: ${summary}`));
-        console.log();
-
-        ctx.store.setState({ conversationHistory: history });
-        ctx.store.setState({ harnessState: lastSession.harnessState });
-        resetToolState();
-        console.log(SUCCESS(`✔ Restored ${history.length} messages from session`));
-      } else {
-        console.log();
-        console.log(DIM('  No messages in session'));
-      }
-
-      console.log();
-      return { success: true };
-    } else {
+  if (!sessionRef) {
+    const lastSession = scopedSessions[0];
+    if (!lastSession) {
       console.log(ERROR('No previous session found for this project'));
-      console.log(DIM('Use /sessions to list all sessions'));
+      console.log(DIM('Use /sessions --all to list all sessions'));
       console.log();
       return { success: false };
     }
+
+    if (scope.last || scopedSessions.length === 1) {
+      return restoreSession(ctx, lastSession, true);
+    }
+
+    console.log();
+    console.log(HEADER(scope.allProjects ? 'Pick a Session (all projects)' : 'Pick a Session'));
+    console.log(DIM('─'.repeat(40)));
+    console.log();
+    printSessionRows(scopedSessions.slice(0, 10), { indexed: true, showProject: scope.allProjects });
+    console.log(DIM('Use /resume <number> to restore, for example /resume 1'));
+    console.log(DIM('Use /resume --last to skip the picker next time'));
+    console.log();
+    return { success: true };
+  }
+
+  const pickerIndex = parsePickerIndex(sessionRef, scopedSessions.length);
+  if (pickerIndex !== null) {
+    return restoreSession(ctx, scopedSessions[pickerIndex], false);
   }
 
   // Resume specific session
-  const session = loadSessionMeta(sessionId) || listSessions().find(s => s.id.startsWith(sessionId));
+  const result = lookupSessionRef(sessionRef, scope.projectPath, { allProjects: scope.allProjects });
 
-  if (!session) {
-    console.log(ERROR(`Session not found: ${sessionId}`));
-    console.log(DIM('Use /sessions to list all sessions'));
+  if (result.status === 'ambiguous') {
+    printSessionConflict(sessionRef, result.matches);
+    return { success: false };
+  }
+
+  if (result.status === 'not_found') {
+    console.log(ERROR(`Session not found: ${sessionRef}`));
+    console.log(DIM(scope.allProjects ? 'Use /sessions --all to list sessions' : 'Use /sessions to list project sessions, or /resume <id> --all'));
     console.log();
     return { success: false };
   }
 
+  return restoreSession(ctx, result.session, false);
+}
+
+function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boolean): CommandResult {
+  const resumed = resumeSession(session.id) ?? session;
+
   console.log();
-  console.log(HEADER(`Resuming session ${session.id.slice(0, 8)}`));
-  console.log(DIM(`  Model: ${session.model}`));
-  console.log(DIM(`  Started: ${new Date(session.startTime).toLocaleString()}`));
+  console.log(HEADER(isLast ? 'Resuming last session' : `Resuming session ${resumed.id.slice(0, 8)}`));
+  console.log(DIM(`  ID: ${resumed.id}`));
+  console.log(DIM(`  Model: ${resumed.model}`));
+  console.log(DIM(`  Project: ${resumed.projectPath}`));
+  console.log(DIM(`  Started: ${new Date(resumed.startTime).toLocaleString()}`));
+  ctx.setSession?.(resumed);
 
   // Load history and show summary
-  const history = loadSessionHistory(session.id);
+  const history = loadSessionHistory(resumed.id);
   if (history.length > 0) {
     const summary = generateHistorySummary(history);
     console.log(DIM(`  Summary: ${summary}`));
     console.log();
 
     ctx.store.setState({ conversationHistory: history });
-    ctx.store.setState({ harnessState: session.harnessState });
+    ctx.store.setState({ harnessState: resumed.harnessState });
     resetToolState();
     console.log(SUCCESS(`✔ Restored ${history.length} messages`));
   } else {
@@ -1153,6 +1217,59 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
     console.log(DIM('  No messages in session'));
   }
 
+  console.log();
+  return { success: true };
+}
+
+function handleSessionRename(ctx: CommandContext, args: string): CommandResult {
+  const scope = parseSessionScopeArgs(args, ctx.cwd);
+  const parts = scope.query.split(/\s+/).filter(Boolean);
+  const ref = parts.shift();
+  const newName = parts.join(' ').trim();
+
+  if (!ref || !newName) {
+    console.log(ERROR('Usage: /session-rename <number|session-id|name> <new name>'));
+    console.log(DIM('Run /sessions first to see picker numbers for this project.'));
+    console.log();
+    return { success: false };
+  }
+
+  const scopedSessions = scope.allProjects ? listSessions() : listProjectSessions(scope.projectPath);
+  const pickerIndex = parsePickerIndex(ref, scopedSessions.length);
+  let session: SessionMeta | null = pickerIndex !== null ? scopedSessions[pickerIndex] : null;
+
+  if (!session) {
+    const result = lookupSessionRef(ref, scope.projectPath, { allProjects: scope.allProjects });
+    if (result.status === 'ambiguous') {
+      printSessionConflict(ref, result.matches);
+      return { success: false };
+    }
+    if (result.status === 'not_found') {
+      console.log(ERROR(`Session not found: ${ref}`));
+      console.log(DIM(scope.allProjects ? 'Use /sessions --all to list sessions' : 'Use /sessions to list project sessions'));
+      console.log();
+      return { success: false };
+    }
+    session = result.session;
+  }
+
+  const duplicate = scopedSessions.find(s => s.id !== session!.id && s.name === newName);
+  const renamed = renameSession(session.id, newName);
+  if (!renamed) {
+    console.log(ERROR(`Session not found: ${ref}`));
+    console.log();
+    return { success: false };
+  }
+
+  if (ctx.getSession?.()?.id === renamed.id) {
+    ctx.setSession?.(renamed);
+  }
+
+  console.log();
+  console.log(SUCCESS(`✔ Renamed session ${renamed.id.slice(0, 8)} to "${newName}"`));
+  if (duplicate) {
+    console.log(WARN(`  Name already exists on ${duplicate.id.slice(0, 8)}; /resume "${newName}" will be ambiguous.`));
+  }
   console.log();
   return { success: true };
 }
@@ -1321,14 +1438,22 @@ const COMMANDS: SlashCommand[] = [
     name: 'sessions',
     description: 'List recent sessions',
     type: 'builtin',
-    execute: (ctx) => handleSessions(ctx),
+    execute: (ctx, args) => handleSessions(ctx, args),
   },
   {
     name: 'resume',
     description: 'Resume a previous session',
-    argumentHint: '[session-id]',
+    argumentHint: '[number|session-id|name]',
     type: 'builtin',
     execute: (ctx, args) => handleResume(ctx, args),
+  },
+  {
+    name: 'session-rename',
+    aliases: ['rename-session'],
+    description: 'Rename a saved session',
+    argumentHint: '<number|session-id|name> <new name>',
+    type: 'builtin',
+    execute: (ctx, args) => handleSessionRename(ctx, args),
   },
 
   // MCP

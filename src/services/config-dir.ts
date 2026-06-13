@@ -90,6 +90,50 @@ export function getProjectsDir(): string {
   return join(getConfigHome(), 'projects');
 }
 
+/** Encode an absolute project path into a stable, readable directory key. */
+export function encodeProjectPath(projectPath: string): string {
+  const normalized = projectPath.replace(/\\/g, '/');
+  const encoded = normalized
+    .replace(/[^A-Za-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return encoded || 'root';
+}
+
+/** 项目状态目录路径 */
+export function getProjectDir(projectPath: string): string {
+  return join(getProjectsDir(), encodeProjectPath(projectPath));
+}
+
+/** 项目会话目录路径 */
+export function getProjectSessionsDir(projectPath: string): string {
+  return join(getProjectDir(projectPath), 'sessions');
+}
+
+/** 确保项目状态目录存在 */
+export function ensureProjectDir(projectPath: string): void {
+  ensureConfigDir();
+
+  const projectDir = getProjectDir(projectPath);
+  if (!existsSync(projectDir)) {
+    mkdirSync(projectDir, { recursive: true, mode: 0o700 });
+  }
+
+  const sessionsDir = getProjectSessionsDir(projectPath);
+  if (!existsSync(sessionsDir)) {
+    mkdirSync(sessionsDir, { recursive: true, mode: 0o700 });
+  }
+}
+
+/** 项目内单个会话元数据文件路径 */
+export function getProjectSessionMetaPath(projectPath: string, sessionId: string): string {
+  return join(getProjectSessionsDir(projectPath), `${sessionId}.json`);
+}
+
+/** 项目内单个会话对话记录文件路径 */
+export function getProjectSessionMessagesPath(projectPath: string, sessionId: string): string {
+  return join(getProjectSessionsDir(projectPath), `${sessionId}.jsonl`);
+}
+
 /** 成本记录目录路径 */
 export function getCostDir(): string {
   return join(getConfigHome(), 'cost');

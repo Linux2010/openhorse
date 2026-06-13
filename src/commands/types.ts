@@ -9,6 +9,7 @@ import type { OpenHorseRuntime } from '../init';
 import type { Store } from '../framework/store';
 import type { LLMService } from '../services/llm';
 import type { OpenHorseCLIConfig } from '../services/config';
+import type { SessionMeta } from '../services/session-storage';
 
 // ============================================================================
 // 类型定义
@@ -23,6 +24,12 @@ export interface CommandContext {
   runtime: OpenHorseRuntime;
   /** 当前会话 ID（用于记录消息） */
   sessionId?: string;
+  /** Lazily create or return the active session. */
+  ensureSession?: () => SessionMeta;
+  /** Switch the active session after /resume. */
+  setSession?: (session: SessionMeta) => void;
+  /** Return the active session if one exists. */
+  getSession?: () => SessionMeta | null;
 }
 
 /** 命令执行结果 */

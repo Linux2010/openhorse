@@ -5,10 +5,23 @@
  * 参考 OpenClaude 的 history.jsonl 和 sessions/ 目录。
  */
 
-import { existsSync, readFileSync, writeFileSync, appendFileSync, readdirSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, appendFileSync, readdirSync, unlinkSync, realpathSync } from 'fs';
 import { randomUUID } from 'crypto';
-import { join } from 'path';
-import { ensureConfigDir, getHistoryPath, getSessionMetaPath, getSessionMessagesPath, getSessionsDir } from './config-dir';
+import { execFileSync } from 'child_process';
+import { join, resolve } from 'path';
+import {
+  encodeProjectPath,
+  ensureConfigDir,
+  ensureProjectDir,
+  getHistoryPath,
+  getProjectSessionMessagesPath,
+  getProjectSessionMetaPath,
+  getProjectSessionsDir,
+  getProjectsDir,
+  getSessionMetaPath,
+  getSessionMessagesPath,
+  getSessionsDir,
+} from './config-dir';
 import { atomicWriteFileSync } from './atomic-write';
 import type { Message } from './llm';
 import type { ContextCapsule, HarnessState } from '../harness';
@@ -34,14 +47,30 @@ export interface ToolCallRecord {
 export interface SessionMeta {
   /** 会话 ID */
   id: string;
-  /** 项目路径 */
+  /** Canonical project root path */
   projectPath: string;
+  /** Encoded project key used under ~/.openhorse/projects/ */
+  projectKey?: string;
+  /** Original working directory used when the session started */
+  cwd?: string;
   /** 使用的模型 */
   model: string;
   /** 开始时间 (timestamp ms) */
   startTime: number;
+  /** ISO create time for SDK/picker compatibility */
+  createdAt?: string;
+  /** Last update timestamp (ms) */
+  updatedAt?: number;
+  /** ISO update time for SDK/picker compatibility */
+  updatedAtIso?: string;
   /** 结束时间 (timestamp ms) */
   endTime?: number;
+  /** Number of recorded transcript messages */
+  messageCount?: number;
+  /** Optional human-readable name */
+  name?: string;
+  /** Git branch at session creation/resume time */
+  gitBranch?: string;
   /** token 数 */
   tokenCount: number;
   /** 成本 (USD) */
@@ -86,6 +115,143 @@ export interface SessionMessage {
   tool_calls?: ToolCallRecord[];
 }
 
+export interface ListSessionsOptions {
+  /** Filter sessions to this canonical project. */
+  projectPath?: string;
+  /** Include sessions from all projects. Overrides projectPath. */
+  allProjects?: boolean;
+  /** Include sessions without transcript messages. Defaults to true. */
+  includeEmpty?: boolean;
+}
+
+export type SessionLookupResult =
+  | { status: 'found'; session: SessionMeta }
+  | { status: 'not_found' }
+  | { status: 'ambiguous'; matches: SessionMeta[] };
+
+// ============================================================================
+// Project helpers
+// ============================================================================
+
+const resolvedProjectPathCache = new Map<string, string>();
+const gitBranchCache = new Map<string, string | undefined>();
+
+/**
+ * Resolve a working directory to the project identity used for session storage.
+ * Git repositories share sessions from the repository root; non-git folders use
+ * their real absolute path.
+ */
+export function resolveProjectPath(cwd: string = process.cwd()): string {
+  const absolute = resolve(cwd);
+  const cached = resolvedProjectPathCache.get(absolute);
+  if (cached) {
+    return cached;
+  }
+
+  let resolvedPath = absolute;
+
+  if (existsSync(absolute)) {
+    try {
+      const root = execFileSync('git', ['-C', absolute, 'rev-parse', '--show-toplevel'], {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (root) {
+        resolvedPath = realpathSync(root);
+        resolvedProjectPathCache.set(absolute, resolvedPath);
+        return resolvedPath;
+      }
+    } catch {
+      // Not a git worktree, or git is unavailable.
+    }
+  }
+
+  try {
+    resolvedPath = realpathSync(absolute);
+  } catch {
+    resolvedPath = absolute;
+  }
+
+  resolvedProjectPathCache.set(absolute, resolvedPath);
+  return resolvedPath;
+}
+
+export function getProjectKey(projectPath: string): string {
+  return encodeProjectPath(resolveProjectPath(projectPath));
+}
+
+function getGitBranch(projectPath: string): string | undefined {
+  if (gitBranchCache.has(projectPath)) {
+    return gitBranchCache.get(projectPath);
+  }
+
+  if (!existsSync(projectPath)) {
+    gitBranchCache.set(projectPath, undefined);
+    return undefined;
+  }
+
+  try {
+    const branch = execFileSync('git', ['-C', projectPath, 'rev-parse', '--abbrev-ref', 'HEAD'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const value = branch || undefined;
+    gitBranchCache.set(projectPath, value);
+    return value;
+  } catch {
+    gitBranchCache.set(projectPath, undefined);
+    return undefined;
+  }
+}
+
+function normalizeSessionMeta(session: SessionMeta): SessionMeta {
+  const projectPath = resolveProjectPath(session.projectPath);
+  const startTime = session.startTime ?? Date.now();
+  const updatedAt = session.updatedAt ?? session.endTime ?? startTime;
+
+  return {
+    ...session,
+    projectPath,
+    projectKey: session.projectKey ?? encodeProjectPath(projectPath),
+    cwd: session.cwd ?? projectPath,
+    startTime,
+    createdAt: session.createdAt ?? new Date(startTime).toISOString(),
+    updatedAt,
+    updatedAtIso: session.updatedAtIso ?? new Date(updatedAt).toISOString(),
+    messageCount: session.messageCount ?? 0,
+    tokenCount: session.tokenCount ?? 0,
+    cost: session.cost ?? 0,
+    gitBranch: session.gitBranch ?? getGitBranch(projectPath),
+  };
+}
+
+function uniquePaths(paths: string[]): string[] {
+  return [...new Set(paths)];
+}
+
+function parseSessionMetaFile(path: string): SessionMeta | null {
+  try {
+    const content = readFileSync(path, 'utf-8');
+    return JSON.parse(content) as SessionMeta;
+  } catch {
+    return null;
+  }
+}
+
+function upsertNewestSession(sessionsById: Map<string, SessionMeta>, session: SessionMeta): void {
+  const existing = sessionsById.get(session.id);
+  const existingTime = existing ? existing.updatedAt ?? existing.startTime : 0;
+  const nextTime = session.updatedAt ?? session.startTime;
+
+  if (!existing || nextTime >= existingTime) {
+    sessionsById.set(session.id, session);
+  }
+}
+
+function sortSessionsNewestFirst(sessions: SessionMeta[]): SessionMeta[] {
+  return sessions.sort((a, b) => (b.updatedAt ?? b.startTime) - (a.updatedAt ?? a.startTime));
+}
+
 // ============================================================================
 // 会话管理
 // ============================================================================
@@ -95,12 +261,21 @@ export interface SessionMessage {
  */
 export function createSession(projectPath: string, model: string): SessionMeta {
   ensureConfigDir();
+  const canonicalProjectPath = resolveProjectPath(projectPath);
+  const now = Date.now();
 
   const session: SessionMeta = {
     id: randomUUID(),
-    projectPath,
+    projectPath: canonicalProjectPath,
+    projectKey: encodeProjectPath(canonicalProjectPath),
+    cwd: resolve(projectPath),
     model,
-    startTime: Date.now(),
+    startTime: now,
+    createdAt: new Date(now).toISOString(),
+    updatedAt: now,
+    updatedAtIso: new Date(now).toISOString(),
+    messageCount: 0,
+    gitBranch: getGitBranch(canonicalProjectPath),
     tokenCount: 0,
     cost: 0,
   };
@@ -114,26 +289,39 @@ export function createSession(projectPath: string, model: string): SessionMeta {
  */
 export function saveSessionMeta(session: SessionMeta): void {
   ensureConfigDir();
-  const path = getSessionMetaPath(session.id);
-  atomicWriteFileSync(path, JSON.stringify(session, null, 2), { mode: 0o600 });
+  const normalized = normalizeSessionMeta(session);
+  const payload = JSON.stringify(normalized, null, 2);
+
+  ensureProjectDir(normalized.projectPath);
+  atomicWriteFileSync(getProjectSessionMetaPath(normalized.projectPath, normalized.id), payload, { mode: 0o600 });
 }
 
 /**
  * 加载会话元数据
  */
 export function loadSessionMeta(sessionId: string): SessionMeta | null {
-  const path = getSessionMetaPath(sessionId);
+  const projectsDir = getProjectsDir();
+  if (existsSync(projectsDir)) {
+    for (const projectKey of readdirSync(projectsDir)) {
+      const path = join(projectsDir, projectKey, 'sessions', `${sessionId}.json`);
+      if (!existsSync(path)) continue;
 
-  if (!existsSync(path)) {
-    return null;
+      const session = parseSessionMetaFile(path);
+      if (session) {
+        return normalizeSessionMeta(session);
+      }
+    }
   }
 
-  try {
-    const content = readFileSync(path, 'utf-8');
-    return JSON.parse(content) as SessionMeta;
-  } catch {
-    return null;
+  const globalPath = getSessionMetaPath(sessionId);
+  if (existsSync(globalPath)) {
+    const session = parseSessionMetaFile(globalPath);
+    if (session) {
+      return normalizeSessionMeta(session);
+    }
   }
+
+  return null;
 }
 
 /**
@@ -145,7 +333,35 @@ export function updateSessionStats(sessionId: string, tokens: number, cost: numb
 
   session.tokenCount += tokens;
   session.cost += cost;
+  session.updatedAt = Date.now();
+  session.updatedAtIso = new Date(session.updatedAt).toISOString();
   saveSessionMeta(session);
+}
+
+function touchSession(sessionId: string, messageDelta: number = 0): SessionMeta | null {
+  const session = loadSessionMeta(sessionId);
+  if (!session) return null;
+
+  session.updatedAt = Date.now();
+  session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  session.messageCount = (session.messageCount ?? 0) + messageDelta;
+  saveSessionMeta(session);
+  return session;
+}
+
+/**
+ * Mark a saved session as active again and refresh project metadata.
+ */
+export function resumeSession(sessionId: string): SessionMeta | null {
+  const session = loadSessionMeta(sessionId);
+  if (!session) return null;
+
+  session.endTime = undefined;
+  session.gitBranch = getGitBranch(session.projectPath);
+  session.updatedAt = Date.now();
+  session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  saveSessionMeta(session);
+  return session;
 }
 
 /**
@@ -168,6 +384,8 @@ export function endSession(sessionId: string): void {
   if (!session) return;
 
   session.endTime = Date.now();
+  session.updatedAt = session.endTime;
+  session.updatedAtIso = new Date(session.updatedAt).toISOString();
   saveSessionMeta(session);
 }
 
@@ -211,6 +429,9 @@ export function updateSessionSummary(sessionId: string, messages: SessionMessage
   session.toolsUsed = [...new Set(toolsUsed)];  // unique
   session.filesModified = [...new Set(filesModified)];  // unique
   session.taskSummary = taskSummary.length > 100 ? taskSummary.slice(0, 100) + '...' : taskSummary;
+  session.messageCount = messages.length;
+  session.updatedAt = Date.now();
+  session.updatedAtIso = new Date(session.updatedAt).toISOString();
 
   saveSessionMeta(session);
 }
@@ -219,32 +440,9 @@ export function updateSessionSummary(sessionId: string, messages: SessionMessage
  * 获取项目最近的会话
  */
 export function getLastSession(projectPath: string): SessionMeta | null {
-  ensureConfigDir();
-  const sessionsDir = getSessionsDir();
-
-  if (!existsSync(sessionsDir)) {
-    return null;
-  }
-
-  // 遍历所有会话文件，找到该项目路径最近的
-  const files = readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
-
-  let latest: SessionMeta | null = null;
-  for (const file of files) {
-    try {
-      const content = readFileSync(join(sessionsDir, file), 'utf-8');
-      const session = JSON.parse(content) as SessionMeta;
-      if (session.projectPath === projectPath) {
-        if (!latest || session.startTime > latest.startTime) {
-          latest = session;
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  return latest;
+  const sessions = listProjectSessions(projectPath)
+    .filter(session => (session.messageCount ?? 0) > 0);
+  return sessions[0] ?? null;
 }
 
 // ============================================================================
@@ -303,38 +501,70 @@ export function readProjectHistory(projectPath: string, limit?: number): History
  */
 export function appendSessionMessage(sessionId: string, message: SessionMessage): void {
   ensureConfigDir();
-  const path = getSessionMessagesPath(sessionId);
   const line = JSON.stringify(message) + '\n';
-  appendFileSync(path, line, { mode: 0o600 });
+  const session = touchSession(sessionId, 1);
+
+  const paths = session
+    ? [getProjectSessionMessagesPath(session.projectPath, sessionId)]
+    : [getSessionMessagesPath(sessionId)];
+
+  if (session) {
+    ensureProjectDir(session.projectPath);
+  }
+
+  for (const path of uniquePaths(paths)) {
+    appendFileSync(path, line, { mode: 0o600 });
+  }
 }
 
 /**
  * 追加多条会话消息
  */
 export function appendSessionMessages(sessionId: string, messages: SessionMessage[]): void {
+  if (messages.length === 0) return;
+
   ensureConfigDir();
-  const path = getSessionMessagesPath(sessionId);
   const lines = messages.map(m => JSON.stringify(m)).join('\n') + '\n';
-  appendFileSync(path, lines, { mode: 0o600 });
+  const session = touchSession(sessionId, messages.length);
+
+  const paths = session
+    ? [getProjectSessionMessagesPath(session.projectPath, sessionId)]
+    : [getSessionMessagesPath(sessionId)];
+
+  if (session) {
+    ensureProjectDir(session.projectPath);
+  }
+
+  for (const path of uniquePaths(paths)) {
+    appendFileSync(path, lines, { mode: 0o600 });
+  }
 }
 
 /**
  * 读取会话消息
  */
 export function readSessionMessages(sessionId: string): SessionMessage[] {
-  const path = getSessionMessagesPath(sessionId);
+  const session = loadSessionMeta(sessionId);
+  const candidatePaths = session
+    ? [
+        getProjectSessionMessagesPath(session.projectPath, sessionId),
+        getSessionMessagesPath(sessionId),
+      ]
+    : [getSessionMessagesPath(sessionId)];
 
-  if (!existsSync(path)) {
-    return [];
+  for (const path of uniquePaths(candidatePaths)) {
+    if (!existsSync(path)) continue;
+
+    try {
+      const content = readFileSync(path, 'utf-8');
+      const lines = content.trim().split('\n').filter(Boolean);
+      return lines.map(line => JSON.parse(line) as SessionMessage);
+    } catch {
+      // try the next candidate
+    }
   }
 
-  try {
-    const content = readFileSync(path, 'utf-8');
-    const lines = content.trim().split('\n').filter(Boolean);
-    return lines.map(line => JSON.parse(line) as SessionMessage);
-  } catch {
-    return [];
-  }
+  return [];
 }
 
 /**
@@ -370,46 +600,153 @@ export function listSessions(limit?: number): SessionMeta[] {
   ensureConfigDir();
   const sessionsDir = getSessionsDir();
 
-  if (!existsSync(sessionsDir)) {
-    return [];
-  }
+  const sessionsById = new Map<string, SessionMeta>();
 
-  const files = readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
-  const sessions: SessionMeta[] = [];
-
-  for (const file of files) {
-    try {
-      const content = readFileSync(join(sessionsDir, file), 'utf-8');
-      const session = JSON.parse(content) as SessionMeta;
-      sessions.push(session);
-    } catch {
-      // ignore
+  if (existsSync(sessionsDir)) {
+    const files = readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
+    for (const file of files) {
+      const rawSession = parseSessionMetaFile(join(sessionsDir, file));
+      if (rawSession) {
+        upsertNewestSession(sessionsById, normalizeSessionMeta(rawSession));
+      }
     }
   }
 
-  // 按开始时间排序（最新的在前）
-  sessions.sort((a, b) => b.startTime - a.startTime);
+  const projectsDir = getProjectsDir();
+  if (existsSync(projectsDir)) {
+    for (const projectKey of readdirSync(projectsDir)) {
+      const projectSessionsDir = join(projectsDir, projectKey, 'sessions');
+      if (!existsSync(projectSessionsDir)) continue;
 
+      const files = readdirSync(projectSessionsDir).filter(f => f.endsWith('.json'));
+      for (const file of files) {
+        const rawSession = parseSessionMetaFile(join(projectSessionsDir, file));
+        if (rawSession) {
+          upsertNewestSession(sessionsById, normalizeSessionMeta(rawSession));
+        }
+      }
+    }
+  }
+
+  const sessions = sortSessionsNewestFirst(Array.from(sessionsById.values()));
   return limit ? sessions.slice(0, limit) : sessions;
+}
+
+/**
+ * List sessions for a single canonical project.
+ */
+export function listProjectSessions(projectPath: string, limit?: number): SessionMeta[] {
+  const canonicalProjectPath = resolveProjectPath(projectPath);
+  const sessionsById = new Map<string, SessionMeta>();
+
+  const projectSessionsDir = getProjectSessionsDir(canonicalProjectPath);
+  if (existsSync(projectSessionsDir)) {
+    const files = readdirSync(projectSessionsDir).filter(f => f.endsWith('.json'));
+    for (const file of files) {
+      const rawSession = parseSessionMetaFile(join(projectSessionsDir, file));
+      if (rawSession) {
+        upsertNewestSession(sessionsById, normalizeSessionMeta(rawSession));
+      }
+    }
+  }
+
+  const sessions = sortSessionsNewestFirst(Array.from(sessionsById.values()));
+  return limit ? sessions.slice(0, limit) : sessions;
+}
+
+/**
+ * Find a session by full id, id prefix, or exact name. Project sessions are
+ * searched by default; pass allProjects when the user explicitly asks.
+ */
+export function findSession(
+  ref: string,
+  projectPath?: string,
+  options: { allProjects?: boolean } = {}
+): SessionMeta | null {
+  const result = lookupSessionRef(ref, projectPath, options);
+  return result.status === 'found' ? result.session : null;
+}
+
+/**
+ * Resolve a session reference and preserve ambiguity details for user-facing
+ * conflict prompts.
+ */
+export function lookupSessionRef(
+  ref: string,
+  projectPath?: string,
+  options: { allProjects?: boolean } = {}
+): SessionLookupResult {
+  const query = ref.trim();
+  if (!query) return { status: 'not_found' };
+
+  const candidates = options.allProjects || !projectPath
+    ? listSessions()
+    : listProjectSessions(projectPath);
+
+  const exactId = candidates.find(session => session.id === query);
+  if (exactId) return { status: 'found', session: exactId };
+
+  const exactNameMatches = candidates.filter(session => session.name === query);
+  if (exactNameMatches.length === 1) {
+    return { status: 'found', session: exactNameMatches[0] };
+  }
+  if (exactNameMatches.length > 1) {
+    return { status: 'ambiguous', matches: exactNameMatches };
+  }
+
+  const prefixMatches = candidates.filter(session =>
+    session.id.startsWith(query) || session.name?.startsWith(query)
+  );
+
+  if (prefixMatches.length === 1) {
+    return { status: 'found', session: prefixMatches[0] };
+  }
+  if (prefixMatches.length > 1) {
+    return { status: 'ambiguous', matches: prefixMatches };
+  }
+
+  return { status: 'not_found' };
+}
+
+/**
+ * Rename a session for easier picker/resume targeting.
+ */
+export function renameSession(sessionId: string, name: string): SessionMeta | null {
+  const session = loadSessionMeta(sessionId);
+  if (!session) return null;
+
+  const trimmed = name.trim();
+  session.name = trimmed || undefined;
+  session.updatedAt = Date.now();
+  session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  saveSessionMeta(session);
+  return session;
 }
 
 /**
  * 删除会话
  */
 export function deleteSession(sessionId: string): boolean {
-  const metaPath = getSessionMetaPath(sessionId);
-  const messagesPath = getSessionMessagesPath(sessionId);
+  const session = loadSessionMeta(sessionId);
+  const paths = [
+    getSessionMetaPath(sessionId),
+    getSessionMessagesPath(sessionId),
+  ];
+
+  if (session) {
+    paths.push(
+      getProjectSessionMetaPath(session.projectPath, sessionId),
+      getProjectSessionMessagesPath(session.projectPath, sessionId)
+    );
+  }
 
   let deleted = false;
 
-  if (existsSync(metaPath)) {
-    unlinkSync(metaPath);
-    deleted = true;
-  }
-
-  if (existsSync(messagesPath)) {
-    unlinkSync(messagesPath);
-    deleted = true;
+  for (const path of uniquePaths(paths)) {
+    if (existsSync(path)) {
+      unlinkSync(path);
+      deleted = true;
+    }
   }
 
   return deleted;
