@@ -12,6 +12,16 @@ function cleanEnv() {
   delete process.env.OPENHORSE_MODE;
   delete process.env.OPENHORSE_LOG_LEVEL;
   delete process.env.OPENHORSE_TOOL_CONFIRMATION;
+  delete process.env.OPENHORSE_WEBSEARCH_API_KEY;
+  delete process.env.OPENHORSE_WEBSEARCH_PROVIDER;
+  delete process.env.OPENHORSE_WEBSEARCH_MCP_PROVIDER;
+  delete process.env.OPENHORSE_WEBSEARCH_MCP_ENDPOINT;
+  delete process.env.OPENHORSE_WEBSEARCH_MCP_TOOL;
+  delete process.env.OPENHORSE_WEBSEARCH_MCP_TIMEOUT_MS;
+  delete process.env.OPENHORSE_WEBSEARCH_AUTH_TYPE;
+  delete process.env.OPENHORSE_WEBSEARCH_API_KEY_HEADER;
+  delete process.env.OPENHORSE_WEBSEARCH_API_KEY_QUERY_PARAM;
+  delete process.env.DASHSCOPE_API_KEY;
 }
 
 beforeEach(() => {
@@ -72,12 +82,28 @@ describe('loadConfig', () => {
     process.env.OPENHORSE_MODEL = 'env-model';
     process.env.OPENHORSE_FALLBACK_MODEL = 'env-fallback';
     process.env.OPENHORSE_TOOL_CONFIRMATION = 'ask';
+    process.env.OPENHORSE_WEBSEARCH_API_KEY = 'sk-websearch-env';
+    process.env.OPENHORSE_WEBSEARCH_PROVIDER = 'tavily';
+    process.env.OPENHORSE_WEBSEARCH_MCP_ENDPOINT = 'https://example.com/mcp';
+    process.env.OPENHORSE_WEBSEARCH_MCP_TOOL = 'search';
+    process.env.OPENHORSE_WEBSEARCH_MCP_TIMEOUT_MS = '12345';
+    process.env.OPENHORSE_WEBSEARCH_AUTH_TYPE = 'query';
+    process.env.OPENHORSE_WEBSEARCH_API_KEY_QUERY_PARAM = 'tavilyApiKey';
 
     const config = loadConfig();
     expect(config.apiKey).toBe('env-key');
     expect(config.model).toBe('env-model');
     expect(config.fallbackModel).toBe('env-fallback');
     expect(config.toolConfirmation).toBe('ask');
+    expect(config.webSearch).toEqual({
+      apiKey: 'sk-websearch-env',
+      provider: 'tavily',
+      endpoint: 'https://example.com/mcp',
+      toolName: 'search',
+      timeoutMs: 12345,
+      authType: 'query',
+      apiKeyQueryParam: 'tavilyApiKey',
+    });
   });
 
   test('globalConfig is used when no env or overrides', () => {
@@ -87,6 +113,11 @@ describe('loadConfig', () => {
       defaultModel: 'glm-5',
       fallbackModel: 'qwen-plus',
       toolConfirmation: 'deny',
+      webSearch: {
+        endpoint: 'https://dashscope.example/mcp',
+        apiKey: 'sk-websearch-global',
+        toolName: 'web_search',
+      },
       totalSessions: 10,
       totalTokens: 50000,
       totalCost: 2.50,
@@ -98,6 +129,9 @@ describe('loadConfig', () => {
     expect(config.model).toBe('glm-5');
     expect(config.fallbackModel).toBe('qwen-plus');
     expect(config.toolConfirmation).toBe('deny');
+    expect(config.webSearch?.endpoint).toBe('https://dashscope.example/mcp');
+    expect(config.webSearch?.apiKey).toBe('sk-websearch-global');
+    expect(config.webSearch?.toolName).toBe('web_search');
   });
 
   test('ignores invalid tool confirmation values', () => {
@@ -170,5 +204,6 @@ describe('getConfigSummary', () => {
     expect(summary.model).toBe('gpt-4o');
     expect(summary.fallback).toBe('claude-sonnet-4-6');
     expect(summary.toolConfirmation).toBe('allow');
+    expect(summary.webSearch).toBe('(default)');
   });
 });

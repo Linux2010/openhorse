@@ -150,6 +150,7 @@ Only a small set of fields are user-configurable. The agent controls internal ge
 | `defaultModel` | No | Default model (`glm-5`) |
 | `fallbackModel` | No | Fallback model on failure |
 | `toolConfirmation` | No | How to handle tools that ask for confirmation: `allow`, `deny`, or `ask`. Defaults to `allow` until the Ink UI can prompt interactively. |
+| `webSearch` | No | Optional WebSearch mode/provider overrides. `auto` uses provider MCP first, then adapter fallback (`tavily`, `brave`, `custom`, `ddg`). |
 
 ### Agent-Controlled Internals
 
@@ -178,6 +179,10 @@ CLI flags > ~/.openhorse/openhorse.json > env vars > internal defaults
 | `OPENHORSE_MODE` | `development` | Run mode |
 | `OPENHORSE_LOG_LEVEL` | `info` | Log level |
 | `OPENHORSE_TOOL_CONFIRMATION` | `allow` | Tool confirmation fallback: `allow`, `deny`, or `ask` |
+| `OPENHORSE_WEBSEARCH_PROVIDER` | `auto` | WebSearch mode/provider: `auto`, `native`, `bailian`, `zhipu`, `tavily-mcp`, `tavily`, `brave`, `custom`, `ddg` |
+| `OPENHORSE_WEBSEARCH_API_KEY` | configured API key | Provider-specific API key for MCP or adapters |
+| `OPENHORSE_WEBSEARCH_MCP_ENDPOINT` | provider default | WebSearch MCP endpoint override |
+| `OPENHORSE_WEBSEARCH_AUTH_TYPE` | `bearer` | MCP API key auth style: `bearer`, `header`, `query`, or `none` |
 | `OPENHORSE_EMBEDDING_PROVIDER` | - | Embedding service (ollama/openai) |
 
 See [docs/config.md](docs/config.md) for full details.
@@ -251,7 +256,7 @@ At startup, OpenHorse queries the `/models` endpoint for context window data. If
 | Tool | Description |
 |------|-------------|
 | `web_fetch` | Fetch web page content |
-| `web_search` | Web search |
+| `web_search` | Web search through configured provider MCP service |
 
 ### Memory
 
@@ -445,6 +450,7 @@ openhorse/
 - **Model context awareness** — per-model context windows (15+ known models)
 - **Dynamic model discovery** — queries `/models` endpoint at startup
 - **Simplified user config** — core fields: `apiKey`, `apiBaseUrl`, `defaultModel`, `fallbackModel`, `toolConfirmation`
+- **Provider WebSearch** — `web_search` delegates to WebSearch MCP instead of scraping search engines locally
 - **Agent-controlled internals** — `maxTokens`, `temperature`, `retries` managed internally
 - **Fallback model** configurable by user
 - **Streamlined command panel** rendering

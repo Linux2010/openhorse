@@ -30,6 +30,28 @@ export interface ProjectConfig {
 /** How to handle tool permission checks that request interactive confirmation. */
 export type ToolConfirmationPolicy = 'ask' | 'allow' | 'deny';
 
+/** Remote MCP service used by the built-in web_search tool. */
+export interface WebSearchMcpConfig {
+  /** Provider profile id. Use "auto" or omit to infer from apiBaseUrl/model. */
+  provider?: string;
+  /** Streamable HTTP MCP endpoint. */
+  endpoint?: string;
+  /** API key for the WebSearch MCP service. */
+  apiKey?: string;
+  /** Optional tool name override when the MCP exposes multiple tools. */
+  toolName?: string;
+  /** Request timeout in milliseconds. */
+  timeoutMs?: number;
+  /** How to apply apiKey. Defaults to bearer Authorization. */
+  authType?: 'bearer' | 'header' | 'query' | 'none';
+  /** Header name for authType "bearer" or "header". Defaults to Authorization. */
+  apiKeyHeader?: string;
+  /** Query parameter name for authType "query". */
+  apiKeyQueryParam?: string;
+  /** Extra HTTP headers for the MCP endpoint. */
+  headers?: Record<string, string>;
+}
+
 /**
  * 全局配置 — 用户只需关注少量核心项
  * maxTokens/temperature/retries 等由 Agent 智能控制
@@ -45,6 +67,8 @@ export interface GlobalConfig {
   fallbackModel?: string;
   /** Tool confirmation fallback while the current CLI cannot show prompts. */
   toolConfirmation?: ToolConfirmationPolicy;
+  /** WebSearch MCP configuration. */
+  webSearch?: WebSearchMcpConfig;
 
   // ---- 内部统计 (自动生成，不由用户配置) ----
   totalSessions: number;

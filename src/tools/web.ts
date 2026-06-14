@@ -2,13 +2,30 @@
  * openhorse - Web Tools
  *
  * WebFetch: Fetch URL content and process with prompt
- * WebSearch: Search the web for information
+ * WebSearch: delegate search to provider MCP service
  *
- * v0.1.11: 工具失败透明反馈 - 搜索失败时告知用户失败源、切换后的源、重试次数
  * Issue #32 #3.7: SSRF 拦截 - 拒绝访问内网地址 + Content-Length 上限
  */
 
 import { buildTool, type OpenHorseTool } from '../framework/tool';
+import { loadConfig } from '../services/config';
+import {
+  WebSearchMcpClient,
+  WebSearchMcpError,
+  DEFAULT_WEBSEARCH_MCP_ENDPOINT,
+} from '../services/web-search-mcp';
+import {
+  getWebSearchMcpErrorSuggestion,
+  resolveWebSearchMcpConfig,
+} from '../services/web-search-provider';
+import {
+  formatAdapterOutput,
+  getWebSearchMode,
+  isExplicitAdapterMode,
+  runWebSearchAdapters,
+  shouldFallbackToAdapters,
+  shouldTryMcpFirst,
+} from '../services/web-search-adapters';
 
 // ============================================================================
 // SSRF Protection - Issue #32 #3.7
@@ -421,158 +438,45 @@ Before using this tool, check if the URL points to an authenticated service (e.g
 });
 
 // ============================================================================
-// WebSearch Tool - v0.1.11 增强失败反馈
+// WebSearch Tool - provider MCP delegation
 // ============================================================================
 
-interface SearchError {
-  type: string;
-  message: string;
-  retryable: boolean;
-  retryCount?: number;        // v0.1.11: 重试次数
-  switchedTo?: string;       // v0.1.11: 切换后的源
-}
+let cachedWebSearchClient: { key: string; client: WebSearchMcpClient } | null = null;
 
-interface SearchResult {
-  success: boolean;
-  results: Array<{ title: string; url: string; description: string }>;
-  source: 'duckduckgo';
-  error?: SearchError;
-  retryAttempts?: number;    // v0.1.11: 总重试次数
-}
+function getWebSearchMcpClient(): WebSearchMcpClient {
+  const config = loadConfig();
+  const webSearch = resolveWebSearchMcpConfig(config);
 
-interface SearchFallbackResult {
-  // v0.1.11: 当主搜索失败后尝试备用方法的结果
-  primaryFailed: boolean;
-  primaryError?: SearchError;
-  fallbackUsed?: string;
-  fallbackResults?: Array<{ title: string; url: string; description: string }>;
-}
+  const key = JSON.stringify({
+    provider: webSearch.provider,
+    endpoint: webSearch.endpoint,
+    apiKey: webSearch.apiKey ? `${webSearch.apiKey.slice(0, 8)}...` : '',
+    toolName: webSearch.toolName || '',
+    timeoutMs: webSearch.timeoutMs || 0,
+    authType: webSearch.authType || '',
+    apiKeyHeader: webSearch.apiKeyHeader || '',
+    apiKeyQueryParam: webSearch.apiKeyQueryParam || '',
+    headers: Object.keys(webSearch.headers || {}).sort(),
+  });
 
-/** DuckDuckGo search (free, no API key required) - v0.1.11 增强重试 */
-async function duckDuckGoSearch(query: string, limit: number, maxRetries: number = 3): Promise<SearchResult> {
-  let lastError: SearchError | undefined;
-  let retryCount = 0;
-
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      const searchUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-      const response = await fetch(searchUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; OpenHorse/0.1.5)',
-        },
-      });
-
-      if (!response.ok) {
-        lastError = {
-          type: 'SEARCH_ENGINE_UNAVAILABLE',
-          message: `HTTP ${response.status}: ${response.statusText}`,
-          retryable: response.status >= 500 || response.status === 429,
-          retryCount: attempt + 1,
-        };
-
-        // Retry on server errors or rate limits
-        if (lastError.retryable && attempt < maxRetries - 1) {
-          await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
-          retryCount++;
-          continue;
-        }
-
-        return {
-          success: false,
-          results: [],
-          source: 'duckduckgo',
-          error: lastError,
-          retryAttempts: retryCount,
-        };
-      }
-
-      const html = await response.text();
-      const results: Array<{ title: string; url: string; description: string }> = [];
-
-      // Parse search results from HTML
-      const resultRegex = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/g;
-      let match;
-      let count = 0;
-
-      while ((match = resultRegex.exec(html)) !== null && count < limit) {
-        const url = match[1];
-        const title = match[2].trim();
-
-        // DuckDuckGo redirects through their URL - extract actual URL
-        let actualUrl = url;
-        const uddgMatch = url.match(/uddg=([^&]+)/);
-        if (uddgMatch) {
-          actualUrl = decodeURIComponent(uddgMatch[1]);
-        }
-
-        results.push({
-          title,
-          url: actualUrl,
-          description: '',
-        });
-        count++;
-      }
-
-      return { success: true, results, source: 'duckduckgo', retryAttempts: retryCount };
-    } catch (err: any) {
-      lastError = {
-        type: 'SEARCH_ENGINE_UNAVAILABLE',
-        message: err.message,
-        retryable: true,
-        retryCount: attempt + 1,
-      };
-
-      // Retry on network errors
-      if (attempt < maxRetries - 1) {
-        await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
-        retryCount++;
-        continue;
-      }
-    }
+  if (!cachedWebSearchClient || cachedWebSearchClient.key !== key) {
+    cachedWebSearchClient = {
+      key,
+      client: new WebSearchMcpClient(webSearch),
+    };
   }
 
-  // All retries exhausted
-  return {
-    success: false,
-    results: [],
-    source: 'duckduckgo',
-    error: lastError,
-    retryAttempts: retryCount,
-  };
+  return cachedWebSearchClient.client;
 }
 
-/** Format search results */
-function formatSearchResults(results: Array<{ title: string; url: string; description: string }>, query: string): string {
-  if (results.length === 0) {
-    return `No results found for query: "${query}"`;
-  }
-
-  const lines: string[] = [];
-  lines.push(`Search results for "${query}":`);
-  lines.push('');
-
-  for (let i = 0; i < results.length; i++) {
-    const r = results[i];
-    lines.push(`${i + 1}. **${r.title}**`);
-    lines.push(`   URL: ${r.url}`);
-    if (r.description) {
-      lines.push(`   ${r.description}`);
-    }
-    lines.push('');
-  }
-
-  lines.push('Sources:');
-  for (const r of results) {
-    lines.push(`- [${r.title}](${r.url})`);
-  }
-
-  return lines.join('\n');
+export function resetWebSearchMcpClientForTests(): void {
+  cachedWebSearchClient = null;
 }
 
 export const webSearchTool: OpenHorseTool = buildTool({
   name: 'web_search',
-  description: `Search the web for information using DuckDuckGo.
-Returns search results with titles, URLs, and descriptions.
+  description: `Search the web through the built-in WebSearch provider chain.
+OpenHorse tries provider-native MCP first in auto mode, then falls back to configured search adapters such as Tavily, Brave, custom search, or DuckDuckGo.
 You MUST include the Sources section with markdown hyperlinks in your response.`,
   parameters: {
     type: 'object',
@@ -600,50 +504,76 @@ You MUST include the Sources section with markdown hyperlinks in your response.`
       return { success: false, output: '', error: 'Query must be at least 2 characters' };
     }
 
-    // v0.1.11: 使用增强的重试版本
-    const result = await duckDuckGoSearch(query, limit, 3);
+    const config = loadConfig();
+    const mode = getWebSearchMode(config);
+    let mcpError: WebSearchMcpError | null = null;
 
-    if (!result.success) {
-      // v0.1.11: 返回详细的失败信息
-      const errorInfo = result.error!;
-      const detailedError = {
-        type: errorInfo.type,
-        source: 'duckduckgo',
-        message: errorInfo.message,
-        retryCount: result.retryAttempts || 0,
-        suggestion: 'Try again later or use a different search query',
+    if (shouldTryMcpFirst(mode)) {
+      try {
+        const result = await getWebSearchMcpClient().search(query, limit);
+        return {
+          success: true,
+          output: result.output,
+          metadata: { source: 'websearch-mcp', provider: result.provider, endpoint: result.endpoint, tool: result.toolName },
+        };
+      } catch (err: any) {
+        const resolvedConfig = resolveWebSearchMcpConfig(config);
+        mcpError = err instanceof WebSearchMcpError
+          ? err
+          : new WebSearchMcpError('WEBSEARCH_MCP_ERROR', err.message || String(err), resolvedConfig.endpoint || DEFAULT_WEBSEARCH_MCP_ENDPOINT);
+
+        if (!shouldFallbackToAdapters(mode)) {
+          return {
+            success: false,
+            output: '',
+            error: JSON.stringify({
+              type: mcpError.type,
+              source: 'websearch-mcp',
+              endpoint: mcpError.endpoint,
+              message: mcpError.message,
+              suggestion: getWebSearchMcpErrorSuggestion(resolvedConfig),
+            }),
+            metadata: { source: 'websearch-mcp', provider: resolvedConfig.provider, endpoint: mcpError.endpoint },
+          };
+        }
+      }
+    }
+
+    try {
+      const adapterResult = await runWebSearchAdapters(
+        { query, limit },
+        isExplicitAdapterMode(mode) ? mode : 'auto'
+      );
+      return {
+        success: true,
+        output: formatAdapterOutput(adapterResult, query),
+        metadata: { source: 'websearch-adapter', provider: adapterResult.provider, mcpError: mcpError?.type },
       };
-
-      // 生成用户友好的错误消息
-      const userMessage = [
-        `⚠ Search failed: ${errorInfo.message}`,
-        `  Source: DuckDuckGo`,
-        `  Retry attempts: ${result.retryAttempts || 0}`,
-        '',
-        'Results may be incomplete. Consider:',
-        '  - Using a simpler query',
-        '  - Waiting a few seconds and retrying',
-      ].join('\n');
-
+    } catch (adapterErr: any) {
+      const resolvedConfig = resolveWebSearchMcpConfig(config);
       return {
         success: false,
-        output: userMessage,
-        error: JSON.stringify(detailedError),
-        metadata: { source: 'duckduckgo', count: 0, retries: result.retryAttempts },
+        output: '',
+        error: JSON.stringify({
+          type: 'WEBSEARCH_UNAVAILABLE',
+          source: 'websearch',
+          mode,
+          mcp: mcpError
+            ? {
+                type: mcpError.type,
+                endpoint: mcpError.endpoint,
+                message: mcpError.message,
+              }
+            : undefined,
+          adapter: adapterErr?.message || String(adapterErr),
+          suggestion: [
+            getWebSearchMcpErrorSuggestion(resolvedConfig),
+            'Or set OPENHORSE_WEBSEARCH_PROVIDER=ddg/tavily/brave/custom with the matching adapter configuration.',
+          ].join(' '),
+        }),
+        metadata: { source: 'websearch', provider: resolvedConfig.provider, endpoint: resolvedConfig.endpoint },
       };
     }
-
-    // v0.1.11: 如果有重试，添加提示
-    let output = formatSearchResults(result.results, query);
-    if (result.retryAttempts && result.retryAttempts > 0) {
-      output = `ℹ Search completed after ${result.retryAttempts} retries\n\n${output}`;
-    }
-
-    return {
-      success: true,
-      output,
-      metadata: { source: result.source, count: result.results.length, retries: result.retryAttempts },
-    };
   },
   isReadOnly: () => true,
   isConcurrencySafe: () => true,
