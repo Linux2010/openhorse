@@ -1,8 +1,7 @@
 /**
  * openhorse - 全局配置管理
  *
- * 用户只需配置 3 项：apiKey、apiBaseUrl、defaultModel
- * 其他参数由 Agent 内部智能控制。
+ * 用户只需配置少量核心项，其他参数由 Agent 内部智能控制。
  * 配置存储在 ~/.openhorse/openhorse.json
  * 支持环境变量覆盖配置值。
  */
@@ -28,8 +27,11 @@ export interface ProjectConfig {
   hasTrustDialogAccepted?: boolean;
 }
 
+/** How to handle tool permission checks that request interactive confirmation. */
+export type ToolConfirmationPolicy = 'ask' | 'allow' | 'deny';
+
 /**
- * 全局配置 — 用户只需关注 4 项
+ * 全局配置 — 用户只需关注少量核心项
  * maxTokens/temperature/retries 等由 Agent 智能控制
  */
 export interface GlobalConfig {
@@ -41,6 +43,8 @@ export interface GlobalConfig {
   defaultModel: string;
   /** 备用模型（主模型过载时自动切换） */
   fallbackModel?: string;
+  /** Tool confirmation fallback while the current CLI cannot show prompts. */
+  toolConfirmation?: ToolConfirmationPolicy;
 
   // ---- 内部统计 (自动生成，不由用户配置) ----
   totalSessions: number;
@@ -61,6 +65,7 @@ export interface GlobalConfig {
 
 const DEFAULT_CONFIG: GlobalConfig = {
   defaultModel: 'gpt-4o',
+  toolConfirmation: 'allow',
   totalSessions: 0,
   totalTokens: 0,
   totalCost: 0,

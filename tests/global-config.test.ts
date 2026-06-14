@@ -46,6 +46,7 @@ describe('global-config', () => {
       const config = loadGlobalConfig();
 
       expect(config.defaultModel).toBe('gpt-4o');
+      expect(config.toolConfirmation).toBe('allow');
       expect(config.totalSessions).toBe(0);
       expect(config.totalTokens).toBe(0);
       expect(config.totalCost).toBe(0);
@@ -57,6 +58,7 @@ describe('global-config', () => {
         defaultModel: 'claude-sonnet-4-6',
         fallbackModel: 'gpt-4o',
         apiKey: 'test-key',
+        toolConfirmation: 'deny',
       };
       saveGlobalConfig({ ...loadGlobalConfig(), ...customConfig });
 
@@ -65,6 +67,7 @@ describe('global-config', () => {
       expect(config.defaultModel).toBe('claude-sonnet-4-6');
       expect(config.fallbackModel).toBe('gpt-4o');
       expect(config.apiKey).toBe('test-key');
+      expect(config.toolConfirmation).toBe('deny');
     });
 
     test('returns default config when file is corrupted', () => {

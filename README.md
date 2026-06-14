@@ -131,14 +131,15 @@ openhorse
 
 ### User Config (`~/.openhorse/openhorse.json`)
 
-Only **4 fields** are user-configurable. The agent controls all internal parameters.
+Only a small set of fields are user-configurable. The agent controls internal generation parameters.
 
 ```json
 {
   "apiKey": "sk-xxx",
   "apiBaseUrl": "https://coding.dashscope.aliyuncs.com/v1",
   "defaultModel": "glm-5",
-  "fallbackModel": "qwen-plus"
+  "fallbackModel": "qwen-plus",
+  "toolConfirmation": "allow"
 }
 ```
 
@@ -148,6 +149,7 @@ Only **4 fields** are user-configurable. The agent controls all internal paramet
 | `apiBaseUrl` | No | API endpoint URL |
 | `defaultModel` | No | Default model (`glm-5`) |
 | `fallbackModel` | No | Fallback model on failure |
+| `toolConfirmation` | No | How to handle tools that ask for confirmation: `allow`, `deny`, or `ask`. Defaults to `allow` until the Ink UI can prompt interactively. |
 
 ### Agent-Controlled Internals
 
@@ -175,6 +177,7 @@ CLI flags > ~/.openhorse/openhorse.json > env vars > internal defaults
 | `OPENHORSE_MODEL` | `glm-5` | Default model |
 | `OPENHORSE_MODE` | `development` | Run mode |
 | `OPENHORSE_LOG_LEVEL` | `info` | Log level |
+| `OPENHORSE_TOOL_CONFIRMATION` | `allow` | Tool confirmation fallback: `allow`, `deny`, or `ask` |
 | `OPENHORSE_EMBEDDING_PROVIDER` | - | Embedding service (ollama/openai) |
 
 See [docs/config.md](docs/config.md) for full details.
@@ -441,7 +444,7 @@ openhorse/
 - **Token-based auto-compact** at 95% context usage (replaces message-count threshold)
 - **Model context awareness** — per-model context windows (15+ known models)
 - **Dynamic model discovery** — queries `/models` endpoint at startup
-- **Simplified user config** — only 4 fields: `apiKey`, `apiBaseUrl`, `defaultModel`, `fallbackModel`
+- **Simplified user config** — core fields: `apiKey`, `apiBaseUrl`, `defaultModel`, `fallbackModel`, `toolConfirmation`
 - **Agent-controlled internals** — `maxTokens`, `temperature`, `retries` managed internally
 - **Fallback model** configurable by user
 - **Streamlined command panel** rendering

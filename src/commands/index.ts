@@ -271,6 +271,7 @@ function showConfig(ctx: CommandContext): CommandResult {
     apiKey: ctx.config.apiKey ? `${ctx.config.apiKey.slice(0, 7)}***` : '(not set)',
     mode: ctx.config.mode,
     logLevel: ctx.config.logLevel,
+    toolConfirmation: ctx.config.toolConfirmation,
   };
 
   const llmSummary = ctx.llm?.getConfigSummary() ?? {};
@@ -631,6 +632,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       streamCallbacks,
       costTracker: snapshot.costTracker,
       permissionMode: snapshot.permissionMode,
+      toolConfirmation: ctx.config.toolConfirmation,
       toolContext: {
         cwd: ctx.cwd,
         config: {
