@@ -1,8 +1,7 @@
 /**
  * openhorse - 配置加载
  *
- * 用户只需配置 3 项：apiKey、apiBaseUrl、defaultModel
- * 其他参数由 Agent 内部智能控制。
+ * 用户只需配置少量核心项，其他参数由 Agent 内部智能控制。
  *
  * 配置加载优先级：
  *   1. 命令行参数
@@ -11,7 +10,9 @@
  *   4. Agent 内部默认值
  */
 
-import { loadGlobalConfig, type GlobalConfig } from './global-config';
+import { loadGlobalConfig, type GlobalConfig, type ToolConfirmationPolicy } from './global-config';
+
+export type { ToolConfirmationPolicy };
 
 // ============================================================================
 // 类型定义
@@ -19,7 +20,7 @@ import { loadGlobalConfig, type GlobalConfig } from './global-config';
 
 /**
  * OpenHorse 运行时配置
- * 用户可配置 4 项：apiKey, apiBaseUrl, model, fallbackModel
+ * 用户可配置核心项：apiKey, apiBaseUrl, model, fallbackModel, toolConfirmation
  * 其余由 Agent 内部控制
  */
 export interface OpenHorseCLIConfig {
@@ -32,6 +33,8 @@ export interface OpenHorseCLIConfig {
   model: string;
   /** 备用模型（主模型失败时切换） */
   fallbackModel?: string;
+  /** How to handle tool permission checks that need confirmation. */
+  toolConfirmation: ToolConfirmationPolicy;
 
   // ---- Agent 内部参数 (不由用户配置) ----
   /** 实例名称 */
@@ -55,7 +58,14 @@ const INTERNAL_DEFAULTS = {
   name: 'openhorse',
   mode: 'development',
   logLevel: 'info',
+  toolConfirmation: 'allow' as ToolConfirmationPolicy,
 } as const;
+
+function normalizeToolConfirmationPolicy(value: unknown): ToolConfirmationPolicy | undefined {
+  return value === 'ask' || value === 'allow' || value === 'deny'
+    ? value
+    : undefined;
+}
 
 // ============================================================================
 // 加载配置
@@ -69,7 +79,7 @@ export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHor
   const globalConfig = loadGlobalConfig();
 
   const config: OpenHorseCLIConfig = {
-    // 用户核心配置 — 4 项
+    // 用户核心配置
     apiKey:
       overrides.apiKey ?? globalConfig.apiKey ?? process.env.OPENHORSE_API_KEY ?? '',
     apiBaseUrl:
@@ -78,6 +88,11 @@ export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHor
       overrides.model ?? globalConfig.defaultModel ?? process.env.OPENHORSE_MODEL ?? 'gpt-4o',
     fallbackModel:
       overrides.fallbackModel ?? globalConfig.fallbackModel ?? process.env.OPENHORSE_FALLBACK_MODEL ?? undefined,
+    toolConfirmation:
+      normalizeToolConfirmationPolicy(overrides.toolConfirmation)
+      ?? normalizeToolConfirmationPolicy(globalConfig.toolConfirmation)
+      ?? normalizeToolConfirmationPolicy(process.env.OPENHORSE_TOOL_CONFIRMATION)
+      ?? INTERNAL_DEFAULTS.toolConfirmation,
 
     // Agent 内部参数
     name:
@@ -121,5 +136,6 @@ export function getConfigSummary(config: OpenHorseCLIConfig): Record<string, str
     apiKey: config.apiKey ? `${config.apiKey.slice(0, 7)}***` : '(not set)',
     mode: config.mode,
     logLevel: config.logLevel,
+    toolConfirmation: config.toolConfirmation,
   };
 }

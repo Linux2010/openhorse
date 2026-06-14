@@ -1,7 +1,7 @@
 import { query } from '../src/framework/query';
 import type { QueryEvent } from '../src/framework/query';
 import { buildTool } from '../src/framework/tool';
-import type { OpenHorseTool } from '../src/framework/tool';
+import type { OpenHorseTool, ToolContext } from '../src/framework/tool';
 import type { LLMService, LLMResponse, Message, Tool } from '../src/services/llm';
 
 const mockTool: OpenHorseTool = buildTool({
@@ -14,6 +14,23 @@ const mockTool: OpenHorseTool = buildTool({
   },
   execute: async () => ({ success: true, output: 'file content' }),
 });
+
+const askTool: OpenHorseTool = buildTool({
+  name: 'web_search',
+  description: 'Search the web',
+  parameters: {
+    type: 'object',
+    properties: { query: { type: 'string', description: 'Query' } },
+    required: ['query'],
+  },
+  execute: async () => ({ success: true, output: 'search results' }),
+  checkPermissions: () => ({ behavior: 'ask', reason: 'External query' }),
+});
+
+const toolContext: ToolContext = {
+  cwd: '/tmp/project',
+  config: { name: 'test', mode: 'development' },
+};
 
 function makeMockLLM(responses: LLMResponse[]): jest.Mocked<LLMService> {
   let callIndex = 0;
@@ -235,5 +252,81 @@ describe('query generator', () => {
     expect(requestStarts).toHaveLength(2);
     expect((requestStarts[0] as any).turn).toBe(1);
     expect((requestStarts[1] as any).turn).toBe(2);
+  });
+
+  test('allows ask-permission tools when toolConfirmation is allow', async () => {
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          { id: 'call-1', type: 'function', function: { name: 'web_search', arguments: '{"query":"openhorse"}' } },
+        ],
+      },
+      { content: 'Final answer', model: 'test-model' },
+    ]);
+
+    const messages: Message[] = [
+      { role: 'system', content: 'You are a bot.' },
+      { role: 'user', content: 'Search' },
+    ];
+    const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'ok' }));
+    const events: QueryEvent[] = [];
+
+    for await (const event of query({
+      messages,
+      tools: [askTool],
+      toolExecutor,
+      llm,
+      permissionMode: 'default',
+      toolConfirmation: 'allow',
+      toolContext,
+    })) {
+      events.push(event);
+    }
+
+    expect(toolExecutor).toHaveBeenCalledWith('web_search', { query: 'openhorse' }, undefined);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'tool_result',
+      name: 'web_search',
+      success: true,
+    }));
+  });
+
+  test('denies ask-permission tools when toolConfirmation is deny', async () => {
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          { id: 'call-1', type: 'function', function: { name: 'web_search', arguments: '{"query":"openhorse"}' } },
+        ],
+      },
+      { content: 'Final answer', model: 'test-model' },
+    ]);
+
+    const messages: Message[] = [
+      { role: 'system', content: 'You are a bot.' },
+      { role: 'user', content: 'Search' },
+    ];
+    const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'ok' }));
+    const events: QueryEvent[] = [];
+
+    for await (const event of query({
+      messages,
+      tools: [askTool],
+      toolExecutor,
+      llm,
+      permissionMode: 'default',
+      toolConfirmation: 'deny',
+      toolContext,
+    })) {
+      events.push(event);
+    }
+
+    const toolResult = events.find(event => event.type === 'tool_result') as Extract<QueryEvent, { type: 'tool_result' }>;
+    expect(toolExecutor).not.toHaveBeenCalled();
+    expect(toolResult.success).toBe(false);
+    expect(toolResult.error).toContain('toolConfirmation=deny');
   });
 });

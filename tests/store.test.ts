@@ -18,6 +18,7 @@ function makeConfig(overrides = {}) {
     name: 'test',
     mode: 'development' as const,
     logLevel: 'info' as const,
+    toolConfirmation: 'allow' as const,
     ...overrides,
   };
 }

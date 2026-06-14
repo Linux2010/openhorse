@@ -13,6 +13,7 @@ import type { LLMService, Message, StreamCallbacks, Tool } from '../services/llm
 import type { OpenHorseTool, ToolContext, PermissionResult } from './tool';
 import type { PermissionMode } from '../commands/types';
 import type { CostTracker } from '../core/cost-tracker';
+import type { ToolConfirmationPolicy } from '../services/config';
 import { toOpenAITools } from './tool';
 import { createStrategyTracker, type StrategyTracker, type StrategyResult } from '../core/strategy-tracker';
 import { getAutoCompact } from '../services/compact/auto-compact';
@@ -53,6 +54,8 @@ export interface QueryParams {
   streamCallbacks?: StreamCallbacks;
   /** Permission mode for tool execution */
   permissionMode?: PermissionMode;
+  /** Fallback for permission checks that would need an interactive prompt. */
+  toolConfirmation?: ToolConfirmationPolicy;
   /** Tool execution context */
   toolContext?: ToolContext;
   /** Cost tracker for recording usage */
@@ -186,6 +189,16 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         // Permission check before execution
         let result: string;
         const tool = tools.find(t => t.name === tc.function.name);
+        const executeToolCall = async (): Promise<string> => {
+          try {
+            return await toolExecutor(tc.function.name, args, abortSignal);
+          } catch (err: any) {
+            return JSON.stringify({
+              success: false,
+              error: `Tool execution error: ${err.message}`,
+            });
+          }
+        };
 
         if (drift?.status === 'block') {
           result = harness!.asToolBlockedResult(drift);
@@ -198,31 +211,24 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
               error: perm.reason || 'Permission denied',
             });
           } else if (perm.behavior === 'ask' && params.permissionMode === 'default') {
-            result = JSON.stringify({
-              success: false,
-              error: `Tool ${tc.function.name} requires user confirmation.`,
-            });
-          } else {
-            // Issue #32 #3.2: 透传 abortSignal
-            try {
-              result = await toolExecutor(tc.function.name, args, abortSignal);
-            } catch (err: any) {
+            const confirmation = params.toolConfirmation ?? 'ask';
+            if (confirmation === 'allow') {
+              result = await executeToolCall();
+            } else {
               result = JSON.stringify({
                 success: false,
-                error: `Tool execution error: ${err.message}`,
+                error: confirmation === 'deny'
+                  ? `Tool ${tc.function.name} requires user confirmation and was denied by toolConfirmation=deny.`
+                  : `Tool ${tc.function.name} requires user confirmation.`,
               });
             }
+          } else {
+            // Issue #32 #3.2: 透传 abortSignal
+            result = await executeToolCall();
           }
         } else {
           // Issue #32 #3.2: 透传 abortSignal
-          try {
-            result = await toolExecutor(tc.function.name, args, abortSignal);
-          } catch (err: any) {
-            result = JSON.stringify({
-              success: false,
-              error: `Tool execution error: ${err.message}`,
-            });
-          }
+          result = await executeToolCall();
         }
 
         const duration = Date.now() - start;

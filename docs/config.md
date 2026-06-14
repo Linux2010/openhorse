@@ -8,7 +8,7 @@
 
 ## 配置原则
 
-**用户只需配置 4 项**，其余参数由 Agent 智能控制。
+**用户只需配置少量核心项**，其余参数由 Agent 智能控制。
 
 ## 用户配置项
 
@@ -18,6 +18,7 @@
 | `apiBaseUrl` | string | `OPENHORSE_API_BASE_URL` | `(OpenAI 默认)` | API 地址 |
 | `defaultModel` | string | `OPENHORSE_MODEL` | `gpt-4o` | 默认模型 |
 | `fallbackModel` | string | `OPENHORSE_FALLBACK_MODEL` | `(无)` | 备用模型（主模型过载时自动切换） |
+| `toolConfirmation` | `allow` \| `deny` \| `ask` | `OPENHORSE_TOOL_CONFIRMATION` | `allow` | 工具需要确认时的兜底策略；当前 CLI 无交互确认 UI，默认自动允许 `ask` 级工具 |
 
 ## Agent 内部控制（用户无需关心）
 
@@ -49,7 +50,8 @@
   "apiKey": "sk-xxx",
   "apiBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
   "defaultModel": "glm-5",
-  "fallbackModel": "qwen-plus"
+  "fallbackModel": "qwen-plus",
+  "toolConfirmation": "allow"
 }
 ```
 
@@ -58,7 +60,8 @@
 ```json
 {
   "apiKey": "sk-xxx",
-  "defaultModel": "gpt-4o"
+  "defaultModel": "gpt-4o",
+  "toolConfirmation": "allow"
 }
 ```
 
@@ -67,9 +70,20 @@
 ```json
 {
   "apiBaseUrl": "http://localhost:11434/v1",
-  "defaultModel": "qwen2.5-coder:latest"
+  "defaultModel": "qwen2.5-coder:latest",
+  "toolConfirmation": "allow"
 }
 ```
+
+## Tool Confirmation
+
+`toolConfirmation` only applies when a tool returns `ask` from its permission check and the session is in the default permission mode.
+
+- `allow`: run the tool without prompting. This is the current default because the non-Ink CLI cannot show interactive confirmations.
+- `deny`: reject tools that would need confirmation while still allowing safe/read-only tools.
+- `ask`: preserve the confirmation-required result. Use this after an interactive prompt UI is available.
+
+Tools that return `deny` from safety checks are still blocked regardless of this setting.
 
 ## 配置加载优先级
 

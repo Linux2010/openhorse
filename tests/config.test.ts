@@ -11,6 +11,7 @@ function cleanEnv() {
   delete process.env.OPENHORSE_NAME;
   delete process.env.OPENHORSE_MODE;
   delete process.env.OPENHORSE_LOG_LEVEL;
+  delete process.env.OPENHORSE_TOOL_CONFIRMATION;
 }
 
 beforeEach(() => {
@@ -37,6 +38,7 @@ describe('loadConfig', () => {
     expect(config.mode).toBe('development');
     expect(config.logLevel).toBe('info');
     expect(config.apiKey).toBe('');
+    expect(config.toolConfirmation).toBe('allow');
   });
 
   test('overrides take priority', () => {
@@ -47,6 +49,7 @@ describe('loadConfig', () => {
       name: 'my-instance',
       mode: 'production',
       logLevel: 'debug',
+      toolConfirmation: 'deny',
     });
     expect(config.apiKey).toBe('test-key');
     expect(config.model).toBe('custom-model');
@@ -54,6 +57,7 @@ describe('loadConfig', () => {
     expect(config.name).toBe('my-instance');
     expect(config.mode).toBe('production');
     expect(config.logLevel).toBe('debug');
+    expect(config.toolConfirmation).toBe('deny');
   });
 
   test('env vars are used when no overrides and no globalConfig', () => {
@@ -67,11 +71,13 @@ describe('loadConfig', () => {
     process.env.OPENHORSE_API_KEY = 'env-key';
     process.env.OPENHORSE_MODEL = 'env-model';
     process.env.OPENHORSE_FALLBACK_MODEL = 'env-fallback';
+    process.env.OPENHORSE_TOOL_CONFIRMATION = 'ask';
 
     const config = loadConfig();
     expect(config.apiKey).toBe('env-key');
     expect(config.model).toBe('env-model');
     expect(config.fallbackModel).toBe('env-fallback');
+    expect(config.toolConfirmation).toBe('ask');
   });
 
   test('globalConfig is used when no env or overrides', () => {
@@ -80,6 +86,7 @@ describe('loadConfig', () => {
       apiBaseUrl: 'https://custom.api.com',
       defaultModel: 'glm-5',
       fallbackModel: 'qwen-plus',
+      toolConfirmation: 'deny',
       totalSessions: 10,
       totalTokens: 50000,
       totalCost: 2.50,
@@ -90,6 +97,22 @@ describe('loadConfig', () => {
     expect(config.apiBaseUrl).toBe('https://custom.api.com');
     expect(config.model).toBe('glm-5');
     expect(config.fallbackModel).toBe('qwen-plus');
+    expect(config.toolConfirmation).toBe('deny');
+  });
+
+  test('ignores invalid tool confirmation values', () => {
+    jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
+      defaultModel: 'gpt-4o',
+      toolConfirmation: 'invalid',
+      totalSessions: 0,
+      totalTokens: 0,
+      totalCost: 0,
+    });
+
+    process.env.OPENHORSE_TOOL_CONFIRMATION = 'also-invalid';
+
+    const config = loadConfig();
+    expect(config.toolConfirmation).toBe('allow');
   });
 });
 
@@ -146,5 +169,6 @@ describe('getConfigSummary', () => {
     expect(summary.apiKey).toBe('sk-test***');
     expect(summary.model).toBe('gpt-4o');
     expect(summary.fallback).toBe('claude-sonnet-4-6');
+    expect(summary.toolConfirmation).toBe('allow');
   });
 });
