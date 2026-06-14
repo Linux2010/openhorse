@@ -38,7 +38,7 @@ interface MCPClientState {
   process: ChildProcess | null;
   tools: MCPToolDefinition[];
   connected: boolean;
-  pendingRequests: Map<string, { resolve: Function; reject: Function }>;
+  pendingRequests: Map<string, { resolve: Function; reject: Function; timeout: NodeJS.Timeout }>;
   buffer: string;
 }
 
@@ -62,6 +62,7 @@ class SimpleMCPClient {
   private name = '';
   private serverConfig: MCPServerConfig | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
   private intentionallyDisconnected = false;
   private onDeadCallback: (() => void) | null = null;
@@ -126,7 +127,8 @@ class SimpleMCPClient {
   }
 
   private failPendingRequests(reason: string): void {
-    for (const [, { reject }] of this.state.pendingRequests) {
+    for (const [, { reject, timeout }] of this.state.pendingRequests) {
+      clearTimeout(timeout);
       reject(new Error(reason));
     }
     this.state.pendingRequests.clear();
@@ -143,6 +145,7 @@ class SimpleMCPClient {
         try { this.state.process?.kill(); } catch { /* noop */ }
       });
     }, HEARTBEAT_INTERVAL_MS);
+    this.heartbeatTimer.unref?.();
   }
 
   private stopHeartbeat(): void {
@@ -153,6 +156,7 @@ class SimpleMCPClient {
   }
 
   private scheduleReconnect(): void {
+    this.stopReconnect();
     if (this.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
       console.error(`[MCP ${this.name}] giving up after ${RECONNECT_MAX_ATTEMPTS} failed reconnects`);
       this.stopHeartbeat();
@@ -162,12 +166,21 @@ class SimpleMCPClient {
     this.reconnectAttempts++;
     const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts - 1);
     console.error(`[MCP ${this.name}] reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS})`);
-    setTimeout(() => {
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
       this.spawnAndInit().catch((err) => {
         console.error(`[MCP ${this.name}] reconnect failed:`, err.message);
         this.scheduleReconnect();
       });
     }, delay);
+    this.reconnectTimer.unref?.();
+  }
+
+  private stopReconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
   }
 
   private handleData(data: string): void {
@@ -183,7 +196,8 @@ class SimpleMCPClient {
         const msg = JSON.parse(line);
 
         if (msg.id && this.state.pendingRequests.has(msg.id)) {
-          const { resolve, reject } = this.state.pendingRequests.get(msg.id)!;
+          const { resolve, reject, timeout } = this.state.pendingRequests.get(msg.id)!;
+          clearTimeout(timeout);
           this.state.pendingRequests.delete(msg.id);
 
           if (msg.error) {
@@ -213,15 +227,16 @@ class SimpleMCPClient {
     }) + '\n';
 
     return new Promise((resolve, reject) => {
-      this.state.pendingRequests.set(id, { resolve, reject });
-      this.state.process!.stdin?.write(request);
-
-      setTimeout(() => {
+      const timeout = setTimeout(() => {
         if (this.state.pendingRequests.has(id)) {
           this.state.pendingRequests.delete(id);
           reject(new Error('MCP request timeout'));
         }
       }, 30000);
+      timeout.unref?.();
+
+      this.state.pendingRequests.set(id, { resolve, reject, timeout });
+      this.state.process!.stdin?.write(request);
     });
   }
 
@@ -265,6 +280,7 @@ class SimpleMCPClient {
   disconnect(): void {
     this.intentionallyDisconnected = true;
     this.stopHeartbeat();
+    this.stopReconnect();
     this.failPendingRequests('MCP client disconnected');
     if (this.state.process) {
       try { this.state.process.kill(); } catch { /* noop */ }

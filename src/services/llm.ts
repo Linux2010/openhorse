@@ -372,11 +372,37 @@ export class LLMService {
         let content = '';
         let usedModel = this.config.model;
         let usage: { promptTokens: number; completionTokens: number } | undefined;
-        const toolCallsMap = new Map<string, {
+        const toolCallsMap = new Map<number, {
           id: string;
           type: 'function';
           function: { name: string; arguments: string };
         }>();
+
+        const applyToolCallDelta = (rawToolCall: any, fallbackIndex: number, appendArguments: boolean) => {
+          const idx = typeof rawToolCall.index === 'number' ? rawToolCall.index : fallbackIndex;
+          const existing = toolCallsMap.get(idx);
+          const entry = existing ?? {
+            id: rawToolCall.id || `call-${idx}`,
+            type: 'function' as const,
+            function: { name: '', arguments: '' },
+          };
+
+          if (rawToolCall.id) {
+            entry.id = rawToolCall.id;
+          }
+          if (rawToolCall.function?.name) {
+            entry.function.name = entry.function.name
+              ? entry.function.name
+              : rawToolCall.function.name;
+          }
+          if (rawToolCall.function?.arguments) {
+            entry.function.arguments = appendArguments
+              ? entry.function.arguments + rawToolCall.function.arguments
+              : rawToolCall.function.arguments;
+          }
+
+          toolCallsMap.set(idx, entry);
+        };
 
         for await (const chunk of stream) {
           // Debug: log raw chunk when tool_calls present (for diagnosing API compatibility)
@@ -395,42 +421,20 @@ export class LLMService {
             onChunk?.(text);
           }
 
-          // Handle tool_calls from delta (OpenAI standard streaming format)
-          // Note: Some APIs (like DashScope) send id AND arguments in the same chunk
-          const tc = delta?.tool_calls?.[0];
-          if (tc) {
-            const idx = tc.index ?? 0;
-            // Create or update entry
-            if (tc.id) {
-              toolCallsMap.set(idx, {
-                id: tc.id,
-                type: 'function',
-                function: { name: tc.function?.name ?? '', arguments: tc.function?.arguments ?? '' },
-              });
-            } else if (tc.function?.arguments) {
-              // Arguments chunk (no id, just adding arguments)
-              const entry = toolCallsMap.get(idx);
-              if (entry) {
-                entry.function.arguments += tc.function.arguments;
-              }
-            }
+          // Handle all tool_calls from delta (OpenAI standard streaming format).
+          // Multiple calls can appear in one chunk; aggregate by index.
+          if (Array.isArray(delta?.tool_calls)) {
+            delta.tool_calls.forEach((tc: any, index: number) => {
+              applyToolCallDelta(tc, index, true);
+            });
           }
 
           // Handle tool_calls from message (some APIs like DashScope may use this format)
           const msg = chunk.choices?.[0]?.message;
           if (msg?.tool_calls && !delta?.tool_calls) {
-            for (const msgTc of msg.tool_calls) {
-              const existing = toolCallsMap.get(msgTc.index ?? 0);
-              if (!existing && msgTc.id) {
-                toolCallsMap.set(msgTc.index ?? 0, {
-                  id: msgTc.id,
-                  type: 'function',
-                  function: { name: msgTc.function?.name ?? '', arguments: msgTc.function?.arguments ?? '' },
-                });
-              } else if (existing && msgTc.function?.arguments) {
-                existing.function.arguments += msgTc.function.arguments;
-              }
-            }
+            msg.tool_calls.forEach((msgTc: any, index: number) => {
+              applyToolCallDelta(msgTc, index, false);
+            });
           }
 
           if (chunk.usage) {
@@ -445,7 +449,10 @@ export class LLMService {
           }
         }
 
-        const toolCalls = Array.from(toolCallsMap.values());
+        const toolCalls = Array.from(toolCallsMap.entries())
+          .sort(([a], [b]) => a - b)
+          .map(([, toolCall]) => toolCall)
+          .filter(toolCall => toolCall.function.name);
 
         for (const tc of toolCalls) {
           if (!tc.function.arguments || tc.function.arguments.trim() === '') {

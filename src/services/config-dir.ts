@@ -134,6 +134,11 @@ export function getProjectSessionMessagesPath(projectPath: string, sessionId: st
   return join(getProjectSessionsDir(projectPath), `${sessionId}.jsonl`);
 }
 
+/** 项目内单个会话运行时快照路径 */
+export function getProjectSessionRuntimePath(projectPath: string, sessionId: string): string {
+  return join(getProjectSessionsDir(projectPath), `${sessionId}.runtime.json`);
+}
+
 /** 成本记录目录路径 */
 export function getCostDir(): string {
   return join(getConfigHome(), 'cost');

@@ -354,7 +354,7 @@ describe('grep tool', () => {
   });
 
   test('returns message when no matches', async () => {
-    const result = await tool.execute({ pattern: 'notfoundpattern', path: 'src' }, ctx);
+    const result = await tool.execute({ pattern: 'notfoundpattern', path: 'package.json' }, ctx);
     expect(result.success).toBe(true);
     expect(result.output).toContain('No matches');
   });

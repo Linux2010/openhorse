@@ -1,18 +1,19 @@
 /**
  * openhorse - Memory Storage
  *
- * File-based memory system stored in ~/.openhorse/projects/<hash>/memory/
+ * File-based memory system stored in ~/.openhorse/projects/<project-key>/memory/
  * - MEMORY.md: Index file (one-line hooks)
  * - *.md: Individual memory entries with frontmatter
  *
  * Memory is project-scoped: each project has its own memory directory.
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, unlinkSync } from 'fs';
-import { join, basename } from 'path';
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, unlinkSync, realpathSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { join, basename, resolve } from 'path';
 import { createHash } from 'crypto';
 import type { MemoryEntry, MemoryType } from './types';
-import { getConfigHome } from '../services/config-dir';
+import { getConfigHome, getProjectDir } from '../services/config-dir';
 import { atomicWriteFileSync } from '../services/atomic-write';
 import { getVectorStore, type SearchResult } from './vector-store';  // Issue #32 #3.8
 
@@ -41,6 +42,30 @@ export function getProjectHash(projectPath: string): string {
   return createHash('sha256').update(projectPath).digest('hex').slice(0, 16);
 }
 
+function resolveMemoryProjectPath(projectPath: string): string {
+  const absolute = resolve(projectPath);
+
+  if (existsSync(absolute)) {
+    try {
+      const root = execFileSync('git', ['-C', absolute, 'rev-parse', '--show-toplevel'], {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (root) {
+        return realpathSync(root);
+      }
+    } catch {
+      // Not a git worktree.
+    }
+  }
+
+  try {
+    return realpathSync(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
 // ============================================================================
 // Paths
 // ============================================================================
@@ -59,11 +84,28 @@ export function getMemoryDir(projectPath?: string): string {
   const configHome = getConfigHome();
 
   if (projectPath) {
-    const hash = getProjectHash(projectPath);
-    return join(configHome, PROJECTS_SUBDIR, hash, MEMORY_SUBDIR);
+    return join(getProjectDir(resolveMemoryProjectPath(projectPath)), MEMORY_SUBDIR);
   }
 
   return join(configHome, MEMORY_SUBDIR);
+}
+
+function getLegacyMemoryDir(projectPath?: string): string {
+  const configHome = getConfigHome();
+  if (projectPath) {
+    const hash = getProjectHash(projectPath);
+    return join(configHome, PROJECTS_SUBDIR, hash, MEMORY_SUBDIR);
+  }
+  return join(configHome, MEMORY_SUBDIR);
+}
+
+function getMemoryDirs(projectPath?: string): string[] {
+  const dirs = [getMemoryDir(projectPath)];
+  const legacyDir = getLegacyMemoryDir(projectPath);
+  if (legacyDir !== dirs[0] && existsSync(legacyDir)) {
+    dirs.push(legacyDir);
+  }
+  return dirs;
 }
 
 /**
@@ -139,31 +181,33 @@ ${entry.content}`;
  * @param projectPath - Project path (defaults to cwd)
  */
 export function loadAllMemories(projectPath?: string): MemoryEntry[] {
-  const dir = ensureMemoryDir(projectPath);
-  const memories: MemoryEntry[] = [];
+  ensureMemoryDir(projectPath);
+  const memoriesByName = new Map<string, MemoryEntry>();
 
-  try {
-    const files = readdirSync(dir);
-    for (const file of files) {
-      if (!file.endsWith('.md') || file === ENTRYPOINT_NAME) continue;
+  for (const dir of getMemoryDirs(projectPath).reverse()) {
+    try {
+      const files = readdirSync(dir);
+      for (const file of files) {
+        if (!file.endsWith('.md') || file === ENTRYPOINT_NAME) continue;
 
-      const filePath = join(dir, file);
-      try {
-        const content = readFileSync(filePath, 'utf-8');
-        const entry = parseMemoryFrontmatter(content);
-        if (entry) {
-          entry.name = basename(file, '.md');
-          memories.push(entry);
+        const filePath = join(dir, file);
+        try {
+          const content = readFileSync(filePath, 'utf-8');
+          const entry = parseMemoryFrontmatter(content);
+          if (entry) {
+            entry.name = basename(file, '.md');
+            memoriesByName.set(entry.name, entry);
+          }
+        } catch {
+          // Skip unreadable files
         }
-      } catch {
-        // Skip unreadable files
       }
+    } catch {
+      // Directory doesn't exist or unreadable
     }
-  } catch {
-    // Directory doesn't exist or unreadable
   }
 
-  return memories;
+  return Array.from(memoriesByName.values());
 }
 
 /**
@@ -179,20 +223,21 @@ export function loadMemoryIndex(projectPath?: string): string {
  * Load specific memory by name from a project.
  */
 export function loadMemory(name: string, projectPath?: string): MemoryEntry | null {
-  const dir = getMemoryDir(projectPath);
-  const filePath = join(dir, `${name}.md`);
+  for (const dir of getMemoryDirs(projectPath)) {
+    const filePath = join(dir, `${name}.md`);
 
-  if (!existsSync(filePath)) return null;
+    if (!existsSync(filePath)) continue;
 
-  try {
-    const content = readFileSync(filePath, 'utf-8');
-    const entry = parseMemoryFrontmatter(content);
-    if (entry) {
-      entry.name = name;
-      return entry;
+    try {
+      const content = readFileSync(filePath, 'utf-8');
+      const entry = parseMemoryFrontmatter(content);
+      if (entry) {
+        entry.name = name;
+        return entry;
+      }
+    } catch {
+      // File unreadable
     }
-  } catch {
-    // File unreadable
   }
 
   return null;
@@ -226,14 +271,15 @@ export function saveMemory(entry: MemoryEntry, projectPath?: string): void {
  * Hard-deletes the file so `memory_recall` no longer returns it.
  */
 export function deleteMemory(name: string, projectPath?: string): void {
-  const dir = getMemoryDir(projectPath);
-  const filePath = join(dir, `${name}.md`);
+  for (const dir of getMemoryDirs(projectPath)) {
+    const filePath = join(dir, `${name}.md`);
 
-  if (existsSync(filePath)) {
-    try {
-      unlinkSync(filePath);
-    } catch {
-      // ignore — index regeneration below will reflect whatever is on disk
+    if (existsSync(filePath)) {
+      try {
+        unlinkSync(filePath);
+      } catch {
+        // ignore — index regeneration below will reflect whatever is on disk
+      }
     }
   }
 

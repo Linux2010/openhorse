@@ -9,7 +9,7 @@
 
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { existsSync, readdirSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, rmSync, mkdirSync, writeFileSync, realpathSync } from 'fs';
 import {
   createSession,
   appendSessionMessage,
@@ -35,6 +35,7 @@ import {
 } from '../src/memory/storage';
 import type { MemoryEntry } from '../src/memory/types';
 import { TOOLS, executeTool } from '../src/tools';
+import { encodeProjectPath } from '../src/services/config-dir';
 
 // ============================================================================
 // 测试环境设置
@@ -166,8 +167,8 @@ describe('Memory project dimension', () => {
     const dirGlobal = getMemoryDir(); // No project = global
 
     expect(dirA).toContain('projects');
-    expect(dirA).toContain(getProjectHash(PROJECT_A));
-    expect(dirB).toContain(getProjectHash(PROJECT_B));
+    expect(dirA).toContain(encodeProjectPath(realpathSync(PROJECT_A)));
+    expect(dirB).toContain(encodeProjectPath(realpathSync(PROJECT_B)));
     expect(dirA).not.toBe(dirB);
 
     // Global path should be different structure

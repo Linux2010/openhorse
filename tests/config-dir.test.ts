@@ -11,6 +11,7 @@ import {
   getHistoryPath,
   getSessionsDir,
   getProjectsDir,
+  getProjectSessionRuntimePath,
   getCostDir,
   getMemoryPath,
   getExistingMemoryPaths,
@@ -98,6 +99,11 @@ describe('config-dir', () => {
 
     test('getCostDir returns correct path', () => {
       expect(getCostDir()).toBe(join(testDir, 'cost'));
+    });
+
+    test('getProjectSessionRuntimePath returns project-scoped runtime path', () => {
+      expect(getProjectSessionRuntimePath('/tmp/test-project', 'session-1'))
+        .toBe(join(testDir, 'projects', 'tmp-test-project', 'sessions', 'session-1.runtime.json'));
     });
   });
 

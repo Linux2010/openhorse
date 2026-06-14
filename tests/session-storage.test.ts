@@ -4,6 +4,7 @@ import {
   loadSessionMeta,
   updateSessionStats,
   endSession,
+  listSessions,
   appendHistory,
   readHistory,
   readProjectHistory,
@@ -16,6 +17,9 @@ import {
   getLastSession,
   resumeSession,
   resolveProjectPath,
+  validateSessionMessages,
+  saveSessionRuntimeSnapshot,
+  loadSessionRuntimeSnapshot,
   type SessionMeta,
   type HistoryEntry,
   type SessionMessage,
@@ -290,6 +294,34 @@ describe('session-storage', () => {
       const messages = readSessionMessages('non-existent');
       expect(messages).toEqual([]);
     });
+
+    test('validateSessionMessages accepts assistant tool calls followed by matching tool results', () => {
+      const validation = validateSessionMessages([
+        {
+          role: 'assistant',
+          content: '',
+          timestamp: 1000,
+          tool_calls: [
+            { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"a"}' } },
+            { id: 'call-2', type: 'function', function: { name: 'read_file', arguments: '{"path":"b"}' } },
+          ],
+        },
+        { role: 'tool', content: '{"success":true}', timestamp: 1001, toolCallId: 'call-1' },
+        { role: 'tool', content: '{"success":true}', timestamp: 1002, toolCallId: 'call-2' },
+      ]);
+
+      expect(validation.valid).toBe(true);
+      expect(validation.errors).toEqual([]);
+    });
+
+    test('validateSessionMessages rejects orphan tool results', () => {
+      const validation = validateSessionMessages([
+        { role: 'tool', content: '{}', timestamp: 1000, toolCallId: 'missing-call' },
+      ]);
+
+      expect(validation.valid).toBe(false);
+      expect(validation.errors[0]).toContain('orphan tool message');
+    });
   });
 
   describe('project session lookup', () => {
@@ -412,6 +444,30 @@ describe('session-storage', () => {
       const resumed = resumeSession(session.id);
       expect(resumed?.endTime).toBeUndefined();
       expect(resumed?.updatedAt).toBeGreaterThanOrEqual(session.startTime);
+    });
+
+    test('saves and loads runtime snapshots beside project sessions', () => {
+      const session = createSession('/tmp/project-runtime-snapshot', 'gpt-4o');
+
+      const saved = saveSessionRuntimeSnapshot(session.id, {
+        activeModel: 'gpt-4o',
+        permissionMode: 'auto',
+        tokenUsage: { promptTokens: 10, completionTokens: 5 },
+        todos: [{ content: 'Run tests', activeForm: 'Running tests', status: 'in_progress' }],
+        planMode: false,
+        currentPlan: 'Test plan',
+      });
+      const loaded = loadSessionRuntimeSnapshot(session.id);
+      const projectSessions = listProjectSessions('/tmp/project-runtime-snapshot');
+      const allSessions = listSessions();
+
+      expect(saved?.sessionId).toBe(session.id);
+      expect(loaded?.activeModel).toBe('gpt-4o');
+      expect(loaded?.todos?.[0].content).toBe('Run tests');
+      expect(loaded?.tokenUsage).toEqual({ promptTokens: 10, completionTokens: 5 });
+      expect(projectSessions.filter(s => s.id === session.id)).toHaveLength(1);
+      expect(projectSessions.every(s => s.id && !s.id.endsWith('.runtime'))).toBe(true);
+      expect(allSessions.filter(s => s.id === session.id)).toHaveLength(1);
     });
 
     test('resolveProjectPath returns a stable absolute path for non-git folders', () => {

@@ -13,6 +13,12 @@ import { LLMService, type Message, type Tool } from '../src/services/llm';
 const hasApiKey = Boolean(process.env.OPENHORSE_API_KEY);
 
 describe('LLMService', () => {
+  async function* streamChunks(chunks: any[]) {
+    for (const chunk of chunks) {
+      yield chunk;
+    }
+  }
+
   describe('toOpenAIMessages (internal)', () => {
     test('converts simple messages', () => {
       const llm = new LLMService({
@@ -80,6 +86,58 @@ describe('LLMService', () => {
       expect(summary.model).toBe('gpt-4o');
       expect(summary.maxTokens).toBe('8192');
       expect(summary.temperature).toBe('0.1');
+    });
+  });
+
+  describe('chatStream tool calls', () => {
+    test('aggregates multiple tool calls from one streaming delta chunk', async () => {
+      const llm = new LLMService({
+        apiKey: 'test-key',
+        model: 'gpt-4o',
+      });
+
+      (llm as any).client = {
+        chat: {
+          completions: {
+            create: jest.fn(async () => streamChunks([
+              {
+                model: 'test-model',
+                choices: [{
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: 'call-1',
+                        type: 'function',
+                        function: { name: 'read_file', arguments: '{"path":"a.ts"}' },
+                      },
+                      {
+                        index: 1,
+                        id: 'call-2',
+                        type: 'function',
+                        function: { name: 'grep', arguments: '{"pattern":"TODO"}' },
+                      },
+                    ],
+                  },
+                }],
+              },
+              {
+                model: 'test-model',
+                usage: { prompt_tokens: 12, completion_tokens: 3 },
+                choices: [{ delta: {} }],
+              },
+            ])),
+          },
+        },
+      };
+
+      const response = await llm.chatStream([{ role: 'user', content: 'inspect' }]);
+
+      expect(response.toolCalls).toHaveLength(2);
+      expect(response.toolCalls?.map(tc => tc.id)).toEqual(['call-1', 'call-2']);
+      expect(response.toolCalls?.[0].function).toEqual({ name: 'read_file', arguments: '{"path":"a.ts"}' });
+      expect(response.toolCalls?.[1].function).toEqual({ name: 'grep', arguments: '{"pattern":"TODO"}' });
+      expect(response.usage).toEqual({ promptTokens: 12, completionTokens: 3 });
     });
   });
 

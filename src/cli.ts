@@ -17,10 +17,23 @@ import { loadConfig, isConfigured } from './services/config';
 import { ensureConfigDir } from './services/config-dir';
 import { recordFirstStartTime, incrementSessionCount, addToInputHistory, getInputHistory } from './services/global-config';
 import { calculateCtxPercent, discoverModelContexts } from './services/model-context';
-import { createSession, type SessionMeta, readSessionMessages, updateSessionSummary, endSession } from './services/session-storage';
+import {
+  createSession,
+  type SessionMeta,
+  readSessionMessages,
+  updateSessionSummary,
+  endSession,
+  findSession,
+  getLastSession,
+  resumeSession,
+  loadSessionHistory,
+  loadSessionRuntimeSnapshot,
+  saveSessionRuntimeSnapshot,
+  validateSessionTranscript,
+} from './services/session-storage';
 import { loadAllMemories } from './memory/storage';
 import { getSkillsRegistry } from './skills';
-import { Store, subscribeToolState, resetToolState } from './framework';
+import { Store, subscribeToolState, resetToolState, setToolState } from './framework';
 import { findCommand, executeChat, getCommandNames } from './commands';
 import { parseInput, buildCommandSuggestions } from './commands/parser';
 import type { CommandContext } from './commands/types';
@@ -95,12 +108,17 @@ function showCliHelp(): void {
   console.log();
   console.log(ACCENT('Usage:'));
   console.log('  openhorse              Start interactive REPL');
+  console.log('  openhorse --resume     Resume latest session for this project');
+  console.log('  openhorse --resume ID  Resume a specific session');
   console.log('  openhorse --help       Show this help message');
   console.log('  openhorse --version    Show version');
   console.log();
   console.log(ACCENT('Options:'));
   console.log('  -h, --help     Show help');
   console.log('  -v, --version  Show version');
+  console.log('  --resume [id]  Restore a saved session');
+  console.log('  --continue     Restore latest session for this project');
+  console.log('  --all          Allow --resume to search all projects');
   console.log();
   console.log(ACCENT('Interactive Commands:'));
   console.log('  /help          Show available slash commands');
@@ -128,6 +146,112 @@ let inputHistory: { content: string; timestamp: number }[] = [];
 let historyIndex: number = -1;
 let historyMode: 'none' | 'navigate' | 'search' = 'none';
 let searchQuery: string = '';
+
+function getActiveSession(): SessionMeta | null {
+  return currentSession;
+}
+
+function saveActiveRuntimeSnapshot(): void {
+  if (!currentSession || !store) return;
+  const snapshot = store.getSnapshot();
+  saveSessionRuntimeSnapshot(currentSession.id, {
+    activeModel: llm?.getModel() ?? snapshot.currentModel,
+    permissionMode: snapshot.permissionMode,
+    tokenUsage: snapshot.tokenUsage,
+    harnessState: snapshot.harnessState,
+    todos: snapshot.todos,
+    planMode: snapshot.planMode,
+    currentPlan: snapshot.currentPlan,
+  });
+}
+
+function ensureActiveSession(): SessionMeta {
+  if (currentSession) {
+    return currentSession;
+  }
+
+  const snapshot = store.getSnapshot();
+  currentSession = createSession(process.cwd(), llm?.getModel() ?? snapshot.currentModel ?? snapshot.config.model);
+  incrementSessionCount();
+  saveActiveRuntimeSnapshot();
+  return currentSession;
+}
+
+function finalizeSession(session: SessionMeta | null): void {
+  if (!session) return;
+
+  const messages = readSessionMessages(session.id);
+  if (messages.length > 0) {
+    updateSessionSummary(session.id, messages);
+    saveActiveRuntimeSnapshot();
+    endSession(session.id);
+  }
+}
+
+function setActiveSession(session: SessionMeta): void {
+  if (currentSession && currentSession.id !== session.id) {
+    finalizeSession(currentSession);
+  }
+  currentSession = session;
+}
+
+function parseStartupResume(args: string[]): { enabled: boolean; ref?: string; allProjects: boolean } {
+  const resumeIndex = args.findIndex(arg => arg === '--resume' || arg === '--continue');
+  if (resumeIndex === -1) {
+    return { enabled: false, allProjects: false };
+  }
+
+  const next = args[resumeIndex + 1];
+  return {
+    enabled: true,
+    ref: next && !next.startsWith('-') ? next : undefined,
+    allProjects: args.includes('--all') || args.includes('-a'),
+  };
+}
+
+function restoreSessionAtStartup(args: string[], projectPath: string): string | null {
+  const resume = parseStartupResume(args);
+  if (!resume.enabled) return null;
+
+  const session = resume.ref
+    ? findSession(resume.ref, projectPath, { allProjects: resume.allProjects })
+    : getLastSession(projectPath);
+
+  if (!session) {
+    return resume.ref
+      ? `No session found for ${resume.ref}`
+      : 'No previous session found for this project';
+  }
+
+  const validation = validateSessionTranscript(session.id);
+  if (!validation.valid) {
+    return `Cannot restore ${session.id.slice(0, 8)}: ${validation.errors[0]}`;
+  }
+
+  const active = resumeSession(session.id) ?? session;
+  currentSession = active;
+
+  const runtimeSnapshot = loadSessionRuntimeSnapshot(active.id);
+  const history = loadSessionHistory(active.id);
+  store.setState({
+    conversationHistory: history,
+    harnessState: runtimeSnapshot?.harnessState ?? active.harnessState,
+    tokenUsage: runtimeSnapshot?.tokenUsage ?? store.getSnapshot().tokenUsage,
+    permissionMode: (runtimeSnapshot?.permissionMode as any) ?? store.getSnapshot().permissionMode,
+  });
+
+  if (runtimeSnapshot) {
+    setToolState({
+      todos: runtimeSnapshot.todos ?? [],
+      planMode: runtimeSnapshot.planMode ?? false,
+      currentPlan: runtimeSnapshot.currentPlan ?? null,
+    });
+  } else {
+    resetToolState();
+  }
+
+  return `Restored ${history.length} messages from ${active.id.slice(0, 8)}`;
+}
 
 function echoSubmittedInput(input: string): void {
   process.stdout.write('\x1b[2K\r');
@@ -501,13 +625,7 @@ function showHistorySearchPrompt(): void {
 
 async function handleCtrlC(): Promise<void> {
   // 保存会话摘要后退出
-  if (currentSession) {
-    const messages = readSessionMessages(currentSession.id);
-    if (messages.length > 0) {
-      updateSessionSummary(currentSession.id, messages);
-    }
-    endSession(currentSession.id);
-  }
+  finalizeSession(currentSession);
 
   // 关闭 stdin raw mode 并退出
   if (process.stdin.isTTY) {
@@ -570,6 +688,9 @@ async function handleInput(input: string) {
     llm,
     runtime,
     sessionId: currentSession?.id,
+    ensureSession: ensureActiveSession,
+    setSession: setActiveSession,
+    getSession: getActiveSession,
   };
 
   try {
@@ -692,9 +813,6 @@ async function main(): Promise<void> {
     });
   });
 
-  currentSession = createSession(projectPath, cliConfig.model);
-  incrementSessionCount();
-
   if (isConfigured(cliConfig)) {
     try {
       llm = new LLMService({
@@ -733,12 +851,17 @@ async function main(): Promise<void> {
     console.error(WARN(`⚠ MCP startup error: ${err.message}`));
   });
 
+  const startupRestoreMessage = restoreSessionAtStartup(args, projectPath);
+
   // Banner
   showBanner();
 
   // 提示
   console.log(SUCCESS('✔ System initialized'));
   console.log(DIM('  Type /help for commands, /exit to quit'));
+  if (startupRestoreMessage) {
+    console.log(DIM(`  ${startupRestoreMessage}`));
+  }
   if (!isConfigured(cliConfig)) {
     console.log(WARN('  ⚠ LLM not configured — set OPENHORSE_API_KEY'));
   }

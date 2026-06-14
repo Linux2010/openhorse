@@ -227,24 +227,23 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
         const duration = Date.now() - start;
 
-        // Issue #21 修复：解析结果，提取 success/error 字段
+        // Issue #21 修复：解析结果，提取 success/error 字段。
+        // MCP/custom tools may return plain text; plain text is treated as a successful result.
         let toolSuccess = true;
         let toolError: string | undefined;
         let strategyResult: 'success' | 'failed' = 'success';
         let errorMsg: string | undefined;
         try {
           const parsed = JSON.parse(result);
-          toolSuccess = parsed.success === true;
-          toolError = parsed.error;
+          toolSuccess = typeof parsed.success === 'boolean' ? parsed.success : true;
+          toolError = typeof parsed.error === 'string' ? parsed.error : undefined;
           if (parsed.success === false) {
             strategyResult = 'failed';
             errorMsg = parsed.error || 'Unknown error';
           }
         } catch {
-          strategyResult = 'failed';
-          errorMsg = 'Invalid result';
-          toolSuccess = false;
-          toolError = 'Invalid JSON result';
+          strategyResult = 'success';
+          toolSuccess = true;
         }
         strategyTracker.recordResult(attemptId, strategyResult, errorMsg, duration);
         harness?.recordToolResult({

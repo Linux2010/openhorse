@@ -5,6 +5,8 @@
  */
 
 import chalk from 'chalk';
+import { existsSync, readdirSync } from 'fs';
+import { join } from 'path';
 import type { SlashCommand, CommandContext, CommandResult } from './types';
 import type { Task } from '../core/agent';
 import { TaskManager, CreateTaskOptions } from '../services/task-manager';
@@ -13,7 +15,7 @@ import { isConfigured } from '../services/config';
 import { createSpinner, toolLine } from '../ui/box';
 import { createStreamRenderer, type StreamMarkdownRenderer } from '../ui/stream-markdown';
 import { showProgress, hideProgress, showToolProgress } from '../ui/progress';
-import { query, getSystemPrompt, resetToolState, type QueryEvent, type PromptContext } from '../framework';
+import { query, getSystemPrompt, resetToolState, setToolState, type QueryEvent, type PromptContext } from '../framework';
 import { TOOLS, executeTool, getToolNames } from '../tools';
 import { mcpManager } from '../tools/mcp';
 import type { Message, StreamCallbacks } from '../services/llm';
@@ -28,6 +30,9 @@ import {
   endSession,
   updateSessionSummary,
   updateSessionHarnessState,
+  saveSessionRuntimeSnapshot,
+  loadSessionRuntimeSnapshot,
+  validateSessionTranscript,
   resumeSession,
   renameSession,
   resolveProjectPath,
@@ -37,6 +42,7 @@ import {
 } from '../services/session-storage';
 import { getAutoCompact } from '../services/compact/auto-compact';
 import { createContextHarness } from '../harness';
+import { getConfigHome, getProjectsDir, getSessionsDir } from '../services/config-dir';
 
 // ============================================================================
 // 颜色常量
@@ -70,6 +76,23 @@ function compactToolArgs(args: Record<string, unknown>): string {
     }
   }
   return '';
+}
+
+function parseToolResultEnvelope(result: string): { success: boolean; error?: string; output?: string } {
+  try {
+    const parsed = JSON.parse(result);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        success: typeof parsed.success === 'boolean' ? parsed.success : true,
+        error: typeof parsed.error === 'string' ? parsed.error : undefined,
+        output: typeof parsed.output === 'string' ? parsed.output : undefined,
+      };
+    }
+  } catch {
+    // Plain text results are valid for MCP and custom tools.
+  }
+
+  return { success: true, output: result };
 }
 
 // ============================================================================
@@ -678,8 +701,8 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           // Issue #22: 隐藏进度指示
           hideProgress();
           // 显示工具结果后，准备下一轮（不启动 spinner）
-          const parsedResult = JSON.parse(event.result);
-          const toolSuccess = parsedResult.success !== false;
+          const parsedResult = parseToolResultEnvelope(event.result);
+          const toolSuccess = parsedResult.success;
           console.log(toolLine(event.name, lastToolArgs, toolSuccess, event.duration));
           // 显示错误详情
           if (!toolSuccess && parsedResult.error) {
@@ -750,6 +773,16 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       if (recordedMessages.length > 0) {
         updateSessionSummary(sessionId, recordedMessages);
       }
+      const latestState = ctx.store.getSnapshot();
+      saveSessionRuntimeSnapshot(sessionId, {
+        activeModel: ctx.llm.getModel(),
+        permissionMode: latestState.permissionMode,
+        tokenUsage: latestState.tokenUsage,
+        harnessState,
+        todos: latestState.todos,
+        planMode: latestState.planMode,
+        currentPlan: latestState.currentPlan,
+      });
     }
 
     if (responseStarted) {
@@ -780,12 +813,13 @@ async function handleExit(ctx: CommandContext): Promise<CommandResult> {
   console.log(DIM('Shutting down...'));
 
   // Update session summary before exit
-  if (ctx.sessionId) {
-    const messages = readSessionMessages(ctx.sessionId);
+  const activeSession = ctx.getSession?.() ?? (ctx.sessionId ? loadSessionMeta(ctx.sessionId) : null);
+  if (activeSession) {
+    const messages = readSessionMessages(activeSession.id);
     if (messages.length > 0) {
-      updateSessionSummary(ctx.sessionId, messages);
+      updateSessionSummary(activeSession.id, messages);
     }
-    endSession(ctx.sessionId);
+    endSession(activeSession.id);
   }
 
   await ctx.runtime.shutdown();
@@ -1024,14 +1058,76 @@ function handleUsage(ctx: CommandContext): CommandResult {
   return { success: true };
 }
 
+function countFiles(dir: string, predicate: (name: string) => boolean): number {
+  if (!existsSync(dir)) return 0;
+  return readdirSync(dir).filter(predicate).length;
+}
+
+function handleDoctor(ctx: CommandContext): CommandResult {
+  const configHome = getConfigHome();
+  const legacySessionsDir = getSessionsDir();
+  const projectsDir = getProjectsDir();
+  const currentProjectSessions = listProjectSessions(ctx.cwd);
+  const restorableCurrentSessions = currentProjectSessions.filter(session => (session.messageCount ?? 0) > 0);
+  let projectSessionFiles = 0;
+  let projectCount = 0;
+
+  if (existsSync(projectsDir)) {
+    const projectKeys = readdirSync(projectsDir);
+    projectCount = projectKeys.length;
+    for (const key of projectKeys) {
+      projectSessionFiles += countFiles(join(projectsDir, key, 'sessions'), name => name.endsWith('.json') || name.endsWith('.jsonl'));
+    }
+  }
+
+  const legacySessionFiles = countFiles(legacySessionsDir, name => name.endsWith('.json') || name.endsWith('.jsonl'));
+  const invalidSessions = restorableCurrentSessions
+    .map(session => ({ session, validation: validateSessionTranscript(session.id) }))
+    .filter(item => !item.validation.valid);
+
+  console.log();
+  console.log(HEADER('OpenHorse Doctor'));
+  console.log(DIM('─'.repeat(40)));
+  console.log();
+  console.log(`  Config home        ${DIM(configHome)}`);
+  console.log(`  Projects           ${ACCENT(String(projectCount))}`);
+  console.log(`  Project sessions   ${ACCENT(String(projectSessionFiles))} files`);
+  console.log(`  Legacy sessions    ${legacySessionFiles > 0 ? WARN(String(legacySessionFiles)) : SUCCESS('0')} files`);
+  console.log(`  Current project    ${ACCENT(String(restorableCurrentSessions.length))} restorable sessions`);
+  console.log(`  Transcript health  ${invalidSessions.length === 0 ? SUCCESS('ok') : ERROR(`${invalidSessions.length} invalid`)}`);
+
+  if (legacySessionFiles > 0) {
+    console.log();
+    console.log(WARN('  Legacy session files exist under ~/.openhorse/sessions.'));
+    console.log(DIM('  They are only used for explicit --all/id fallback; new sessions should live under projects/.'));
+  }
+
+  if (invalidSessions.length > 0) {
+    console.log();
+    for (const item of invalidSessions.slice(0, 5)) {
+      console.log(ERROR(`  ${item.session.id.slice(0, 8)} ${item.validation.errors[0]}`));
+    }
+  }
+
+  console.log();
+  return { success: true };
+}
+
 // ============================================================================
 // Session 命令
 // ============================================================================
 
-function parseSessionScopeArgs(args: string, cwd: string): { allProjects: boolean; projectPath: string; query: string; last: boolean } {
+function parseSessionScopeArgs(args: string, cwd: string): {
+  allProjects: boolean;
+  projectPath: string;
+  query: string;
+  picker: boolean;
+  includeEmpty: boolean;
+} {
   const parts = args.trim().split(/\s+/).filter(Boolean);
   let allProjects = false;
-  let last = false;
+  let picker = false;
+  let includeEmpty = false;
   let projectPath = resolveProjectPath(cwd);
   const queryParts: string[] = [];
 
@@ -1041,11 +1137,19 @@ function parseSessionScopeArgs(args: string, cwd: string): { allProjects: boolea
       allProjects = true;
       continue;
     }
-    if (part === '--last' || part === '-l') {
-      last = true;
+    if (part === '--picker' || part === '-p') {
+      picker = true;
       continue;
     }
-    if ((part === '--project' || part === '-p') && parts[i + 1]) {
+    if (part === '--last' || part === '-l') {
+      // /resume now restores the latest session by default; keep --last as a no-op alias.
+      continue;
+    }
+    if (part === '--include-empty') {
+      includeEmpty = true;
+      continue;
+    }
+    if (part === '--project' && parts[i + 1]) {
       projectPath = resolveProjectPath(parts[i + 1]);
       i++;
       continue;
@@ -1056,7 +1160,8 @@ function parseSessionScopeArgs(args: string, cwd: string): { allProjects: boolea
   return {
     allProjects,
     projectPath,
-    last,
+    picker,
+    includeEmpty,
     query: queryParts.join(' '),
   };
 }
@@ -1111,15 +1216,23 @@ function printSessionConflict(ref: string, matches: SessionMeta[]): void {
   console.log();
 }
 
+function getScopedSessions(scope: ReturnType<typeof parseSessionScopeArgs>, limit?: number): SessionMeta[] {
+  const sessions = scope.allProjects
+    ? listSessions()
+    : listProjectSessions(scope.projectPath);
+  const filtered = scope.includeEmpty
+    ? sessions
+    : sessions.filter(session => (session.messageCount ?? 0) > 0);
+  return limit ? filtered.slice(0, limit) : filtered;
+}
+
 function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
   const scope = parseSessionScopeArgs(args, ctx.cwd);
   console.log();
   console.log(HEADER(scope.allProjects ? 'Sessions (all projects)' : 'Sessions'));
   console.log(DIM('─'.repeat(40)));
 
-  const sessions = scope.allProjects
-    ? listSessions(10)
-    : listProjectSessions(scope.projectPath, 10);
+  const sessions = getScopedSessions(scope, 10);
 
   if (sessions.length === 0) {
     console.log(DIM(scope.allProjects ? '  No sessions found' : '  No sessions found for this project'));
@@ -1133,6 +1246,7 @@ function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
   console.log(DIM('Use /resume <number|session-id|name> to restore a session'));
   console.log(DIM('Use /session-rename <number|session-id|name> <new name> to rename'));
   console.log(DIM('Use /sessions --all to list sessions from every project'));
+  console.log(DIM('Use /sessions --include-empty to include empty sessions'));
   console.log();
   return { success: true };
 }
@@ -1140,10 +1254,9 @@ function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
 function handleResume(ctx: CommandContext, args: string): CommandResult {
   const scope = parseSessionScopeArgs(args, ctx.cwd);
   const sessionRef = scope.query;
-  const scopedSessions = (scope.allProjects ? listSessions() : listProjectSessions(scope.projectPath))
-    .filter(session => (session.messageCount ?? 0) > 0);
+  const scopedSessions = getScopedSessions({ ...scope, includeEmpty: false });
 
-  if (!sessionRef) {
+  if (!sessionRef && !scope.picker) {
     const lastSession = scopedSessions[0];
     if (!lastSession) {
       console.log(ERROR('No previous session found for this project'));
@@ -1152,8 +1265,15 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
       return { success: false };
     }
 
-    if (scope.last || scopedSessions.length === 1) {
-      return restoreSession(ctx, lastSession, true);
+    return restoreSession(ctx, lastSession, true);
+  }
+
+  if (scope.picker && !sessionRef) {
+    if (scopedSessions.length === 0) {
+      console.log(ERROR('No previous session found for this project'));
+      console.log(DIM(scope.allProjects ? 'No restorable sessions found' : 'Use /sessions --all to list all projects'));
+      console.log();
+      return { success: false };
     }
 
     console.log();
@@ -1162,7 +1282,7 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
     console.log();
     printSessionRows(scopedSessions.slice(0, 10), { indexed: true, showProject: scope.allProjects });
     console.log(DIM('Use /resume <number> to restore, for example /resume 1'));
-    console.log(DIM('Use /resume --last to skip the picker next time'));
+    console.log(DIM('Use /resume to restore the latest session directly'));
     console.log();
     return { success: true };
   }
@@ -1192,6 +1312,19 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
 
 function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boolean): CommandResult {
   const resumed = resumeSession(session.id) ?? session;
+  const validation = validateSessionTranscript(resumed.id);
+  if (!validation.valid) {
+    console.log(ERROR(`Cannot restore session ${resumed.id.slice(0, 8)}: transcript is invalid`));
+    for (const error of validation.errors.slice(0, 5)) {
+      console.log(DIM(`  - ${error}`));
+    }
+    if (validation.errors.length > 5) {
+      console.log(DIM(`  ... ${validation.errors.length - 5} more errors`));
+    }
+    console.log();
+    return { success: false };
+  }
+  const runtimeSnapshot = loadSessionRuntimeSnapshot(resumed.id);
 
   console.log();
   console.log(HEADER(isLast ? 'Resuming last session' : `Resuming session ${resumed.id.slice(0, 8)}`));
@@ -1209,9 +1342,24 @@ function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boole
     console.log();
 
     ctx.store.setState({ conversationHistory: history });
-    ctx.store.setState({ harnessState: resumed.harnessState });
-    resetToolState();
+    ctx.store.setState({
+      harnessState: runtimeSnapshot?.harnessState ?? resumed.harnessState,
+      tokenUsage: runtimeSnapshot?.tokenUsage ?? ctx.store.getSnapshot().tokenUsage,
+      permissionMode: (runtimeSnapshot?.permissionMode as any) ?? ctx.store.getSnapshot().permissionMode,
+    });
+    if (runtimeSnapshot) {
+      setToolState({
+        todos: runtimeSnapshot.todos ?? [],
+        planMode: runtimeSnapshot.planMode ?? false,
+        currentPlan: runtimeSnapshot.currentPlan ?? null,
+      });
+    } else {
+      resetToolState();
+    }
     console.log(SUCCESS(`✔ Restored ${history.length} messages`));
+    if (runtimeSnapshot) {
+      console.log(DIM('  Runtime snapshot restored'));
+    }
   } else {
     console.log();
     console.log(DIM('  No messages in session'));
@@ -1234,7 +1382,7 @@ function handleSessionRename(ctx: CommandContext, args: string): CommandResult {
     return { success: false };
   }
 
-  const scopedSessions = scope.allProjects ? listSessions() : listProjectSessions(scope.projectPath);
+  const scopedSessions = getScopedSessions(scope);
   const pickerIndex = parsePickerIndex(ref, scopedSessions.length);
   let session: SessionMeta | null = pickerIndex !== null ? scopedSessions[pickerIndex] : null;
 
@@ -1416,6 +1564,12 @@ const COMMANDS: SlashCommand[] = [
     type: 'builtin',
     execute: (ctx) => showHarness(ctx),
   },
+  {
+    name: 'doctor',
+    description: 'Check local OpenHorse state health',
+    type: 'builtin',
+    execute: (ctx) => handleDoctor(ctx),
+  },
 
   // Task 命令
   {
@@ -1443,7 +1597,7 @@ const COMMANDS: SlashCommand[] = [
   {
     name: 'resume',
     description: 'Resume a previous session',
-    argumentHint: '[number|session-id|name]',
+    argumentHint: '[--picker|number|session-id|name]',
     type: 'builtin',
     execute: (ctx, args) => handleResume(ctx, args),
   },

@@ -16,6 +16,7 @@ import {
   getHistoryPath,
   getProjectSessionMessagesPath,
   getProjectSessionMetaPath,
+  getProjectSessionRuntimePath,
   getProjectSessionsDir,
   getProjectsDir,
   getSessionMetaPath,
@@ -129,6 +130,30 @@ export type SessionLookupResult =
   | { status: 'not_found' }
   | { status: 'ambiguous'; matches: SessionMeta[] };
 
+export interface TranscriptValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  messageCount: number;
+}
+
+export interface SessionRuntimeSnapshot {
+  sessionId: string;
+  updatedAt: number;
+  activeModel?: string;
+  permissionMode?: string;
+  tokenUsage?: { promptTokens: number; completionTokens: number } | null;
+  harnessState?: HarnessState;
+  todos?: Array<{
+    content: string;
+    status: 'pending' | 'in_progress' | 'completed';
+    activeForm: string;
+  }>;
+  planMode?: boolean;
+  currentPlan?: string | null;
+  verificationCommands?: string[];
+}
+
 // ============================================================================
 // Project helpers
 // ============================================================================
@@ -232,7 +257,24 @@ function uniquePaths(paths: string[]): string[] {
 function parseSessionMetaFile(path: string): SessionMeta | null {
   try {
     const content = readFileSync(path, 'utf-8');
-    return JSON.parse(content) as SessionMeta;
+    const session = JSON.parse(content) as Partial<SessionMeta>;
+    if (typeof session.id !== 'string' || typeof session.projectPath !== 'string') {
+      return null;
+    }
+    return session as SessionMeta;
+  } catch {
+    return null;
+  }
+}
+
+function isSessionMetaFilename(filename: string): boolean {
+  return filename.endsWith('.json') && !filename.endsWith('.runtime.json');
+}
+
+function parseJsonFile<T>(path: string): T | null {
+  try {
+    const content = readFileSync(path, 'utf-8');
+    return JSON.parse(content) as T;
   } catch {
     return null;
   }
@@ -593,6 +635,120 @@ export function loadSessionHistory(sessionId: string): Message[] {
   });
 }
 
+export function validateSessionMessages(messages: SessionMessage[]): TranscriptValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const pendingToolCalls = new Set<string>();
+
+  const assertNoPendingBefore = (index: number, role: string) => {
+    if (pendingToolCalls.size > 0) {
+      errors.push(`message ${index}: ${role} appeared before tool results for ${Array.from(pendingToolCalls).join(', ')}`);
+      pendingToolCalls.clear();
+    }
+  };
+
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i];
+
+    if (message.role !== 'tool') {
+      assertNoPendingBefore(i, message.role);
+    }
+
+    if (message.role === 'assistant' && message.tool_calls && message.tool_calls.length > 0) {
+      const ids = new Set<string>();
+      for (const toolCall of message.tool_calls) {
+        if (!toolCall.id) {
+          errors.push(`message ${i}: assistant tool call is missing id`);
+          continue;
+        }
+        if (ids.has(toolCall.id)) {
+          errors.push(`message ${i}: duplicate tool call id ${toolCall.id}`);
+        }
+        ids.add(toolCall.id);
+
+        if (toolCall.type !== 'function' || !toolCall.function?.name) {
+          errors.push(`message ${i}: tool call ${toolCall.id} is missing function name`);
+        }
+
+        try {
+          JSON.parse(toolCall.function?.arguments || '{}');
+        } catch {
+          errors.push(`message ${i}: tool call ${toolCall.id} has invalid JSON arguments`);
+        }
+      }
+
+      for (const id of ids) {
+        pendingToolCalls.add(id);
+      }
+    }
+
+    if (message.role === 'tool') {
+      if (!message.toolCallId) {
+        errors.push(`message ${i}: tool message is missing toolCallId`);
+        continue;
+      }
+      if (!pendingToolCalls.has(message.toolCallId)) {
+        errors.push(`message ${i}: orphan tool message for ${message.toolCallId}`);
+        continue;
+      }
+      pendingToolCalls.delete(message.toolCallId);
+    }
+  }
+
+  if (pendingToolCalls.size > 0) {
+    errors.push(`transcript ended before tool results for ${Array.from(pendingToolCalls).join(', ')}`);
+  }
+
+  if (messages.length === 0) {
+    warnings.push('transcript is empty');
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    messageCount: messages.length,
+  };
+}
+
+export function validateSessionTranscript(sessionId: string): TranscriptValidationResult {
+  return validateSessionMessages(readSessionMessages(sessionId));
+}
+
+export function saveSessionRuntimeSnapshot(
+  sessionId: string,
+  snapshot: Omit<SessionRuntimeSnapshot, 'sessionId' | 'updatedAt'> & { updatedAt?: number }
+): SessionRuntimeSnapshot | null {
+  const session = loadSessionMeta(sessionId);
+  if (!session) return null;
+
+  const payload: SessionRuntimeSnapshot = {
+    ...snapshot,
+    sessionId,
+    updatedAt: snapshot.updatedAt ?? Date.now(),
+  };
+
+  ensureProjectDir(session.projectPath);
+  atomicWriteFileSync(
+    getProjectSessionRuntimePath(session.projectPath, sessionId),
+    JSON.stringify(payload, null, 2),
+    { mode: 0o600 }
+  );
+  return payload;
+}
+
+export function loadSessionRuntimeSnapshot(sessionId: string): SessionRuntimeSnapshot | null {
+  const session = loadSessionMeta(sessionId);
+  if (!session) return null;
+
+  const projectPath = getProjectSessionRuntimePath(session.projectPath, sessionId);
+  if (existsSync(projectPath)) {
+    return parseJsonFile<SessionRuntimeSnapshot>(projectPath);
+  }
+
+  return null;
+}
+
 /**
  * 列出所有会话
  */
@@ -603,7 +759,7 @@ export function listSessions(limit?: number): SessionMeta[] {
   const sessionsById = new Map<string, SessionMeta>();
 
   if (existsSync(sessionsDir)) {
-    const files = readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
+    const files = readdirSync(sessionsDir).filter(isSessionMetaFilename);
     for (const file of files) {
       const rawSession = parseSessionMetaFile(join(sessionsDir, file));
       if (rawSession) {
@@ -618,7 +774,7 @@ export function listSessions(limit?: number): SessionMeta[] {
       const projectSessionsDir = join(projectsDir, projectKey, 'sessions');
       if (!existsSync(projectSessionsDir)) continue;
 
-      const files = readdirSync(projectSessionsDir).filter(f => f.endsWith('.json'));
+      const files = readdirSync(projectSessionsDir).filter(isSessionMetaFilename);
       for (const file of files) {
         const rawSession = parseSessionMetaFile(join(projectSessionsDir, file));
         if (rawSession) {
@@ -641,7 +797,7 @@ export function listProjectSessions(projectPath: string, limit?: number): Sessio
 
   const projectSessionsDir = getProjectSessionsDir(canonicalProjectPath);
   if (existsSync(projectSessionsDir)) {
-    const files = readdirSync(projectSessionsDir).filter(f => f.endsWith('.json'));
+    const files = readdirSync(projectSessionsDir).filter(isSessionMetaFilename);
     for (const file of files) {
       const rawSession = parseSessionMetaFile(join(projectSessionsDir, file));
       if (rawSession) {
@@ -736,7 +892,8 @@ export function deleteSession(sessionId: string): boolean {
   if (session) {
     paths.push(
       getProjectSessionMetaPath(session.projectPath, sessionId),
-      getProjectSessionMessagesPath(session.projectPath, sessionId)
+      getProjectSessionMessagesPath(session.projectPath, sessionId),
+      getProjectSessionRuntimePath(session.projectPath, sessionId)
     );
   }
 
