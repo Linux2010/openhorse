@@ -10,9 +10,14 @@
  *   4. Agent 内部默认值
  */
 
-import { loadGlobalConfig, type GlobalConfig, type ToolConfirmationPolicy } from './global-config';
+import {
+  loadGlobalConfig,
+  type GlobalConfig,
+  type ToolConfirmationPolicy,
+  type WebSearchMcpConfig,
+} from './global-config';
 
-export type { ToolConfirmationPolicy };
+export type { ToolConfirmationPolicy, WebSearchMcpConfig };
 
 // ============================================================================
 // 类型定义
@@ -35,6 +40,8 @@ export interface OpenHorseCLIConfig {
   fallbackModel?: string;
   /** How to handle tool permission checks that need confirmation. */
   toolConfirmation: ToolConfirmationPolicy;
+  /** Remote MCP service used by web_search. */
+  webSearch?: WebSearchMcpConfig;
 
   // ---- Agent 内部参数 (不由用户配置) ----
   /** 实例名称 */
@@ -67,6 +74,44 @@ function normalizeToolConfirmationPolicy(value: unknown): ToolConfirmationPolicy
     : undefined;
 }
 
+function parsePositiveInt(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function loadWebSearchConfig(
+  globalConfig: GlobalConfig,
+  overrides: Partial<OpenHorseCLIConfig>
+): WebSearchMcpConfig | undefined {
+  const merged: WebSearchMcpConfig = {
+    ...globalConfig.webSearch,
+    ...overrides.webSearch,
+  };
+
+  const endpoint = process.env.OPENHORSE_WEBSEARCH_MCP_ENDPOINT;
+  const apiKey = process.env.OPENHORSE_WEBSEARCH_API_KEY ?? process.env.DASHSCOPE_API_KEY;
+  const provider = process.env.OPENHORSE_WEBSEARCH_PROVIDER ?? process.env.OPENHORSE_WEBSEARCH_MCP_PROVIDER;
+  const toolName = process.env.OPENHORSE_WEBSEARCH_MCP_TOOL;
+  const timeoutMs = parsePositiveInt(process.env.OPENHORSE_WEBSEARCH_MCP_TIMEOUT_MS);
+  const authType = process.env.OPENHORSE_WEBSEARCH_AUTH_TYPE;
+  const apiKeyHeader = process.env.OPENHORSE_WEBSEARCH_API_KEY_HEADER;
+  const apiKeyQueryParam = process.env.OPENHORSE_WEBSEARCH_API_KEY_QUERY_PARAM;
+
+  if (provider) merged.provider = provider;
+  if (endpoint) merged.endpoint = endpoint;
+  if (apiKey) merged.apiKey = apiKey;
+  if (toolName) merged.toolName = toolName;
+  if (timeoutMs) merged.timeoutMs = timeoutMs;
+  if (authType === 'bearer' || authType === 'header' || authType === 'query' || authType === 'none') {
+    merged.authType = authType;
+  }
+  if (apiKeyHeader) merged.apiKeyHeader = apiKeyHeader;
+  if (apiKeyQueryParam) merged.apiKeyQueryParam = apiKeyQueryParam;
+
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
 // ============================================================================
 // 加载配置
 // ============================================================================
@@ -93,6 +138,7 @@ export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHor
       ?? normalizeToolConfirmationPolicy(globalConfig.toolConfirmation)
       ?? normalizeToolConfirmationPolicy(process.env.OPENHORSE_TOOL_CONFIRMATION)
       ?? INTERNAL_DEFAULTS.toolConfirmation,
+    webSearch: loadWebSearchConfig(globalConfig, overrides),
 
     // Agent 内部参数
     name:
@@ -137,5 +183,8 @@ export function getConfigSummary(config: OpenHorseCLIConfig): Record<string, str
     mode: config.mode,
     logLevel: config.logLevel,
     toolConfirmation: config.toolConfirmation,
+    webSearch: config.webSearch?.endpoint || config.webSearch?.apiKey || config.webSearch?.toolName
+      ? 'configured'
+      : '(default)',
   };
 }

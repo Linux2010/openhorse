@@ -19,6 +19,13 @@
 | `defaultModel` | string | `OPENHORSE_MODEL` | `gpt-4o` | 默认模型 |
 | `fallbackModel` | string | `OPENHORSE_FALLBACK_MODEL` | `(无)` | 备用模型（主模型过载时自动切换） |
 | `toolConfirmation` | `allow` \| `deny` \| `ask` | `OPENHORSE_TOOL_CONFIRMATION` | `allow` | 工具需要确认时的兜底策略；当前 CLI 无交互确认 UI，默认自动允许 `ask` 级工具 |
+| `webSearch.provider` | string | `OPENHORSE_WEBSEARCH_PROVIDER` | `auto` | WebSearch 模式或 provider。`auto` 先 MCP 后 adapter；可设 `native`、`bailian`、`zhipu`、`tavily-mcp`、`tavily`、`brave`、`custom`、`ddg` |
+| `webSearch.apiKey` | string | `OPENHORSE_WEBSEARCH_API_KEY` / provider env | 主 `apiKey` | WebSearch MCP 或 adapter API Key；未设置时 MCP 复用 OpenHorse 主 API Key |
+| `webSearch.endpoint` | string | `OPENHORSE_WEBSEARCH_MCP_ENDPOINT` | provider 默认值 | WebSearch MCP Streamable HTTP Endpoint |
+| `webSearch.toolName` | string | `OPENHORSE_WEBSEARCH_MCP_TOOL` | 自动发现 | MCP 服务暴露多个工具时指定搜索工具名 |
+| `webSearch.authType` | `bearer` \| `header` \| `query` \| `none` | `OPENHORSE_WEBSEARCH_AUTH_TYPE` | `bearer` | API Key 注入方式 |
+| `webSearch.apiKeyHeader` | string | `OPENHORSE_WEBSEARCH_API_KEY_HEADER` | `Authorization` | `bearer` / `header` 模式下使用的 header 名 |
+| `webSearch.apiKeyQueryParam` | string | `OPENHORSE_WEBSEARCH_API_KEY_QUERY_PARAM` | provider 默认值 | `query` 模式下使用的查询参数名 |
 
 ## Agent 内部控制（用户无需关心）
 
@@ -84,6 +91,71 @@
 - `ask`: preserve the confirmation-required result. Use this after an interactive prompt UI is available.
 
 Tools that return `deny` from safety checks are still blocked regardless of this setting.
+
+## WebSearch
+
+`web_search` 参考 OpenClaude 的分层策略：`auto` 模式先调用当前模型 provider 对应的 WebSearch MCP；如果 MCP 不可用或被 provider 拒绝，再尝试 adapter 链。显式指定 `native` / `bailian` / `zhipu` / `tavily-mcp` 时只走 MCP；显式指定 `tavily` / `brave` / `custom` / `ddg` 时只走 adapter。
+
+### MCP Profiles
+
+OpenHorse 内置 MCP provider profile，会根据 `apiBaseUrl` / model 自动推断：
+
+| Provider | 匹配条件 | 默认 endpoint | 默认 Key |
+|----------|----------|---------------|----------|
+| `bailian` | `apiBaseUrl` 包含 `dashscope.aliyuncs.com` 或 `coding.dashscope.aliyuncs.com` | `https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp` | `OPENHORSE_WEBSEARCH_API_KEY` → `DASHSCOPE_API_KEY` → 主 `apiKey` |
+| `zhipu` | `apiBaseUrl` 包含 `bigmodel.cn`，或非 DashScope 的 `glm*` 模型 | `https://open.bigmodel.cn/api/mcp/web_search_prime/mcp` | `OPENHORSE_WEBSEARCH_API_KEY` → `GLM_API_KEY` / `ZHIPU_API_KEY` / `BIGMODEL_API_KEY` → 主 `apiKey` |
+| `tavily-mcp` | 显式设置 `webSearch.provider` / `OPENHORSE_WEBSEARCH_PROVIDER` | `https://mcp.tavily.com/mcp/` | `TAVILY_API_KEY`，通过 query 参数 `tavilyApiKey` |
+
+通常不需要在 `~/.openhorse/openhorse.json` 里写 `webSearch`。如果当前模型 provider 的 MCP 接受同一个 key，OpenHorse 会自动复用主 `apiKey`。
+
+百炼普通 Key 可以通过环境变量覆盖：
+
+```bash
+export DASHSCOPE_API_KEY=sk-xxx
+```
+
+也可以使用 OpenHorse 专用环境变量：
+
+```bash
+export OPENHORSE_WEBSEARCH_API_KEY=sk-xxx
+```
+
+### Adapter Fallbacks
+
+`auto` 模式下 MCP 失败后会按顺序尝试 adapter：
+
+1. `tavily`：需要 `TAVILY_API_KEY`
+2. `brave`：需要 `BRAVE_API_KEY`
+3. `custom`：需要 `OPENHORSE_WEBSEARCH_API` 或 `WEB_SEARCH_API`
+4. `ddg`：DuckDuckGo HTML fallback，无需 key，但可能被限流或被网络环境阻断
+
+示例：
+
+```bash
+export OPENHORSE_WEBSEARCH_PROVIDER=tavily
+export TAVILY_API_KEY=tvly-xxx
+```
+
+只有需要覆盖 MCP provider、endpoint、toolName、headers 或鉴权方式时，才添加 `webSearch`：
+
+```json
+{
+  "webSearch": {
+    "provider": "bailian",
+    "endpoint": "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp",
+    "apiKey": "sk-xxx",
+    "authType": "bearer"
+  }
+}
+```
+
+实测：当前 `sk-sp` Coding Plan key 请求官方百炼 WebSearch MCP endpoint 返回 `401`，几个 `coding.dashscope.aliyuncs.com/.../WebSearch/mcp` 猜测路径返回 `404`。OpenHorse 不会本地拦截 `sk-sp`；如果 provider 后续支持同一个 key，会直接工作，否则会返回真实 HTTP 错误并提示覆盖 `webSearch.provider` / `endpoint` / `apiKey`。
+
+在默认 `auto` 模式下，上述 MCP 失败会继续走 adapter fallback；如果你希望严格只测 MCP，设置：
+
+```bash
+export OPENHORSE_WEBSEARCH_PROVIDER=native
+```
 
 ## 配置加载优先级
 

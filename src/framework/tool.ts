@@ -24,6 +24,7 @@ export interface ToolResult {
   success: boolean;
   output: string;
   error?: string;
+  metadata?: Record<string, unknown>;
 }
 
 /** Context passed to tool execute and permission checks
