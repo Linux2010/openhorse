@@ -12,6 +12,9 @@ function cleanEnv() {
   delete process.env.OPENHORSE_MODE;
   delete process.env.OPENHORSE_LOG_LEVEL;
   delete process.env.OPENHORSE_TOOL_CONFIRMATION;
+  delete process.env.OPENHORSE_UI;
+  delete process.env.OPENHORSE_UI_RENDERER;
+  delete process.env.OPENHORSE_UI_CONFIRMATIONS;
   delete process.env.OPENHORSE_WEBSEARCH_API_KEY;
   delete process.env.OPENHORSE_WEBSEARCH_PROVIDER;
   delete process.env.OPENHORSE_WEBSEARCH_MCP_PROVIDER;
@@ -49,6 +52,7 @@ describe('loadConfig', () => {
     expect(config.logLevel).toBe('info');
     expect(config.apiKey).toBe('');
     expect(config.toolConfirmation).toBe('allow');
+    expect(config.ui).toEqual({ renderer: 'legacy', confirmations: 'config' });
   });
 
   test('overrides take priority', () => {
@@ -60,6 +64,7 @@ describe('loadConfig', () => {
       mode: 'production',
       logLevel: 'debug',
       toolConfirmation: 'deny',
+      ui: { renderer: 'v2', confirmations: 'interactive' },
     });
     expect(config.apiKey).toBe('test-key');
     expect(config.model).toBe('custom-model');
@@ -68,6 +73,7 @@ describe('loadConfig', () => {
     expect(config.mode).toBe('production');
     expect(config.logLevel).toBe('debug');
     expect(config.toolConfirmation).toBe('deny');
+    expect(config.ui).toEqual({ renderer: 'v2', confirmations: 'interactive' });
   });
 
   test('env vars are used when no overrides and no globalConfig', () => {
@@ -82,6 +88,8 @@ describe('loadConfig', () => {
     process.env.OPENHORSE_MODEL = 'env-model';
     process.env.OPENHORSE_FALLBACK_MODEL = 'env-fallback';
     process.env.OPENHORSE_TOOL_CONFIRMATION = 'ask';
+    process.env.OPENHORSE_UI_RENDERER = 'v2';
+    process.env.OPENHORSE_UI_CONFIRMATIONS = 'interactive';
     process.env.OPENHORSE_WEBSEARCH_API_KEY = 'sk-websearch-env';
     process.env.OPENHORSE_WEBSEARCH_PROVIDER = 'tavily';
     process.env.OPENHORSE_WEBSEARCH_MCP_ENDPOINT = 'https://example.com/mcp';
@@ -95,6 +103,7 @@ describe('loadConfig', () => {
     expect(config.model).toBe('env-model');
     expect(config.fallbackModel).toBe('env-fallback');
     expect(config.toolConfirmation).toBe('ask');
+    expect(config.ui).toEqual({ renderer: 'v2', confirmations: 'interactive' });
     expect(config.webSearch).toEqual({
       apiKey: 'sk-websearch-env',
       provider: 'tavily',
@@ -118,6 +127,10 @@ describe('loadConfig', () => {
         apiKey: 'sk-websearch-global',
         toolName: 'web_search',
       },
+      ui: {
+        renderer: 'v2',
+        confirmations: 'interactive',
+      },
       totalSessions: 10,
       totalTokens: 50000,
       totalCost: 2.50,
@@ -129,6 +142,7 @@ describe('loadConfig', () => {
     expect(config.model).toBe('glm-5');
     expect(config.fallbackModel).toBe('qwen-plus');
     expect(config.toolConfirmation).toBe('deny');
+    expect(config.ui).toEqual({ renderer: 'v2', confirmations: 'interactive' });
     expect(config.webSearch?.endpoint).toBe('https://dashscope.example/mcp');
     expect(config.webSearch?.apiKey).toBe('sk-websearch-global');
     expect(config.webSearch?.toolName).toBe('web_search');
@@ -144,9 +158,12 @@ describe('loadConfig', () => {
     });
 
     process.env.OPENHORSE_TOOL_CONFIRMATION = 'also-invalid';
+    process.env.OPENHORSE_UI = 'invalid';
+    process.env.OPENHORSE_UI_CONFIRMATIONS = 'also-invalid';
 
     const config = loadConfig();
     expect(config.toolConfirmation).toBe('allow');
+    expect(config.ui).toEqual({ renderer: 'legacy', confirmations: 'config' });
   });
 });
 
@@ -204,6 +221,7 @@ describe('getConfigSummary', () => {
     expect(summary.model).toBe('gpt-4o');
     expect(summary.fallback).toBe('claude-sonnet-4-6');
     expect(summary.toolConfirmation).toBe('allow');
+    expect(summary.ui).toBe('legacy/config');
     expect(summary.webSearch).toBe('(default)');
   });
 });

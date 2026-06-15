@@ -7,9 +7,7 @@
 
 const INPUT_BG = [56, 56, 56] as const;
 const INPUT_FG = [226, 232, 240] as const;
-const ACCENT_FG = [0, 212, 170] as const;
 const DEFAULT_TERMINAL_WIDTH = 80;
-const PROMPT_WIDTH = 2;
 const CONTENT_PADDING = 2;
 
 function colorsDisabled(): boolean {
@@ -52,12 +50,12 @@ function visualWidth(text: string): number {
 }
 
 export function renderUserInputPrompt(): string {
-  return style('❯ ', ACCENT_FG);
+  return '';
 }
 
 export function renderUserInputContent(text: string, width?: number): string {
   const terminalWidth = Math.max(1, width || process.stdout.columns || DEFAULT_TERMINAL_WIDTH);
-  const targetWidth = Math.max(CONTENT_PADDING, terminalWidth - PROMPT_WIDTH);
+  const targetWidth = Math.max(CONTENT_PADDING, terminalWidth);
   const visibleWidth = CONTENT_PADDING + visualWidth(text);
   const fill = Math.max(0, targetWidth - visibleWidth);
   return style(` ${text}${' '.repeat(fill)} `, INPUT_FG);

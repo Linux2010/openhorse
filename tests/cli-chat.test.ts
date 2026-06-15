@@ -12,6 +12,7 @@ import { query, type QueryEvent } from '../src/framework/query';
 import { LLMService, type Message, type Tool } from '../src/services/llm';
 import { TOOLS } from '../src/tools';
 import { loadConfig } from '../src/services/config';
+import { executeChat } from '../src/commands';
 
 // Mock LLMService for testing without real API
 class MockLLMService {
@@ -172,6 +173,42 @@ describe('CLI Chat Regression', () => {
       // Messages should have assistant response appended
       expect(messages.length).toBe(3);
       expect(messages[2].role).toBe('assistant');
+    });
+
+    test('executeChat suppresses legacy token meta line in v2 UI', async () => {
+      const config = loadConfig({
+        apiKey: 'test-key',
+        ui: { renderer: 'v2', confirmations: 'config' },
+      });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'gpt-4o',
+      });
+      const mockLLM = new MockLLMService('gpt-4o') as unknown as LLMService;
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+      const writeSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+      try {
+        await executeChat({
+          cwd: process.cwd(),
+          config,
+          store,
+          llm: mockLLM,
+          runtime: {} as any,
+        }, 'Hello');
+
+        const output = [
+          ...logSpy.mock.calls.flat().map(String),
+          ...writeSpy.mock.calls.flat().map(String),
+        ].join('\n');
+
+        expect(output).toContain('This is a mock response.');
+        expect(output).not.toContain('tokens: 100+20');
+      } finally {
+        logSpy.mockRestore();
+        writeSpy.mockRestore();
+      }
     });
   });
 

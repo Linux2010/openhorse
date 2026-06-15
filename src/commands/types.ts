@@ -40,6 +40,14 @@ export interface CommandResult {
   /** 需要后续处理（如 chat） */
   continueAsChat?: boolean;
   chatInput?: string;
+  /** Interactive session picker request for terminal UI. */
+  sessionPicker?: {
+    sessions: SessionMeta[];
+    title: string;
+    showProject?: boolean;
+    moreCount?: number;
+    allProjects?: boolean;
+  };
 }
 
 /** 命令参数定义 */

@@ -72,8 +72,128 @@ describe('Command Panel', () => {
       const rendered = output.join('');
       expect(rendered).toContain('Matching "m"');
       expect(rendered).toContain('/model');
+      expect(rendered).toContain('Tab Complete');
       expect(rendered).not.toContain('[model|list|help]');
       expect(rendered).not.toContain('[Cmd]');
+    });
+
+    it('completes the selected command without executing it', () => {
+      const {
+        completeSelectedCommand,
+        getPendingCommand,
+        isPanelVisible,
+        showCommandPanel,
+      } = require('../src/ui/command-panel');
+
+      showCommandPanel('s');
+
+      const completed = completeSelectedCommand();
+
+      expect(completed).toBe('/status ');
+      expect(isPanelVisible()).toBe(false);
+      expect(getPendingCommand()).toBeNull();
+    });
+
+    it('keeps the panel visible on empty matches so backspace can recover', () => {
+      const { showCommandPanel, updatePanelFilter, isPanelVisible } = require('../src/ui/command-panel');
+
+      showCommandPanel('zzzz');
+
+      expect(isPanelVisible()).toBe(true);
+      expect(output.join('')).toContain('No matching commands');
+
+      updatePanelFilter('s');
+
+      const rendered = output.join('');
+      expect(rendered).toContain('Matching "s"');
+      expect(rendered).toContain('/status');
+    });
+
+    it('clears the existing panel before redrawing input while filtering', () => {
+      const {
+        showCommandPanel,
+        redrawInputWithPrompt,
+        resetRenderLength,
+        setInputPromptRenderer,
+      } = require('../src/ui/command-panel');
+
+      setInputPromptRenderer('v2');
+      resetRenderLength();
+      showCommandPanel('s');
+      output = [];
+
+      redrawInputWithPrompt('/ss');
+
+      const rendered = output.join('');
+      expect(rendered).toContain('\x1b[J');
+      expect(rendered).toContain('›');
+      expect(rendered).not.toContain('oh');
+      expect(rendered).toContain('/ss');
+      expect(rendered).not.toContain('Matching "s"');
+    });
+
+    it('clears the full v2 input frame before submitted input is echoed', () => {
+      const {
+        clearRenderedInput,
+        redrawInputWithPrompt,
+        resetRenderLength,
+        setInputPromptRenderer,
+      } = require('../src/ui/command-panel');
+
+      setInputPromptRenderer('v2');
+      resetRenderLength();
+      redrawInputWithPrompt('hello');
+      output = [];
+
+      clearRenderedInput();
+
+      const rendered = output.join('');
+      expect(rendered).toContain('\x1b[1A');
+      expect(rendered.split('\x1b[2K')).toHaveLength(4);
+      expect(rendered.endsWith('\r')).toBe(true);
+    });
+
+    it('clears the previous v2 input frame before redrawing slash input', () => {
+      const {
+        redrawInputWithPrompt,
+        resetRenderLength,
+        setInputPromptRenderer,
+      } = require('../src/ui/command-panel');
+
+      setInputPromptRenderer('v2');
+      resetRenderLength();
+      redrawInputWithPrompt('');
+      output = [];
+
+      redrawInputWithPrompt('/');
+
+      const rendered = output.join('');
+      expect(rendered).toContain('\x1b[1A');
+      expect(rendered.split('\x1b[2K')).toHaveLength(4);
+      expect(rendered).toContain('›');
+      expect(rendered).not.toContain('oh');
+      expect(rendered).toContain('/');
+    });
+
+    it('reserves command panel space below the v2 input frame', () => {
+      const {
+        redrawInputWithPrompt,
+        resetRenderLength,
+        setInputPromptRenderer,
+        showCommandPanel,
+      } = require('../src/ui/command-panel');
+
+      setInputPromptRenderer('v2');
+      resetRenderLength();
+      redrawInputWithPrompt('/');
+      output = [];
+
+      showCommandPanel('');
+
+      const rendered = output.join('');
+      expect(rendered).toContain('\x1b[2B\r');
+      expect(rendered).toContain('\x1b[4G');
+      expect(rendered).toContain('Commands');
     });
   });
 });
