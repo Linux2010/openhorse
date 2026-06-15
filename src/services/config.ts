@@ -14,10 +14,13 @@ import {
   loadGlobalConfig,
   type GlobalConfig,
   type ToolConfirmationPolicy,
+  type UIConfig,
+  type UIRenderer,
+  type UIConfirmationMode,
   type WebSearchMcpConfig,
 } from './global-config';
 
-export type { ToolConfirmationPolicy, WebSearchMcpConfig };
+export type { ToolConfirmationPolicy, UIConfig, UIRenderer, UIConfirmationMode, WebSearchMcpConfig };
 
 // ============================================================================
 // 类型定义
@@ -42,6 +45,8 @@ export interface OpenHorseCLIConfig {
   toolConfirmation: ToolConfirmationPolicy;
   /** Remote MCP service used by web_search. */
   webSearch?: WebSearchMcpConfig;
+  /** Terminal UI configuration. loadConfig() fills defaults when loading app config. */
+  ui?: UIConfig;
 
   // ---- Agent 内部参数 (不由用户配置) ----
   /** 实例名称 */
@@ -66,10 +71,26 @@ const INTERNAL_DEFAULTS = {
   mode: 'development',
   logLevel: 'info',
   toolConfirmation: 'allow' as ToolConfirmationPolicy,
+  ui: {
+    renderer: 'legacy' as UIRenderer,
+    confirmations: 'config' as UIConfirmationMode,
+  },
 } as const;
 
 function normalizeToolConfirmationPolicy(value: unknown): ToolConfirmationPolicy | undefined {
   return value === 'ask' || value === 'allow' || value === 'deny'
+    ? value
+    : undefined;
+}
+
+function normalizeUIRenderer(value: unknown): UIRenderer | undefined {
+  return value === 'legacy' || value === 'v2'
+    ? value
+    : undefined;
+}
+
+function normalizeUIConfirmationMode(value: unknown): UIConfirmationMode | undefined {
+  return value === 'config' || value === 'interactive'
     ? value
     : undefined;
 }
@@ -112,6 +133,27 @@ function loadWebSearchConfig(
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
+function loadUIConfig(
+  globalConfig: GlobalConfig,
+  overrides: Partial<OpenHorseCLIConfig>
+): Required<UIConfig> {
+  const envRenderer = process.env.OPENHORSE_UI_RENDERER ?? process.env.OPENHORSE_UI;
+  const envConfirmations = process.env.OPENHORSE_UI_CONFIRMATIONS;
+
+  return {
+    renderer:
+      normalizeUIRenderer(overrides.ui?.renderer)
+      ?? normalizeUIRenderer(globalConfig.ui?.renderer)
+      ?? normalizeUIRenderer(envRenderer)
+      ?? INTERNAL_DEFAULTS.ui.renderer,
+    confirmations:
+      normalizeUIConfirmationMode(overrides.ui?.confirmations)
+      ?? normalizeUIConfirmationMode(globalConfig.ui?.confirmations)
+      ?? normalizeUIConfirmationMode(envConfirmations)
+      ?? INTERNAL_DEFAULTS.ui.confirmations,
+  };
+}
+
 // ============================================================================
 // 加载配置
 // ============================================================================
@@ -139,6 +181,7 @@ export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHor
       ?? normalizeToolConfirmationPolicy(process.env.OPENHORSE_TOOL_CONFIRMATION)
       ?? INTERNAL_DEFAULTS.toolConfirmation,
     webSearch: loadWebSearchConfig(globalConfig, overrides),
+    ui: loadUIConfig(globalConfig, overrides),
 
     // Agent 内部参数
     name:
@@ -183,6 +226,7 @@ export function getConfigSummary(config: OpenHorseCLIConfig): Record<string, str
     mode: config.mode,
     logLevel: config.logLevel,
     toolConfirmation: config.toolConfirmation,
+    ui: `${config.ui?.renderer ?? INTERNAL_DEFAULTS.ui.renderer}/${config.ui?.confirmations ?? INTERNAL_DEFAULTS.ui.confirmations}`,
     webSearch: config.webSearch?.endpoint || config.webSearch?.apiKey || config.webSearch?.toolName
       ? 'configured'
       : '(default)',

@@ -7,8 +7,9 @@
  */
 
 import chalk from 'chalk';
-import { findCommand, getCommands } from '../commands/index';
+import { getCommands } from '../commands/index';
 import type { SlashCommand } from '../commands/types';
+import { renderCommandPalette, buildCommandSuggestions, visualWidth, stripAnsi, renderV2InputFrame } from '../ui-v2';
 
 // ============================================================================
 // 颜色常量 - Issue #32 #3.11: NO_COLOR 支持
@@ -20,23 +21,33 @@ const NO_COLOR = process.env.NO_COLOR !== undefined || process.env.TERM === 'dum
 // 如果 NO_COLOR 设置，使用无颜色的 chalk
 const colorize = NO_COLOR ? {
   accent: (s: string) => s,
-  brand: (s: string) => s,
   dim: (s: string) => s,
   selected: (s: string) => s,
 } : {
   accent: chalk.hex('#00D4AA'),
-  brand: chalk.hex('#FF6B35'),
   dim: chalk.dim,
   selected: chalk.bgHex('#1E293B').hex('#E2E8F0'),
 };
 
 const ACCENT = colorize.accent;
-const BRAND = colorize.brand;
 const DIM = colorize.dim;
 const SELECTED = colorize.selected;
 
-const DEFAULT_MATCH_LIMIT = 8;
-const FILTERED_MATCH_LIMIT = 6;
+type InputPromptRenderer = 'legacy' | 'v2';
+interface InputRenderContext {
+  prefixLines?: string[];
+}
+
+let inputPromptRenderer: InputPromptRenderer = 'legacy';
+let inputRenderContextProvider: () => InputRenderContext = () => ({});
+
+export function setInputPromptRenderer(renderer: InputPromptRenderer): void {
+  inputPromptRenderer = renderer;
+}
+
+export function setInputRenderContextProvider(provider: () => InputRenderContext): void {
+  inputRenderContextProvider = provider;
+}
 
 // ============================================================================
 // SIGWINCH 处理 - Issue #32 #3.11
@@ -66,6 +77,8 @@ export interface CommandPanelState {
   selectedIndex: number;
   filter: string;
   matches: SlashCommand[];
+  moreCount: number;
+  totalMatches: number;
 }
 
 let state: CommandPanelState = {
@@ -73,10 +86,14 @@ let state: CommandPanelState = {
   selectedIndex: 0,
   filter: '',
   matches: [],
+  moreCount: 0,
+  totalMatches: 0,
 };
 
 /** 面板高度（用于清除） */
 let panelHeight = 0;
+/** 已为面板预留的屏幕行数，避免底部绘制时反复滚屏 */
+let reservedPanelHeight = 0;
 
 /** 当前输入缓冲（供 CLI 读取） */
 let pendingCommand: string | null = null;
@@ -102,11 +119,13 @@ export function showCommandPanel(filter: string = ''): void {
  */
 export function hideCommandPanel(): void {
   if (state.visible) {
-    clearPanel();
+    clearPanel({ release: true });
     state.visible = false;
     state.matches = [];
     state.filter = '';
     state.selectedIndex = 0;
+    state.moreCount = 0;
+    state.totalMatches = 0;
   }
 }
 
@@ -138,17 +157,24 @@ export function selectCommand(): string | null {
 }
 
 /**
+ * 补全当前命令但不执行。
+ */
+export function completeSelectedCommand(): string | null {
+  if (!state.visible || state.matches.length === 0) return null;
+
+  const cmd = state.matches[state.selectedIndex];
+  hideCommandPanel();
+  return '/' + cmd.name + ' ';
+}
+
+/**
  * 更新过滤条件
  */
 export function updatePanelFilter(filter: string): void {
   state.filter = filter;
   state.selectedIndex = 0;
   updateMatches();
-  if (state.matches.length > 0) {
-    render();
-  } else {
-    hideCommandPanel();
-  }
+  render();
 }
 
 /**
@@ -185,134 +211,129 @@ export function clearPendingCommand(): void {
 // ============================================================================
 
 function updateMatches(): void {
-  const commands = getCommands();
-  if (!state.filter) {
-    state.matches = commands.slice(0, DEFAULT_MATCH_LIMIT);
-  } else {
-    state.matches = commands
-      .filter(c => c.name.startsWith(state.filter) || c.aliases?.some(a => a.startsWith(state.filter)))
-      .slice(0, FILTERED_MATCH_LIMIT);
-  }
+  const result = buildCommandSuggestions(getCommands(), state.filter);
+  state.matches = result.commands;
+  state.moreCount = result.moreCount;
+  state.totalMatches = result.total;
 }
 
 /** 上次渲染的面板行数 */
 let lastPanelLines: string[] = [];
 
 function render(): void {
-  // 先清除上次的面板（使用保存的行数）
-  clearPanel();
-
-  if (state.matches.length === 0) {
-    return;
-  }
-
-  // Issue #32 #3.11: 使用动态终端宽度
-  const innerWidth = Math.min(terminalWidth - 4, 60);
-
-  const lines: string[] = [];
-
-  // 标题行
   const title = state.filter ? `Matching "${state.filter}"` : 'Commands';
-  lines.push(DIM(`┌─ ${title} `) + DIM('─'.repeat(innerWidth - title.length - 3)) + DIM('┐'));
+  const lines = renderCommandPalette({
+    title,
+    items: buildCommandSuggestions(state.matches, '').items,
+    selectedIndex: state.selectedIndex,
+    width: terminalWidth,
+    moreCount: state.moreCount,
+    emptyLabel: 'No matching commands',
+    footer: '  ↑↓ Select  Tab Complete  Enter Run  Esc',
+    theme: {
+      accent: ACCENT,
+      dim: DIM,
+      selected: SELECTED,
+    },
+  });
 
-  // 命令列表
-  for (let i = 0; i < state.matches.length; i++) {
-    const cmd = state.matches[i];
-    const isSelected = i === state.selectedIndex;
+  // 先清除上次的面板（使用保存的行数）
+  clearPanel({ release: false });
 
-    // 格式: /name (alias) description. Keep rows compact while users type.
-    const aliases = cmd.aliases?.length ? ` (${cmd.aliases[0]})` : '';
-    const content = `/${cmd.name}${aliases}`;
-    const desc = cmd.description.length > 28 ? cmd.description.slice(0, 25) + '...' : cmd.description;
-    const padding = innerWidth - content.length - desc.length - 2;
-    const gap = ' '.repeat(Math.max(1, padding));
-
-    if (isSelected) {
-      lines.push(DIM('│ ') + SELECTED(content + gap + desc) + DIM(' │'));
-    } else {
-      lines.push(DIM('│ ') + ACCENT(content) + gap + DIM(desc) + DIM(' │'));
-    }
-  }
-
-  // 底部
-  lines.push(DIM('└') + DIM('─'.repeat(innerWidth)) + DIM('┘'));
-
-  // 操作提示
-  lines.push(DIM('  ↑↓ Select  Enter  Esc'));
+  const panelOffset = getPanelOffsetRows();
+  reservePanelSpace(lines.length + panelOffset);
 
   // 保存行数用于下次清除
   lastPanelLines = lines;
   panelHeight = lines.length;
 
   // 使用更安全的渲染方式：保存光标位置，清除下方区域，写入面板，恢复光标
-  process.stdout.write('\x1b[s');  // 保存光标位置
+  process.stdout.write('\x1b7');  // 保存光标位置
 
-  // 清除从当前行到屏幕底部的内容（不移动光标）
+  if (panelOffset > 0) {
+    process.stdout.write(`\x1b[${panelOffset}B\r`);
+  }
+
+  // 清除从面板起点到屏幕底部的内容（不移动输入光标）
   process.stdout.write('\x1b[J');  // 清除从光标到屏幕底部
 
-  // 现在写入面板内容（光标在原位置）
-  for (const line of lines) {
-    process.stdout.write('\n');     // 换行（更安全）
-    process.stdout.write('\r' + line);
+  // 现在写入面板内容
+  for (let index = 0; index < lines.length; index++) {
+    if (index > 0 || panelOffset === 0) {
+      process.stdout.write('\n');
+    }
+    process.stdout.write('\r' + lines[index]);
   }
 
   // 恢复光标到保存的位置
-  process.stdout.write('\x1b[u');
+  process.stdout.write('\x1b8');
 }
 
-function clearPanel(): void {
+function clearPanel(options: { release?: boolean } = {}): void {
   // 使用保存的行数清除
-  const height = lastPanelLines.length || panelHeight;
+  const height = Math.max(reservedPanelHeight, lastPanelLines.length, panelHeight);
   if (height > 0) {
     // 保存当前光标位置
-    process.stdout.write('\x1b[s');
+    process.stdout.write('\x1b7');
+
+    const panelOffset = getPanelOffsetRows();
+    if (panelOffset > 0) {
+      process.stdout.write(`\x1b[${panelOffset}B\r`);
+    }
 
     // 清除从光标到屏幕底部
     process.stdout.write('\x1b[J');
 
     // 恢复光标位置
-    process.stdout.write('\x1b[u');
+    process.stdout.write('\x1b8');
 
     lastPanelLines = [];
     panelHeight = 0;
+    if (options.release) {
+      reservedPanelHeight = 0;
+    }
   }
+}
+
+function reservePanelSpace(requiredHeight: number): void {
+  if (requiredHeight <= reservedPanelHeight) return;
+
+  const extraLines = requiredHeight - reservedPanelHeight;
+  const panelOffset = getPanelOffsetRows();
+
+  if (panelOffset > 0) {
+    process.stdout.write(`\x1b[${panelOffset}B\r`);
+  }
+  process.stdout.write('\n'.repeat(extraLines));
+  process.stdout.write(`\x1b[${extraLines + panelOffset}A`);
+  if (lastInputCursorColumn > 0) {
+    process.stdout.write(`\x1b[${lastInputCursorColumn}G`);
+  }
+  reservedPanelHeight = requiredHeight;
 }
 
 /** 上次渲染的总长度（prompt + input 的可见宽度） */
 let lastTotalRendered = 0;
+let lastInputBlockHeight = 0;
+let lastInputCursorRow = 0;
+let lastInputCursorColumn = 0;
 /** 是否是首次渲染（首次不清除） */
 let isFirstRender = true;
-
-/**
- * 计算字符串在终端中的可见宽度（字符数，不含 ANSI 码）
- * CJK 字符占 2 格，普通字符占 1 格
- */
-function visualWidth(str: string): number {
-  let width = 0;
-  for (const ch of str) {
-    const cp = ch.codePointAt(0) || 0;
-    // CJK / CJK Unified Ideographs / Hangul / Full-width 占 2 格
-    width += (cp >= 0x1100 && (
-      cp <= 0x115F || cp === 0x2329 || cp === 0x232A ||
-      (cp >= 0x2E80 && cp <= 0xA4CF && cp !== 0x303F) ||
-      (cp >= 0xAC00 && cp <= 0xD7A3) ||
-      (cp >= 0xF900 && cp <= 0xFAFF) ||
-      (cp >= 0xFE10 && cp <= 0xFE19) ||
-      (cp >= 0xFE30 && cp <= 0xFE6F) ||
-      (cp >= 0xFF01 && cp <= 0xFF60) ||
-      (cp >= 0xFFE0 && cp <= 0xFFE6) ||
-      (cp >= 0x20000 && cp <= 0x2FFFD) ||
-      (cp >= 0x30000 && cp <= 0x3FFFD)
-    )) ? 2 : 1;
-  }
-  return width;
-}
 
 /**
  * 重绘输入行（带 prompt）
  * v0.1.15: 修复换行残留 — 使用可见宽度计算（CJK 占 2 格）
  */
 export function redrawInputWithPrompt(input: string, modeIndicator: string = ''): void {
+  if (state.visible && (lastPanelLines.length > 0 || reservedPanelHeight > 0)) {
+    clearPanel({ release: false });
+  }
+
+  if (inputPromptRenderer === 'v2') {
+    redrawV2InputFrame(input, modeIndicator);
+    return;
+  }
+
   const prompt = ACCENT('❯ ') + (modeIndicator ? DIM(modeIndicator) : '');
   const promptWidth = visualWidth(stripAnsi(prompt));
 
@@ -348,7 +369,73 @@ export function redrawInputWithPrompt(input: string, modeIndicator: string = '')
 
   // 记录可见总宽度（prompt + input）
   lastTotalRendered = promptWidth + visualWidth(input);
+  lastInputCursorColumn = (lastTotalRendered % terminalWidth) + 1;
   isFirstRender = false;
+}
+
+function redrawV2InputFrame(input: string, modeIndicator: string): void {
+  if (!isFirstRender) {
+    clearPreviousV2InputFrame();
+  }
+
+  const context = inputRenderContextProvider();
+  const frameInput = [
+    ...(context.prefixLines || []),
+    input,
+  ].join('\n');
+  const frame = renderV2InputFrame({
+    input: frameInput,
+    modeIndicator,
+    width: terminalWidth,
+  });
+
+  process.stdout.write(frame.output);
+
+  const rowsToCursor = frame.height - 1 - frame.cursorRow;
+  if (rowsToCursor > 0) {
+    process.stdout.write(`\x1b[${rowsToCursor}A`);
+  }
+  process.stdout.write(`\r\x1b[${frame.cursorColumn}G`);
+
+  lastInputBlockHeight = frame.height;
+  lastInputCursorRow = frame.cursorRow;
+  lastInputCursorColumn = frame.cursorColumn;
+  lastTotalRendered = visualWidth(input);
+  isFirstRender = false;
+}
+
+function clearPreviousV2InputFrame(): void {
+  if (lastInputBlockHeight <= 0) return;
+
+  if (lastInputCursorRow > 0) {
+    process.stdout.write(`\x1b[${lastInputCursorRow}A`);
+  }
+  process.stdout.write('\r');
+
+  for (let i = 0; i < lastInputBlockHeight; i++) {
+    process.stdout.write('\x1b[2K');
+    if (i < lastInputBlockHeight - 1) {
+      process.stdout.write('\x1b[1B');
+    }
+  }
+
+  if (lastInputBlockHeight > 1) {
+    process.stdout.write(`\x1b[${lastInputBlockHeight - 1}A`);
+  }
+  process.stdout.write('\r');
+}
+
+export function clearRenderedInput(): void {
+  if (inputPromptRenderer === 'v2') {
+    clearPreviousV2InputFrame();
+  } else {
+    process.stdout.write('\x1b[2K\r');
+  }
+  resetRenderLength();
+}
+
+function getPanelOffsetRows(): number {
+  return inputPromptRenderer === 'v2' ? 2 : 0;
 }
 
 /**
@@ -356,13 +443,8 @@ export function redrawInputWithPrompt(input: string, modeIndicator: string = '')
  */
 export function resetRenderLength(): void {
   lastTotalRendered = 0;
+  lastInputBlockHeight = 0;
+  lastInputCursorRow = 0;
+  lastInputCursorColumn = 0;
   isFirstRender = true;
-}
-
-/**
- * 去除 ANSI 颜色码，计算实际可见长度
- */
-function stripAnsi(str: string): string {
-  // 简单的 ANSI 去除
-  return str.replace(/\x1b\[[0-9;]*m/g, '');
 }

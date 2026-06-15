@@ -30,6 +30,20 @@ export interface ProjectConfig {
 /** How to handle tool permission checks that request interactive confirmation. */
 export type ToolConfirmationPolicy = 'ask' | 'allow' | 'deny';
 
+/** Terminal UI renderer selection. */
+export type UIRenderer = 'legacy' | 'v2';
+
+/** How UI permission prompts should be handled. */
+export type UIConfirmationMode = 'config' | 'interactive';
+
+/** Terminal UI configuration. */
+export interface UIConfig {
+  /** Renderer implementation. Use v2 for the new state-driven terminal UI. */
+  renderer?: UIRenderer;
+  /** Whether confirmations are handled by config fallback or interactive UI. */
+  confirmations?: UIConfirmationMode;
+}
+
 /** Remote MCP service used by the built-in web_search tool. */
 export interface WebSearchMcpConfig {
   /** Provider profile id. Use "auto" or omit to infer from apiBaseUrl/model. */
@@ -69,6 +83,8 @@ export interface GlobalConfig {
   toolConfirmation?: ToolConfirmationPolicy;
   /** WebSearch MCP configuration. */
   webSearch?: WebSearchMcpConfig;
+  /** Terminal UI configuration. */
+  ui?: UIConfig;
 
   // ---- 内部统计 (自动生成，不由用户配置) ----
   totalSessions: number;
@@ -90,6 +106,10 @@ export interface GlobalConfig {
 const DEFAULT_CONFIG: GlobalConfig = {
   defaultModel: 'gpt-4o',
   toolConfirmation: 'allow',
+  ui: {
+    renderer: 'legacy',
+    confirmations: 'config',
+  },
   totalSessions: 0,
   totalTokens: 0,
   totalCost: 0,

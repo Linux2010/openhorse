@@ -199,6 +199,7 @@ describe('User Input Echo', () => {
     expect(output).toContain('\x1b[38;2;226;232;240m');
     expect(stripAnsi(output)).toHaveLength(20);
     expect(stripAnsi(output)).toContain('hello');
+    expect(stripAnsi(output)).not.toContain('❯');
   });
 
   test('fills every submitted line to the terminal width', () => {

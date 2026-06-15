@@ -6,11 +6,18 @@
 
 import chalk from 'chalk';
 import { matchFiles, type FileMatch } from '../services/file-glob';
+import { renderV2Prompt } from '../ui-v2';
 
 const ACCENT = chalk.hex('#00D4AA');
 const DIM = chalk.dim;
 const SELECTED = chalk.bgHex('#1E293B').hex('#E2E8F0');
-const BRAND = chalk.hex('#FF6B35');
+
+type FilePromptRenderer = 'legacy' | 'v2';
+let filePromptRenderer: FilePromptRenderer = 'legacy';
+
+export function setFileCompletionPromptRenderer(renderer: FilePromptRenderer): void {
+  filePromptRenderer = renderer;
+}
 
 // ============================================================================
 // 状态管理
@@ -228,6 +235,6 @@ function clearPanel(): void {
  */
 export function redrawInputWithFile(input: string): void {
   process.stdout.write('\r\x1b[2K');
-  const prompt = ACCENT('❯ ');
+  const prompt = filePromptRenderer === 'v2' ? renderV2Prompt() : ACCENT('❯ ');
   process.stdout.write(prompt + input);
 }

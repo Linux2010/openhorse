@@ -63,6 +63,13 @@ export function getMultilineInput(): string {
 }
 
 /**
+ * 获取已确认的多行输入行
+ */
+export function getMultilineLines(): string[] {
+  return [...state.lines];
+}
+
+/**
  * 重置多行状态
  */
 export function resetMultiline(): void {

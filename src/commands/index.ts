@@ -13,6 +13,7 @@ import { isConfigured } from '../services/config';
 import { createSpinner, toolLine } from '../ui/box';
 import { createStreamRenderer, type StreamMarkdownRenderer } from '../ui/stream-markdown';
 import { showProgress, hideProgress, showToolProgress } from '../ui/progress';
+import { renderSessionPicker } from '../ui-v2';
 import { query, getSystemPrompt, resetToolState, type QueryEvent, type PromptContext } from '../framework';
 import { TOOLS, executeTool, getToolNames } from '../tools';
 import { mcpManager } from '../tools/mcp';
@@ -757,12 +758,14 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
     if (responseStarted) {
       console.log();
     }
-    const stats = [
-      finalUsage ? `tokens: ${finalUsage.promptTokens}+${finalUsage.completionTokens}` : '',
-      finalModel ? finalModel : '',
-    ].filter(Boolean).join('  ');
-    if (stats) {
-      console.log(DIM(stats));
+    if (ctx.config.ui?.renderer !== 'v2') {
+      const stats = [
+        finalUsage ? `tokens: ${finalUsage.promptTokens}+${finalUsage.completionTokens}` : '',
+        finalModel ? finalModel : '',
+      ].filter(Boolean).join('  ');
+      if (stats) {
+        console.log(DIM(stats));
+      }
     }
   } catch (error: any) {
     spinner.stop();
@@ -1113,6 +1116,26 @@ function printSessionConflict(ref: string, matches: SessionMeta[]): void {
   console.log();
 }
 
+function printSessionPicker(sessions: SessionMeta[], options: { title: string; showProject?: boolean; moreCount?: number }): void {
+  const lines = renderSessionPicker({
+    title: options.title,
+    sessions,
+    width: process.stdout.columns || 80,
+    showProject: options.showProject,
+    moreCount: options.moreCount,
+    footer: '  Use /resume <number|session-id|name>  /resume --last',
+    theme: {
+      accent: ACCENT,
+      dim: DIM,
+      selected: text => chalk.bgHex('#1E293B').hex('#E2E8F0')(text),
+    },
+  });
+
+  for (const line of lines) {
+    console.log(line);
+  }
+}
+
 function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
   const scope = parseSessionScopeArgs(args, ctx.cwd);
   console.log();
@@ -1158,13 +1181,25 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
       return restoreSession(ctx, lastSession, true);
     }
 
+    const visibleSessions = scopedSessions.slice(0, 10);
+    const picker = {
+      title: scope.allProjects ? 'Pick a Session (all projects)' : 'Pick a Session',
+      showProject: scope.allProjects,
+      moreCount: Math.max(0, scopedSessions.length - visibleSessions.length),
+      sessions: visibleSessions,
+      allProjects: scope.allProjects,
+    };
+
+    if (ctx.config.ui?.renderer === 'v2') {
+      return { success: true, sessionPicker: picker };
+    }
+
     console.log();
-    console.log(HEADER(scope.allProjects ? 'Pick a Session (all projects)' : 'Pick a Session'));
-    console.log(DIM('─'.repeat(40)));
-    console.log();
-    printSessionRows(scopedSessions.slice(0, 10), { indexed: true, showProject: scope.allProjects });
-    console.log(DIM('Use /resume <number> to restore, for example /resume 1'));
-    console.log(DIM('Use /resume --last to skip the picker next time'));
+    printSessionPicker(visibleSessions, {
+      title: picker.title,
+      showProject: picker.showProject,
+      moreCount: picker.moreCount,
+    });
     console.log();
     return { success: true };
   }

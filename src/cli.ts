@@ -13,7 +13,7 @@ import { init, OpenHorseRuntime } from './init';
 import { LLMService } from './services/llm';
 import { TOOLS } from './tools';
 import { mcpManager } from './tools/mcp';
-import { loadConfig, isConfigured } from './services/config';
+import { loadConfig, isConfigured, type UIRenderer } from './services/config';
 import { ensureConfigDir } from './services/config-dir';
 import { recordFirstStartTime, incrementSessionCount, addToInputHistory, getInputHistory } from './services/global-config';
 import { calculateCtxPercent, discoverModelContexts } from './services/model-context';
@@ -23,7 +23,7 @@ import { getSkillsRegistry } from './skills';
 import { Store, subscribeToolState, resetToolState } from './framework';
 import { findCommand, executeChat, getCommandNames } from './commands';
 import { parseInput, buildCommandSuggestions } from './commands/parser';
-import type { CommandContext } from './commands/types';
+import type { CommandContext, CommandResult } from './commands/types';
 import { getModeDisplayText } from './commands/types';
 import { renderHeaderBox, createSpinner, toolLine } from './ui/box';
 import {
@@ -31,18 +31,23 @@ import {
   hideCommandPanel,
   navigatePanel,
   selectCommand,
+  completeSelectedCommand,
   updatePanelFilter,
   isPanelVisible,
   getPendingCommand,
   clearPendingCommand,
   redrawInputWithPrompt,
+  clearRenderedInput,
   resetRenderLength,
+  setInputPromptRenderer,
+  setInputRenderContextProvider,
 } from './ui/command-panel';
 import {
   shouldEnterMultiline,
   enterMultiline,
   addMultilineLine,
   getMultilineInput,
+  getMultilineLines,
   resetMultiline,
   isMultilineActive,
   renderContinuationPrompt,
@@ -58,9 +63,11 @@ import {
   getBaseInput,
   getFileQuery,
   redrawInputWithFile,
+  setFileCompletionPromptRenderer,
 } from './ui/file-completion';
 import { renderStatusBar, type StatusBarStats } from './ui/status-bar';
 import { renderUserInputEcho } from './ui/user-input';
+import { renderSessionPicker, renderV2FooterHint, renderV2ShellHeader, renderV2Shortcuts, renderV2StatusLine } from './ui-v2';
 
 // Get version from package.json
 const VERSION = (() => {
@@ -97,10 +104,12 @@ function showCliHelp(): void {
   console.log('  openhorse              Start interactive REPL');
   console.log('  openhorse --help       Show this help message');
   console.log('  openhorse --version    Show version');
+  console.log('  openhorse --ui v2      Enable UI v2 preview components');
   console.log();
   console.log(ACCENT('Options:'));
   console.log('  -h, --help     Show help');
   console.log('  -v, --version  Show version');
+  console.log('  --ui <mode>    UI renderer: legacy | v2');
   console.log();
   console.log(ACCENT('Interactive Commands:'));
   console.log('  /help          Show available slash commands');
@@ -111,6 +120,26 @@ function showCliHelp(): void {
   console.log();
   console.log(DIM('Type /help in REPL for full command list.'));
   console.log();
+}
+
+function parseCliUIRenderer(args: string[]): UIRenderer | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    const value = arg === '--ui'
+      ? args[i + 1]
+      : arg.startsWith('--ui=')
+        ? arg.slice('--ui='.length)
+        : undefined;
+
+    if (value === undefined) continue;
+    if (value === 'legacy' || value === 'v2') return value;
+
+    console.error(ERROR(`Invalid --ui value: ${value}`));
+    console.error(DIM('Expected one of: legacy, v2'));
+    process.exit(1);
+  }
+
+  return undefined;
 }
 
 // ============================================================================
@@ -129,10 +158,39 @@ let historyIndex: number = -1;
 let historyMode: 'none' | 'navigate' | 'search' = 'none';
 let searchQuery: string = '';
 
+interface ResumePickerState {
+  visible: boolean;
+  sessions: SessionMeta[];
+  selectedIndex: number;
+  title: string;
+  showProject?: boolean;
+  moreCount?: number;
+  allProjects?: boolean;
+}
+
+let resumePickerState: ResumePickerState | null = null;
+let resumePickerLines: string[] = [];
+let resumePickerReservedHeight = 0;
+
+function ensureCurrentSession(): SessionMeta {
+  if (!currentSession) {
+    currentSession = createSession(process.cwd(), store.getSnapshot().currentModel || store.getSnapshot().config.model);
+    incrementSessionCount();
+  }
+  return currentSession;
+}
+
+function setCurrentSession(session: SessionMeta): void {
+  currentSession = session;
+}
+
+function getCurrentSession(): SessionMeta | null {
+  return currentSession;
+}
+
 function echoSubmittedInput(input: string): void {
-  process.stdout.write('\x1b[2K\r');
+  clearRenderedInput();
   console.log(renderUserInputEcho(input));
-  resetRenderLength();
 }
 
 function submitInput(input: string): void {
@@ -162,6 +220,14 @@ interface KeyInfo {
 }
 
 function parseKey(char: string | undefined, key: KeyInfo | undefined): KeyInfo {
+  const sequence = key?.sequence || char || '';
+  if (sequence === '\x1b[13;2u') {
+    return { name: 'enter', ctrl: false, shift: true, meta: false, sequence };
+  }
+  if (sequence === '\x1b[13;3u') {
+    return { name: 'enter', ctrl: false, shift: false, meta: true, sequence };
+  }
+
   if (!key) {
     // 手动解析
     if (char === '\r' || char === '\n') return { name: 'enter', ctrl: false, shift: false, meta: false, sequence: char || '' };
@@ -176,6 +242,10 @@ function parseKey(char: string | undefined, key: KeyInfo | undefined): KeyInfo {
     key.name = 'enter';
   }
 
+  if (key.name === 'enter' && (key.shift || key.meta)) {
+    return key;
+  }
+
   // 如果 key.name 为空，使用 char 作为 name
   if (!key.name && char) {
     key.name = char;
@@ -187,6 +257,11 @@ function parseKey(char: string | undefined, key: KeyInfo | undefined): KeyInfo {
 function handleKeypress(char: string | undefined, key: KeyInfo | undefined): void {
   const k = parseKey(char, key);
 
+  if (k.ctrl && k.name === 'l') {
+    clearTerminalView();
+    return;
+  }
+
   // 命令面板模式
   if (isPanelVisible()) {
     handlePanelKeypress(k, char);
@@ -196,6 +271,12 @@ function handleKeypress(char: string | undefined, key: KeyInfo | undefined): voi
   // 文件补全模式
   if (isFileCompletionVisible()) {
     handleFileCompletionKeypress(k, char);
+    return;
+  }
+
+  // Resume session picker mode
+  if (resumePickerState?.visible) {
+    handleResumePickerKeypress(k, char);
     return;
   }
 
@@ -216,6 +297,13 @@ function handlePanelKeypress(k: KeyInfo, char: string | undefined): void {
       break;
     case 'down':
       navigatePanel('down');
+      break;
+    case 'tab':
+      const completedCmd = completeSelectedCommand();
+      if (completedCmd) {
+        currentInput = completedCmd;
+        redrawInputWithPrompt(currentInput);
+      }
       break;
     case 'enter':
       const cmd = selectCommand();
@@ -364,16 +452,159 @@ function handleFileCompletionKeypress(k: KeyInfo, char: string | undefined): voi
   }
 }
 
+function handleResumePickerKeypress(k: KeyInfo, char: string | undefined): void {
+  if (!resumePickerState?.visible) return;
+
+  switch (k.name) {
+    case 'up':
+      resumePickerState.selectedIndex = Math.max(0, resumePickerState.selectedIndex - 1);
+      renderResumePicker();
+      break;
+    case 'down':
+      resumePickerState.selectedIndex = Math.min(resumePickerState.sessions.length - 1, resumePickerState.selectedIndex + 1);
+      renderResumePicker();
+      break;
+    case 'enter':
+      restoreSelectedResumeSession();
+      break;
+    case 'escape':
+      hideResumePicker();
+      redrawInputWithPrompt(currentInput);
+      break;
+    default:
+      if (char && /^[1-9]$/.test(char)) {
+        const index = Number(char) - 1;
+        if (index >= 0 && index < resumePickerState.sessions.length) {
+          resumePickerState.selectedIndex = index;
+          restoreSelectedResumeSession();
+        }
+      }
+  }
+}
+
+function showResumePicker(options: NonNullable<CommandResult['sessionPicker']>): void {
+  resumePickerState = {
+    visible: true,
+    sessions: options.sessions,
+    selectedIndex: 0,
+    title: options.title,
+    showProject: options.showProject,
+    moreCount: options.moreCount,
+    allProjects: options.allProjects,
+  };
+  renderResumePicker();
+}
+
+function renderResumePicker(): void {
+  if (!resumePickerState?.visible) return;
+
+  clearResumePicker({ release: false });
+
+  const lines = renderSessionPicker({
+    title: resumePickerState.title,
+    sessions: resumePickerState.sessions,
+    selectedIndex: resumePickerState.selectedIndex,
+    width: process.stdout.columns || 80,
+    showProject: resumePickerState.showProject,
+    moreCount: resumePickerState.moreCount,
+    footer: '  ↑↓ Select  Enter Resume  1-9 Quick  Esc Cancel',
+    theme: {
+      accent: ACCENT,
+      dim: DIM,
+      selected: text => chalk.bgHex('#1E293B').hex('#E2E8F0')(text),
+    },
+  });
+
+  const offset = getResumePickerOffsetRows();
+  reserveResumePickerSpace(lines.length + offset);
+  resumePickerLines = lines;
+
+  process.stdout.write('\x1b7');
+  if (offset > 0) {
+    process.stdout.write(`\x1b[${offset}B\r`);
+  }
+  process.stdout.write('\x1b[J');
+  for (let index = 0; index < lines.length; index++) {
+    if (index > 0 || offset === 0) {
+      process.stdout.write('\n');
+    }
+    process.stdout.write('\r' + lines[index]);
+  }
+  process.stdout.write('\x1b8');
+}
+
+function hideResumePicker(): void {
+  clearResumePicker({ release: true });
+  resumePickerState = null;
+}
+
+function clearResumePicker(options: { release?: boolean } = {}): void {
+  const height = Math.max(resumePickerReservedHeight, resumePickerLines.length);
+  if (height <= 0) return;
+
+  process.stdout.write('\x1b7');
+  const offset = getResumePickerOffsetRows();
+  if (offset > 0) {
+    process.stdout.write(`\x1b[${offset}B\r`);
+  }
+  process.stdout.write('\x1b[J');
+  process.stdout.write('\x1b8');
+
+  resumePickerLines = [];
+  if (options.release) {
+    resumePickerReservedHeight = 0;
+  }
+}
+
+function reserveResumePickerSpace(requiredHeight: number): void {
+  if (requiredHeight <= resumePickerReservedHeight) return;
+
+  const extraLines = requiredHeight - resumePickerReservedHeight;
+  process.stdout.write('\n'.repeat(extraLines));
+  process.stdout.write(`\x1b[${extraLines}A`);
+  resumePickerReservedHeight = requiredHeight;
+}
+
+function getResumePickerOffsetRows(): number {
+  return isV2UI() ? 2 : 1;
+}
+
+function restoreSelectedResumeSession(): void {
+  if (!resumePickerState?.visible) return;
+
+  const session = resumePickerState.sessions[resumePickerState.selectedIndex];
+  const suffix = resumePickerState.allProjects ? ' --all' : '';
+  hideResumePicker();
+  currentInput = '';
+  clearRenderedInput();
+
+  handleInput(`/resume ${session.id}${suffix}`).catch(err => {
+    console.log(ERROR(`Resume error: ${err.message || String(err)}`));
+    redrawInputWithPrompt(currentInput);
+  });
+}
+
 function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
   switch (k.name) {
     case 'enter':
+      if (k.shift || k.meta) {
+        if (isV2UI()) {
+          insertInputNewline();
+        }
+        return;
+      }
+
       // 多行模式：添加行
       if (isMultilineActive()) {
         if (shouldEnterMultiline(currentInput)) {
-          addMultilineLine(currentInput.slice(0, -1));
+          addMultilineLine(currentInput);
           currentInput = '';
-          process.stdout.write('\r\x1b[2K');
-          process.stdout.write(renderContinuationPrompt());
+          if (isV2UI()) {
+            redrawInputWithPrompt(currentInput);
+          } else {
+            process.stdout.write('\r\x1b[2K');
+            process.stdout.write(renderContinuationPrompt());
+          }
         } else {
           // 结束多行，发送完整输入
           addMultilineLine(currentInput);
@@ -391,8 +622,12 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
       if (shouldEnterMultiline(currentInput)) {
         enterMultiline(currentInput);
         currentInput = '';
-        process.stdout.write('\r\x1b[2K');
-        process.stdout.write(renderContinuationPrompt());
+        if (isV2UI()) {
+          redrawInputWithPrompt(currentInput);
+        } else {
+          process.stdout.write('\r\x1b[2K');
+          process.stdout.write(renderContinuationPrompt());
+        }
         return;
       }
 
@@ -455,7 +690,6 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
       // 避免在 URL（http://）、路径（src/）、正则等场景误触发
       if (currentInput === '') {
         currentInput = '/';
-        resetRenderLength();
         redrawInputWithPrompt(currentInput);
         showCommandPanel('');
       } else {
@@ -471,6 +705,14 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
       showFileCompletion('', baseInput);
       redrawInputWithPrompt(currentInput);
       break;
+    case '?':
+      if (currentInput === '' && store.getSnapshot().config.ui?.renderer === 'v2') {
+        showV2Shortcuts();
+      } else {
+        currentInput += '?';
+        redrawInputWithPrompt(currentInput);
+      }
+      break;
     default:
       // 普通字符
       if (char && char.length === 1 && !k.ctrl && !k.meta) {
@@ -478,6 +720,11 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
         redrawInputWithPrompt(currentInput);
       }
   }
+}
+
+function insertInputNewline(): void {
+  currentInput += '\n';
+  redrawInputWithPrompt(currentInput);
 }
 
 function updateHistorySearch(): void {
@@ -495,8 +742,34 @@ function updateHistorySearch(): void {
 }
 
 function showHistorySearchPrompt(): void {
-  process.stdout.write('\r\x1b[2K');
-  process.stdout.write(ACCENT('❯ ') + DIM('[Search: ]'));
+  clearRenderedInput();
+  redrawInputWithPrompt('', '[Search: ]');
+}
+
+function isV2UI(): boolean {
+  return store.getSnapshot().config.ui?.renderer === 'v2';
+}
+
+function showV2Shortcuts(): void {
+  console.log();
+  console.log(renderV2Shortcuts(process.stdout.columns || 80));
+  redrawInputWithPrompt(currentInput);
+}
+
+function clearTerminalView(): void {
+  hideCommandPanel();
+  hideFileCompletion();
+  resetRenderLength();
+  process.stdout.write('\x1Bc');
+  showBanner();
+  if (isV2UI()) {
+    console.log(DIM('  View cleared. Conversation context is preserved.'));
+    console.log(renderV2FooterHint(process.stdout.columns || 80));
+  } else {
+    console.log(DIM('  View cleared. Conversation context is preserved.'));
+  }
+  console.log();
+  redrawInputWithPrompt(currentInput);
 }
 
 async function handleCtrlC(): Promise<void> {
@@ -530,13 +803,27 @@ async function handleCtrlC(): Promise<void> {
 function showBanner() {
   const config = store.getSnapshot().config;
   const baseUrl = config.apiBaseUrl || '';
+  const provider = baseUrl.includes('anthropic') ? 'Anthropic'
+    : baseUrl.includes('openai') ? 'OpenAI'
+    : baseUrl.includes('dashscope') ? 'Alibaba Cloud'
+    : 'Custom';
+
+  if (config.ui?.renderer === 'v2') {
+    console.log();
+    console.log(renderV2ShellHeader({
+      provider,
+      model: config.model,
+      projectPath: process.cwd(),
+      status: llm ? 'ready' : 'loading',
+      statusText: llm ? 'ready' : 'Set OPENHORSE_API_KEY',
+      version: VERSION,
+    }));
+    return;
+  }
 
   console.log();
   console.log(renderHeaderBox({
-    provider: baseUrl.includes('anthropic') ? 'Anthropic'
-      : baseUrl.includes('openai') ? 'OpenAI'
-      : baseUrl.includes('dashscope') ? 'Alibaba Cloud'
-      : 'Custom',
+    provider,
     model: config.model,
     endpoint: baseUrl,
     status: llm ? 'ready' : 'loading',
@@ -570,7 +857,12 @@ async function handleInput(input: string) {
     llm,
     runtime,
     sessionId: currentSession?.id,
+    ensureSession: ensureCurrentSession,
+    setSession: setCurrentSession,
+    getSession: getCurrentSession,
   };
+
+  let pendingSessionPicker: CommandResult['sessionPicker'] | undefined;
 
   try {
     const parsed = parseInput(text);
@@ -579,6 +871,7 @@ async function handleInput(input: string) {
       const cmd = findCommand(parsed.name);
       if (cmd) {
         const result = await cmd.execute(ctx, parsed.args);
+        pendingSessionPicker = result.sessionPicker;
         // executeChat 会被 cmd.execute 调用，如果需要
         if (!result.continueAsChat) {
           // 命令完成后的输出已经在 cmd.execute 中处理
@@ -605,6 +898,9 @@ async function handleInput(input: string) {
 
   // 重新显示 prompt
   redrawInputWithPrompt(currentInput);
+  if (pendingSessionPicker) {
+    showResumePicker(pendingSessionPicker);
+  }
 }
 
 /**
@@ -631,7 +927,15 @@ function updateStatusBar(): void {
   };
 
   // 在 prompt 上一行显示状态栏
-  console.log(renderStatusBar(stats));
+  if (snapshot.config.ui?.renderer === 'v2') {
+    console.log(renderV2StatusLine({
+      ...stats,
+      sessionId: currentSession?.id,
+      modeText: getModeDisplayText(snapshot.permissionMode) || undefined,
+    }));
+  } else {
+    console.log(renderStatusBar(stats));
+  }
 }
 
 // 接口变量（用于兼容性，主要逻辑通过 keypress 处理）
@@ -657,7 +961,15 @@ async function main(): Promise<void> {
   recordFirstStartTime();
 
   const projectPath = process.cwd();
-  const cliConfig = loadConfig();
+  const uiRenderer = parseCliUIRenderer(args);
+  const cliConfig = loadConfig(uiRenderer ? { ui: { renderer: uiRenderer } } : {});
+  setInputPromptRenderer(cliConfig.ui?.renderer === 'v2' ? 'v2' : 'legacy');
+  setInputRenderContextProvider(() => (
+    cliConfig.ui?.renderer === 'v2' && isMultilineActive()
+      ? { prefixLines: getMultilineLines() }
+      : {}
+  ));
+  setFileCompletionPromptRenderer(cliConfig.ui?.renderer === 'v2' ? 'v2' : 'legacy');
 
   // Load project memory
   const memories = loadAllMemories(projectPath);
@@ -691,9 +1003,6 @@ async function main(): Promise<void> {
       currentPlan: s.currentPlan,
     });
   });
-
-  currentSession = createSession(projectPath, cliConfig.model);
-  incrementSessionCount();
 
   if (isConfigured(cliConfig)) {
     try {
@@ -739,6 +1048,10 @@ async function main(): Promise<void> {
   // 提示
   console.log(SUCCESS('✔ System initialized'));
   console.log(DIM('  Type /help for commands, /exit to quit'));
+  if (cliConfig.ui?.renderer === 'v2') {
+    console.log(DIM('  UI v2 preview enabled: command palette and session picker'));
+    console.log(renderV2FooterHint(process.stdout.columns || 80));
+  }
   if (!isConfigured(cliConfig)) {
     console.log(WARN('  ⚠ LLM not configured — set OPENHORSE_API_KEY'));
   }
