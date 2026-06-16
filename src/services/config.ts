@@ -72,7 +72,7 @@ const INTERNAL_DEFAULTS = {
   logLevel: 'info',
   toolConfirmation: 'allow' as ToolConfirmationPolicy,
   ui: {
-    renderer: 'legacy' as UIRenderer,
+    renderer: 'v2' as UIRenderer,
     confirmations: 'config' as UIConfirmationMode,
   },
 } as const;

@@ -108,7 +108,7 @@ function showCliHelp(): void {
   console.log('  openhorse              Start interactive REPL');
   console.log('  openhorse --help       Show this help message');
   console.log('  openhorse --version    Show version');
-  console.log('  openhorse --ui v2      Enable UI v2 preview components');
+  console.log('  openhorse --ui legacy  Use the legacy terminal renderer');
   console.log();
   console.log(ACCENT('Options:'));
   console.log('  -h, --help     Show help');
@@ -1213,7 +1213,7 @@ async function main(): Promise<void> {
   console.log(SUCCESS('✔ System initialized'));
   console.log(DIM('  Type /help for commands, /exit to quit'));
   if (cliConfig.ui?.renderer === 'v2') {
-    console.log(DIM('  UI v2 preview enabled: command palette and session picker'));
+    console.log(DIM('  UI v2 enabled: command palette and session picker'));
     console.log(renderV2FooterHint(process.stdout.columns || 80));
   }
   if (!isConfigured(cliConfig)) {

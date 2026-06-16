@@ -107,7 +107,7 @@ const DEFAULT_CONFIG: GlobalConfig = {
   defaultModel: 'gpt-4o',
   toolConfirmation: 'allow',
   ui: {
-    renderer: 'legacy',
+    renderer: 'v2',
     confirmations: 'config',
   },
   totalSessions: 0,

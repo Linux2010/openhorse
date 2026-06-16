@@ -19,7 +19,7 @@
 | `defaultModel` | string | `OPENHORSE_MODEL` | `gpt-4o` | 默认模型 |
 | `fallbackModel` | string | `OPENHORSE_FALLBACK_MODEL` | `(无)` | 备用模型（主模型过载时自动切换） |
 | `toolConfirmation` | `allow` \| `deny` \| `ask` | `OPENHORSE_TOOL_CONFIRMATION` | `allow` | 工具需要确认时的兜底策略；当前 CLI 无交互确认 UI，默认自动允许 `ask` 级工具 |
-| `ui.renderer` | `legacy` \| `v2` | `OPENHORSE_UI` / `OPENHORSE_UI_RENDERER` | `legacy` | 终端 UI renderer。`v2` 用于新的状态驱动 UI 灰度 |
+| `ui.renderer` | `legacy` \| `v2` | `OPENHORSE_UI` / `OPENHORSE_UI_RENDERER` | `v2` | 终端 UI renderer。`v2` 是默认新 UI，`legacy` 用于回退 |
 | `ui.confirmations` | `config` \| `interactive` | `OPENHORSE_UI_CONFIRMATIONS` | `config` | 工具确认由配置兜底，还是交给交互式 UI |
 | `webSearch.provider` | string | `OPENHORSE_WEBSEARCH_PROVIDER` | `auto` | WebSearch 模式或 provider。`auto` 先 MCP 后 adapter；可设 `native`、`bailian`、`zhipu`、`tavily-mcp`、`tavily`、`brave`、`custom`、`ddg` |
 | `webSearch.apiKey` | string | `OPENHORSE_WEBSEARCH_API_KEY` / provider env | 主 `apiKey` | WebSearch MCP 或 adapter API Key；未设置时 MCP 复用 OpenHorse 主 API Key |
@@ -62,7 +62,7 @@
   "fallbackModel": "qwen-plus",
   "toolConfirmation": "allow",
   "ui": {
-    "renderer": "legacy",
+    "renderer": "v2",
     "confirmations": "config"
   }
 }
@@ -100,14 +100,14 @@ Tools that return `deny` from safety checks are still blocked regardless of this
 
 ## UI
 
-v0.1.20 开始引入 `ui-v2`，先把 shell header、prompt、status line、command suggestion / picker / command palette 抽成状态驱动模块，再逐步迁移完整 PromptInput、permission dialog 和 transcript viewer。
+v0.1.20 开始引入 `ui-v2`，先把 shell header、prompt、status line、command suggestion / picker / command palette 抽成状态驱动模块，再逐步迁移完整 PromptInput、permission dialog 和 transcript viewer。v0.1.21 起，`v2` 是默认 renderer。
 
-- `ui.renderer: "legacy"`：默认模式，继续使用现有 CLI，但部分组件会复用 `ui-v2` 的纯函数和 renderer。
-- `ui.renderer: "v2"`：启用 v2 preview，启动 header、prompt、status line、command palette 和 session picker 使用 v2 风格。
+- `ui.renderer: "v2"`：默认模式，启动 header、prompt、status line、command palette 和 session picker 使用 v2 风格。
+- `ui.renderer: "legacy"`：回退到旧 CLI renderer。
 - `ui.confirmations: "config"`：工具确认沿用 `toolConfirmation` 兜底。
 - `ui.confirmations: "interactive"`：预留给后续 permission dialog。
 
-v2 preview 参考 Codex CLI 的 keyboard-first 交互，当前支持：
+v2 参考 Codex CLI 的 keyboard-first 交互，当前支持：
 
 - `/` 打开命令面板。
 - `@` 打开文件补全。
@@ -119,7 +119,7 @@ v2 preview 参考 Codex CLI 的 keyboard-first 交互，当前支持：
 环境变量示例：
 
 ```bash
-OPENHORSE_UI=v2 OPENHORSE_UI_CONFIRMATIONS=interactive npx openhorse
+OPENHORSE_UI=legacy npx openhorse
 ```
 
 ## WebSearch

@@ -52,7 +52,7 @@ describe('loadConfig', () => {
     expect(config.logLevel).toBe('info');
     expect(config.apiKey).toBe('');
     expect(config.toolConfirmation).toBe('allow');
-    expect(config.ui).toEqual({ renderer: 'legacy', confirmations: 'config' });
+    expect(config.ui).toEqual({ renderer: 'v2', confirmations: 'config' });
   });
 
   test('overrides take priority', () => {
@@ -163,7 +163,7 @@ describe('loadConfig', () => {
 
     const config = loadConfig();
     expect(config.toolConfirmation).toBe('allow');
-    expect(config.ui).toEqual({ renderer: 'legacy', confirmations: 'config' });
+    expect(config.ui).toEqual({ renderer: 'v2', confirmations: 'config' });
   });
 });
 
@@ -221,7 +221,7 @@ describe('getConfigSummary', () => {
     expect(summary.model).toBe('gpt-4o');
     expect(summary.fallback).toBe('claude-sonnet-4-6');
     expect(summary.toolConfirmation).toBe('allow');
-    expect(summary.ui).toBe('legacy/config');
+    expect(summary.ui).toBe('v2/config');
     expect(summary.webSearch).toBe('(default)');
   });
 });

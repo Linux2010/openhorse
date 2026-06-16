@@ -5,7 +5,7 @@
   "fallbackModel": "qwen-plus",
   "toolConfirmation": "allow",
   "ui": {
-    "renderer": "legacy",
+    "renderer": "v2",
     "confirmations": "config"
   }
 }
