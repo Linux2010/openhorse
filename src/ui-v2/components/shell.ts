@@ -26,6 +26,11 @@ const colorize = NO_COLOR ? {
   label: chalk.hex('#94A3B8'),
 };
 
+const INPUT_BG = '\x1b[48;2;56;56;56m';
+const INPUT_FG = '\x1b[38;2;226;232;240m';
+const RESET_COLORS = '\x1b[39;49m';
+const CLEAR_TO_EOL = '\x1b[K';
+
 export interface V2ShellHeaderConfig {
   provider: string;
   model: string;
@@ -59,6 +64,7 @@ export interface V2InputFrameOptions {
   input: string;
   modeIndicator?: string;
   width?: number;
+  statusText?: string;
 }
 
 export interface V2InputFrameRender {
@@ -106,16 +112,16 @@ export function renderV2Prompt(modeIndicator: string = ''): string {
 
 export function renderV2InputFrame(options: V2InputFrameOptions): V2InputFrameRender {
   const width = Math.max(24, options.width || process.stdout.columns || 80);
-  const separatorWidth = Math.max(1, width - 1);
-  const separator = colorize.dim('─'.repeat(separatorWidth));
+  const inputWidth = Math.max(1, width - 1);
   const logicalLines = options.input.length > 0 ? options.input.split('\n') : [''];
   const firstPrompt = renderV2Prompt(options.modeIndicator || '');
-  const continuationPrompt = colorize.dim('   │ ');
+  const continuationPrompt = ' '.repeat(visualWidth(firstPrompt));
 
   const renderedLines = logicalLines.map((line, index) => {
     const prefix = index === 0 ? firstPrompt : continuationPrompt;
-    return prefix + line;
+    return renderInputLine(truncateVisible(prefix + line, inputWidth));
   });
+  const statusLine = options.statusText ? renderInputStatusLine(inputWidth, options.statusText) : undefined;
 
   const rowSpans = logicalLines.map((line, index) => {
     const prefix = index === 0 ? firstPrompt : continuationPrompt;
@@ -127,16 +133,45 @@ export function renderV2InputFrame(options: V2InputFrameOptions): V2InputFrameRe
   const lastVisibleWidth = visualWidth(lastPrefix) + visualWidth(lastLine);
 
   return {
-    output: [separator, ...renderedLines, separator].join('\n'),
-    height: rowSpans.reduce((sum, rows) => sum + rows, 0) + 2,
-    cursorRow: 1 + rowsBeforeCursor + Math.floor(lastVisibleWidth / width),
+    output: [...renderedLines, ...(statusLine ? [statusLine] : [])].join('\n'),
+    height: rowSpans.reduce((sum, rows) => sum + rows, 0) + (statusLine ? 1 : 0),
+    cursorRow: rowsBeforeCursor + Math.floor(lastVisibleWidth / width),
     cursorColumn: (lastVisibleWidth % width) + 1,
   };
 }
 
+function renderInputLine(content: string): string {
+  if (NO_COLOR) {
+    return content;
+  }
+
+  return `${INPUT_BG}${INPUT_FG}${content}${CLEAR_TO_EOL}${RESET_COLORS}`;
+}
+
+function renderInputStatusLine(width: number, statusText: string): string {
+  const badge = ` ${statusText} `;
+  const badgeWidth = visualWidth(badge);
+  if (badgeWidth >= width) {
+    return truncateVisible(badge, width);
+  }
+
+  return ' '.repeat(width - badgeWidth) + badge;
+}
+
+export function renderV2StatusBadge(stats: V2StatusLineStats): string {
+  const width = Math.max(20, stats.width || process.stdout.columns || 80);
+  const parts = buildStatusParts(stats).join(colorize.dim('  '));
+  return truncateVisible(parts, Math.max(1, width));
+}
+
 export function renderV2StatusLine(stats: V2StatusLineStats): string {
   const width = Math.max(44, stats.width || process.stdout.columns || 80);
-  const parts = [
+  const content = buildStatusParts(stats).join(colorize.dim('  '));
+  return colorize.dim('  ') + truncateVisible(content, Math.max(1, width - 2));
+}
+
+function buildStatusParts(stats: V2StatusLineStats): string[] {
+  return [
     renderToken('model', stats.model),
     stats.sessionId ? renderToken('session', stats.sessionId.slice(0, 8)) : '',
     renderToken('tokens', formatTokens(stats.tokens)),
@@ -144,10 +179,7 @@ export function renderV2StatusLine(stats: V2StatusLineStats): string {
     stats.ctxPercent > 0 ? renderToken('ctx', `${stats.ctxPercent}%`) : '',
     stats.mcpTotal > 0 ? renderToken('mcp', `${stats.mcpConnected}/${stats.mcpTotal}`) : '',
     stats.modeText ? renderToken('mode', stats.modeText) : '',
-  ].filter(Boolean).join(colorize.dim('  '));
-
-  const content = parts;
-  return colorize.dim('  ') + truncateVisible(content, Math.max(1, width - 2));
+  ].filter(Boolean);
 }
 
 export function renderV2FooterHint(width: number = process.stdout.columns || 80): string {

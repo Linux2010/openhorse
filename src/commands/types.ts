@@ -30,6 +30,12 @@ export interface CommandContext {
   setSession?: (session: SessionMeta) => void;
   /** Return the active session if one exists. */
   getSession?: () => SessionMeta | null;
+  /** Abort signal for the current CLI turn. */
+  abortSignal?: AbortSignal;
+  /** Write output while preserving the live input frame, when supported by the UI. */
+  writeOutput?: (text: string) => void;
+  /** Write one line while preserving the live input frame, when supported by the UI. */
+  writeLine?: (text?: string) => void;
 }
 
 /** 命令执行结果 */

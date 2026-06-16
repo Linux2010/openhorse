@@ -51,6 +51,14 @@ const WARN = chalk.yellow;
 const SUCCESS = chalk.green;
 const HEADER = chalk.cyan.bold;
 
+function isAbortError(error: unknown, abortSignal?: AbortSignal): boolean {
+  if (abortSignal?.aborted) return true;
+  if (error instanceof Error) {
+    return error.name === 'AbortError' || error.message.toLowerCase().includes('aborted');
+  }
+  return false;
+}
+
 // ============================================================================
 // 工具参数摘要
 // ============================================================================
@@ -527,6 +535,9 @@ async function handleRun(ctx: CommandContext, args: string): Promise<CommandResu
 }
 
 async function handleChat(ctx: CommandContext, input: string): Promise<CommandResult> {
+  const writeOutput = ctx.writeOutput ?? ((text: string) => process.stdout.write(text));
+  const writeLine = ctx.writeLine ?? ((text: string = '') => console.log(text));
+
   if (!input) {
     console.log(ERROR('Usage: /chat <message>'));
     console.log();
@@ -576,7 +587,10 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
   const systemPrompt = getSystemPrompt(promptCtx);
 
   const spinner = createSpinner();
-  spinner.start('Thinking');
+  const useSpinner = ctx.config.ui?.renderer !== 'v2';
+  if (useSpinner) {
+    spinner.start('Thinking');
+  }
 
   let finalContent = '';
   let finalModel = '';
@@ -602,11 +616,15 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
 
   const streamCallbacks: StreamCallbacks = {
     onChunk: (chunk: string) => {
+      if (ctx.abortSignal?.aborted) {
+        return;
+      }
+
       if (!responseStarted) {
         responseStarted = true;
         spinner.stop();
         // 打印换行，让流式输出在新行开始
-        console.log();
+        writeLine();
         // 初始化流式渲染器
         streamRenderer = createStreamRenderer();
       }
@@ -614,10 +632,10 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       if (streamRenderer) {
         const rendered = streamRenderer.feed(chunk);
         if (rendered) {
-          process.stdout.write(rendered);
+          writeOutput(rendered);
         }
       } else {
-        process.stdout.write(chunk);
+        writeOutput(chunk);
       }
     },
   };
@@ -641,14 +659,15 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           mode: ctx.config.mode,
         },
       },
+      abortSignal: ctx.abortSignal,
       harness,
     })) {
       switch (event.type) {
         case 'request_start':
           // 停止 spinner，等待 LLM 响应
           spinner.stop();
-          console.log();
-          console.log(DIM(`Turn ${event.turn}...`));
+          writeLine();
+          writeLine(DIM(`Turn ${event.turn}...`));
           // 重置流式渲染器
           streamRenderer = createStreamRenderer();
           // Issue #22: 重置工具调用计数器
@@ -683,15 +702,15 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           // 显示工具结果后，准备下一轮（不启动 spinner）
           const parsedResult = JSON.parse(event.result);
           const toolSuccess = parsedResult.success !== false;
-          console.log(toolLine(event.name, lastToolArgs, toolSuccess, event.duration));
+          writeLine(toolLine(event.name, lastToolArgs, toolSuccess, event.duration));
           // 显示错误详情
           if (!toolSuccess && parsedResult.error) {
-            console.log(ERROR(`    Error: ${parsedResult.error}`));
+            writeLine(ERROR(`    Error: ${parsedResult.error}`));
           }
           // Debug: 显示接收到的参数
           if (!toolSuccess && Object.keys(lastToolArgs).length === 0) {
-            console.log(WARN(`    ⚠ Tool received empty arguments - LLM may not be providing parameters correctly`));
-            console.log(DIM(`    Try using /model qwen or /model gpt4o for better tool calling support`));
+            writeLine(WARN(`    ⚠ Tool received empty arguments - LLM may not be providing parameters correctly`));
+            writeLine(DIM(`    Try using /model qwen or /model gpt4o for better tool calling support`));
           }
           // Record tool result for session
           sessionMessagesToRecord.push({
@@ -713,7 +732,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           break;
 
         case 'strategy_exhausted':
-          console.log(WARN(`⚠ ${event.suggestion}`));
+          writeLine(WARN(`⚠ ${event.suggestion}`));
           break;
 
         case 'complete':
@@ -728,35 +747,39 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
     if (streamRenderer) {
       const remaining = streamRenderer.flush();
       if (remaining) {
-        process.stdout.write(remaining);
+        writeOutput(remaining);
       }
       streamRenderer = null;
     }
 
-    if (finalContent) {
+    const wasAborted = ctx.abortSignal?.aborted === true;
+
+    if (finalContent && !wasAborted) {
       ctx.store.addMessage({ role: 'assistant', content: finalContent });
     }
 
-    if (sessionId && sessionMessagesToRecord.length > 0) {
+    if (sessionId && sessionMessagesToRecord.length > 0 && !wasAborted) {
       appendSessionMessages(sessionId, sessionMessagesToRecord);
     }
 
-    if (finalUsage) {
+    if (finalUsage && !wasAborted) {
       ctx.store.setTokenUsage(finalUsage);
     }
 
-    const harnessState = harness.toJSON();
-    ctx.store.setState({ harnessState });
-    if (sessionId) {
-      updateSessionHarnessState(sessionId, harnessState);
-      const recordedMessages = readSessionMessages(sessionId);
-      if (recordedMessages.length > 0) {
-        updateSessionSummary(sessionId, recordedMessages);
+    if (!wasAborted) {
+      const harnessState = harness.toJSON();
+      ctx.store.setState({ harnessState });
+      if (sessionId) {
+        updateSessionHarnessState(sessionId, harnessState);
+        const recordedMessages = readSessionMessages(sessionId);
+        if (recordedMessages.length > 0) {
+          updateSessionSummary(sessionId, recordedMessages);
+        }
       }
     }
 
     if (responseStarted) {
-      console.log();
+      writeLine();
     }
     if (ctx.config.ui?.renderer !== 'v2') {
       const stats = [
@@ -764,16 +787,23 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
         finalModel ? finalModel : '',
       ].filter(Boolean).join('  ');
       if (stats) {
-        console.log(DIM(stats));
+        writeLine(DIM(stats));
       }
     }
   } catch (error: any) {
     spinner.stop();
-    console.log();
-    console.log(ERROR(`✗ ${error.message || String(error)}`));
-    const hist = ctx.store.getSnapshot().conversationHistory;
-    if (hist.length > 0) {
-      ctx.store.setState({ conversationHistory: hist.slice(0, -1) });
+    writeLine();
+    if (isAbortError(error, ctx.abortSignal)) {
+      hideProgress();
+      if (ctx.config.ui?.renderer !== 'v2') {
+        writeLine(DIM('Interrupted.'));
+      }
+    } else {
+      writeLine(ERROR(`✗ ${error.message || String(error)}`));
+      const hist = ctx.store.getSnapshot().conversationHistory;
+      if (hist.length > 0) {
+        ctx.store.setState({ conversationHistory: hist.slice(0, -1) });
+      }
     }
   }
 

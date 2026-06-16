@@ -6,7 +6,7 @@ import { describe, test, expect, beforeEach, afterEach } from '@jest/globals';
 import { createStreamRenderer, StreamMarkdownRenderer } from '../src/ui/stream-markdown';
 import { renderToolCard, renderToolLine, renderDiffPreview, renderReadPreview } from '../src/ui/tool-preview';
 import { renderStatusBar, renderCompactStatusBar } from '../src/ui/status-bar';
-import { renderUserInputEcho } from '../src/ui/user-input';
+import { renderUserInputEcho, renderUserInputEchoFrame } from '../src/ui/user-input';
 
 // ============================================================================
 // StreamMarkdownRenderer 测试
@@ -174,7 +174,7 @@ describe('Status Bar', () => {
 describe('User Input Echo', () => {
   const originalNoColor = process.env.NO_COLOR;
   const originalTerm = process.env.TERM;
-  const stripAnsi = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, '');
+  const stripAnsi = (text: string) => text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
 
   afterEach(() => {
     if (originalNoColor === undefined) {
@@ -222,5 +222,19 @@ describe('User Input Echo', () => {
     expect(output).toHaveLength(20);
     expect(output).toContain('hello');
     expect(output).not.toContain('\x1b[');
+  });
+
+  test('renders submitted v2 input without transcript separators', () => {
+    delete process.env.NO_COLOR;
+    process.env.TERM = 'xterm-256color';
+
+    const output = renderUserInputEchoFrame('挺好的', 20);
+    const lines = stripAnsi(output).split('\n');
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('挺好的');
+    expect(lines[0]).not.toContain('❯');
+    expect(lines[0]).not.toContain('─');
+    expect(lines[0].trim()).toBe('挺好的');
   });
 });

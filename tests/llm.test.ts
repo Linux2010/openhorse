@@ -83,6 +83,76 @@ describe('LLMService', () => {
     });
   });
 
+  describe('chatStream cancellation', () => {
+    test('passes abort signal to OpenAI request options', async () => {
+      const llm = new LLMService({
+        apiKey: 'test-key',
+        model: 'gpt-4o',
+      });
+      const controller = new AbortController();
+      const create = jest.fn(async function* () {
+        yield {
+          choices: [{ delta: { content: 'ok' } }],
+          model: 'gpt-4o',
+        };
+        yield {
+          choices: [{ delta: {} }],
+          usage: { prompt_tokens: 5, completion_tokens: 1 },
+          model: 'gpt-4o',
+        };
+      });
+
+      (llm as any).client = {
+        chat: {
+          completions: { create },
+        },
+      };
+
+      const response = await llm.chatStream(
+        [{ role: 'user', content: 'Hi' }],
+        undefined,
+        undefined,
+        { abortSignal: controller.signal },
+      );
+
+      expect(response.content).toBe('ok');
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({ stream: true }),
+        { signal: controller.signal },
+      );
+    });
+
+    test('stops processing stream chunks after abort', async () => {
+      const llm = new LLMService({
+        apiKey: 'test-key',
+        model: 'gpt-4o',
+      });
+      const controller = new AbortController();
+      const create = jest.fn(async function* () {
+        controller.abort();
+        yield {
+          choices: [{ delta: { content: 'should not render' } }],
+          model: 'gpt-4o',
+        };
+      });
+      const onChunk = jest.fn();
+
+      (llm as any).client = {
+        chat: {
+          completions: { create },
+        },
+      };
+
+      await expect(llm.chatStream(
+        [{ role: 'user', content: 'Hi' }],
+        { onChunk },
+        undefined,
+        { abortSignal: controller.signal },
+      )).rejects.toMatchObject({ name: 'AbortError' });
+      expect(onChunk).not.toHaveBeenCalled();
+    });
+  });
+
   // Real API tests (only run if API key is available)
   describe('Real API (requires OPENHORSE_API_KEY)', () => {
     if (!hasApiKey) {

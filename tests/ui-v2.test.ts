@@ -15,6 +15,7 @@ import {
   renderV2FooterHint,
   renderV2InputFrame,
   renderV2ShellHeader,
+  renderV2StatusBadge,
   renderV2Shortcuts,
   renderV2StatusLine,
 } from '../src/ui-v2';
@@ -22,7 +23,7 @@ import type { SlashCommand } from '../src/commands/types';
 import type { SessionMeta } from '../src/services/session-storage';
 
 const noop = () => ({ success: true });
-const stripAnsi = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, '');
+const stripAnsi = (text: string) => text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
 
 function command(name: string, description = `${name} command`, extras: Partial<SlashCommand> = {}): SlashCommand {
   return {
@@ -241,7 +242,7 @@ describe('UI v2 shell', () => {
     expect(status).toContain('tokens=4.0K');
   });
 
-  test('renders framed input with gray separators and multiline rows', () => {
+  test('renders live input as gray rows without transcript separators', () => {
     const frame = renderV2InputFrame({
       input: 'first line\nsecond line',
       width: 48,
@@ -249,14 +250,51 @@ describe('UI v2 shell', () => {
     const rendered = stripAnsi(frame.output);
     const lines = rendered.split('\n');
 
-    expect(lines[0]).toMatch(/^─+$/);
-    expect(lines[0].length).toBe(47);
-    expect(lines[1]).toContain('› first line');
-    expect(lines[1]).not.toContain('oh');
-    expect(lines[2]).toContain('│ second line');
-    expect(lines[3]).toMatch(/^─+$/);
-    expect(frame.cursorRow).toBe(2);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('› first line');
+    expect(lines[0]).not.toContain('oh');
+    expect(lines[0]).not.toContain('─');
+    expect(lines[1]).toContain('  second line');
+    expect(lines[1]).not.toContain('─');
+    expect(lines[1]).not.toContain('│');
+    expect(lines[0].indexOf('first line')).toBe(lines[1].indexOf('second line'));
+    expect(lines[0]).not.toContain('[');
+    expect(lines[0]).not.toContain(']');
+    expect(lines[1]).not.toContain('[');
+    expect(lines[1]).not.toContain(']');
+    expect(frame.cursorRow).toBe(1);
     expect(frame.cursorColumn).toBeGreaterThan(1);
+  });
+
+  test('renders fixed status on the input frame bottom-right', () => {
+    const status = renderV2StatusBadge({
+      model: 'glm-5',
+      tokens: 4400,
+      promptTokens: 4000,
+      completionTokens: 400,
+      cost: 0.0012,
+      ctxPercent: 2,
+      mcpConnected: 0,
+      mcpTotal: 0,
+      sessionId: 'f6bcadcf1234',
+      width: 80,
+    });
+    const frame = renderV2InputFrame({
+      input: '',
+      width: 90,
+      statusText: status,
+    });
+    const lines = stripAnsi(frame.output).split('\n');
+    const bottom = lines[lines.length - 1];
+
+    expect(lines[0]).toContain('›');
+    expect(lines.join('\n')).not.toContain('─');
+    expect(bottom).toContain('model=glm-5');
+    expect(bottom).toContain('session=f6bcadcf');
+    expect(bottom).toContain('tokens=4.4K');
+    expect(bottom).toContain('cost=$0.0012');
+    expect(bottom).toContain('ctx=2%');
+    expect(bottom.endsWith('ctx=2% ')).toBe(true);
   });
 
   test('renders Codex-like footer hints and shortcut panel', () => {

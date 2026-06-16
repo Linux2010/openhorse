@@ -40,6 +40,7 @@ interface InputRenderContext {
 
 let inputPromptRenderer: InputPromptRenderer = 'legacy';
 let inputRenderContextProvider: () => InputRenderContext = () => ({});
+let inputStatusText = '';
 
 export function setInputPromptRenderer(renderer: InputPromptRenderer): void {
   inputPromptRenderer = renderer;
@@ -47,6 +48,10 @@ export function setInputPromptRenderer(renderer: InputPromptRenderer): void {
 
 export function setInputRenderContextProvider(provider: () => InputRenderContext): void {
   inputRenderContextProvider = provider;
+}
+
+export function setInputStatusText(statusText: string): void {
+  inputStatusText = statusText;
 }
 
 // ============================================================================
@@ -317,6 +322,12 @@ let lastTotalRendered = 0;
 let lastInputBlockHeight = 0;
 let lastInputCursorRow = 0;
 let lastInputCursorColumn = 0;
+let lastInputValue = '';
+let lastInputModeIndicator = '';
+let v2InputFrameVisible = false;
+let v2InputFrameLeadingNewline = false;
+let outputCursorColumn = 0;
+let outputCursorColumnBeforeFrame = 0;
 /** 是否是首次渲染（首次不清除） */
 let isFirstRender = true;
 
@@ -374,8 +385,15 @@ export function redrawInputWithPrompt(input: string, modeIndicator: string = '')
 }
 
 function redrawV2InputFrame(input: string, modeIndicator: string): void {
-  if (!isFirstRender) {
+  const wasVisible = v2InputFrameVisible;
+  if (v2InputFrameVisible) {
     clearPreviousV2InputFrame();
+  }
+
+  const leadingNewline = !wasVisible && outputCursorColumn > 0;
+  outputCursorColumnBeforeFrame = outputCursorColumn;
+  if (leadingNewline) {
+    process.stdout.write('\n');
   }
 
   const context = inputRenderContextProvider();
@@ -387,6 +405,7 @@ function redrawV2InputFrame(input: string, modeIndicator: string): void {
     input: frameInput,
     modeIndicator,
     width: terminalWidth,
+    statusText: inputStatusText,
   });
 
   process.stdout.write(frame.output);
@@ -401,11 +420,15 @@ function redrawV2InputFrame(input: string, modeIndicator: string): void {
   lastInputCursorRow = frame.cursorRow;
   lastInputCursorColumn = frame.cursorColumn;
   lastTotalRendered = visualWidth(input);
+  lastInputValue = input;
+  lastInputModeIndicator = modeIndicator;
+  v2InputFrameVisible = true;
+  v2InputFrameLeadingNewline = leadingNewline;
   isFirstRender = false;
 }
 
 function clearPreviousV2InputFrame(): void {
-  if (lastInputBlockHeight <= 0) return;
+  if (lastInputBlockHeight <= 0 || !v2InputFrameVisible) return;
 
   if (lastInputCursorRow > 0) {
     process.stdout.write(`\x1b[${lastInputCursorRow}A`);
@@ -422,7 +445,17 @@ function clearPreviousV2InputFrame(): void {
   if (lastInputBlockHeight > 1) {
     process.stdout.write(`\x1b[${lastInputBlockHeight - 1}A`);
   }
-  process.stdout.write('\r');
+
+  if (v2InputFrameLeadingNewline) {
+    process.stdout.write('\x1b[1A');
+    process.stdout.write(`\r\x1b[${outputCursorColumnBeforeFrame + 1}G`);
+    outputCursorColumn = outputCursorColumnBeforeFrame;
+  } else {
+    outputCursorColumn = 0;
+    process.stdout.write('\r');
+  }
+
+  v2InputFrameVisible = false;
 }
 
 export function clearRenderedInput(): void {
@@ -446,5 +479,46 @@ export function resetRenderLength(): void {
   lastInputBlockHeight = 0;
   lastInputCursorRow = 0;
   lastInputCursorColumn = 0;
+  lastInputValue = '';
+  lastInputModeIndicator = '';
+  v2InputFrameVisible = false;
+  v2InputFrameLeadingNewline = false;
+  outputCursorColumn = 0;
+  outputCursorColumnBeforeFrame = 0;
   isFirstRender = true;
+}
+
+export function writeOutputPreservingInput(text: string): void {
+  if (inputPromptRenderer !== 'v2' || !v2InputFrameVisible) {
+    process.stdout.write(text);
+    trackOutputCursor(text);
+    return;
+  }
+
+  const input = lastInputValue;
+  const modeIndicator = lastInputModeIndicator;
+  clearPreviousV2InputFrame();
+  process.stdout.write(text);
+  trackOutputCursor(text);
+  redrawV2InputFrame(input, modeIndicator);
+}
+
+export function writeLinePreservingInput(text: string = ''): void {
+  writeOutputPreservingInput(text + '\n');
+}
+
+function trackOutputCursor(text: string): void {
+  const plain = stripAnsi(text);
+  for (const ch of plain) {
+    if (ch === '\n') {
+      outputCursorColumn = 0;
+    } else if (ch === '\r') {
+      outputCursorColumn = 0;
+    } else {
+      outputCursorColumn += visualWidth(ch);
+      if (outputCursorColumn >= terminalWidth) {
+        outputCursorColumn = outputCursorColumn % terminalWidth;
+      }
+    }
+  }
 }
