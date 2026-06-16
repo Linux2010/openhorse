@@ -107,6 +107,10 @@ export interface StreamCallbacks {
   onThinking?: () => void;
 }
 
+export interface StreamOptions {
+  abortSignal?: AbortSignal;
+}
+
 // ============================================================================
 // 重试机制
 // ============================================================================
@@ -141,6 +145,18 @@ function isRetryableError(error: unknown): boolean {
 /** 判断是否为 529 错误 */
 function is529Error(error: unknown): boolean {
   return error instanceof OpenAI.APIError && error.status === 529;
+}
+
+function createAbortError(): Error {
+  const error = new Error('Operation cancelled');
+  error.name = 'AbortError';
+  return error;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
 }
 
 /** 从错误中提取 retry-after 时间 */
@@ -331,6 +347,7 @@ export class LLMService {
     messages: Message[],
     callbacks?: StreamCallbacks | StreamCallback,
     tools?: Tool[],
+    options?: StreamOptions,
   ): Promise<LLMResponse> {
     const onChunk = typeof callbacks === 'function' ? callbacks : callbacks?.onChunk;
     const onThinking = typeof callbacks === 'object' ? callbacks?.onThinking : undefined;
@@ -352,6 +369,8 @@ export class LLMService {
 
     return withRetry(
       async () => {
+        throwIfAborted(options?.abortSignal);
+
         const params: Record<string, unknown> = {
           model: this.config.model,
           messages: this.toOpenAIMessages(messages),
@@ -367,7 +386,11 @@ export class LLMService {
 
         onThinking?.();
 
-        const stream = await this.client.chat.completions.create(params as any) as unknown as AsyncIterable<any>;
+        const requestOptions = options?.abortSignal ? { signal: options.abortSignal } : undefined;
+        const stream = await this.client.chat.completions.create(
+          params as any,
+          requestOptions as any,
+        ) as unknown as AsyncIterable<any>;
 
         let content = '';
         let usedModel = this.config.model;
@@ -379,6 +402,8 @@ export class LLMService {
         }>();
 
         for await (const chunk of stream) {
+          throwIfAborted(options?.abortSignal);
+
           // Debug: log raw chunk when tool_calls present (for diagnosing API compatibility)
           if (process.env.OPENHORSE_DEBUG_TOOLS === 'true') {
             const delta = chunk.choices?.[0]?.delta;

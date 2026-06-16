@@ -154,6 +154,68 @@ describe('query generator', () => {
     expect(llm.chatStream).not.toHaveBeenCalled();
   });
 
+  test('passes abort signal to chatStream', async () => {
+    const controller = new AbortController();
+    const llm = makeMockLLM([
+      { content: 'Hello!', model: 'test-model' },
+    ]);
+
+    const messages: Message[] = [
+      { role: 'system', content: 'You are a bot.' },
+      { role: 'user', content: 'Hi' },
+    ];
+
+    for await (const _event of query({
+      messages,
+      tools: [mockTool],
+      toolExecutor: async () => 'result',
+      llm,
+      abortSignal: controller.signal,
+    })) {
+      // consume
+    }
+
+    expect(llm.chatStream).toHaveBeenCalledWith(
+      expect.any(Array),
+      undefined,
+      expect.any(Array),
+      { abortSignal: controller.signal },
+    );
+  });
+
+  test('does not emit assistant message when aborted after stream returns', async () => {
+    const controller = new AbortController();
+    const llm = {
+      chatStream: jest.fn(async () => {
+        controller.abort();
+        return { content: 'late response', model: 'test-model' };
+      }),
+      getModel: jest.fn(() => 'test-model'),
+    } as unknown as jest.Mocked<LLMService>;
+
+    const messages: Message[] = [
+      { role: 'system', content: 'You are a bot.' },
+      { role: 'user', content: 'Hi' },
+    ];
+
+    const events: QueryEvent[] = [];
+    for await (const event of query({
+      messages,
+      tools: [mockTool],
+      toolExecutor: async () => 'result',
+      llm,
+      abortSignal: controller.signal,
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'request_start' }),
+      expect.objectContaining({ type: 'complete', content: 'Operation cancelled.' }),
+    ]);
+    expect(messages).toHaveLength(2);
+  });
+
   test('reaches max turns and returns truncation message', async () => {
     const llm = makeMockLLM([
       {

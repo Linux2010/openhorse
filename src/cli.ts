@@ -39,8 +39,11 @@ import {
   redrawInputWithPrompt,
   clearRenderedInput,
   resetRenderLength,
+  writeLinePreservingInput,
+  writeOutputPreservingInput,
   setInputPromptRenderer,
   setInputRenderContextProvider,
+  setInputStatusText,
 } from './ui/command-panel';
 import {
   shouldEnterMultiline,
@@ -66,8 +69,9 @@ import {
   setFileCompletionPromptRenderer,
 } from './ui/file-completion';
 import { renderStatusBar, type StatusBarStats } from './ui/status-bar';
-import { renderUserInputEcho } from './ui/user-input';
-import { renderSessionPicker, renderV2FooterHint, renderV2ShellHeader, renderV2Shortcuts, renderV2StatusLine } from './ui-v2';
+import { renderUserInputEcho, renderUserInputEchoFrame } from './ui/user-input';
+import { renderSessionPicker, renderV2FooterHint, renderV2ShellHeader, renderV2Shortcuts, renderV2StatusBadge } from './ui-v2';
+import { TurnController } from './runtime/turn-controller';
 
 // Get version from package.json
 const VERSION = (() => {
@@ -150,6 +154,8 @@ let llm: LLMService | null = null;
 let store: Store;
 let currentSession: SessionMeta | null = null;
 let runtime: OpenHorseRuntime;
+const turnController = new TurnController();
+let isShuttingDown = false;
 
 // 输入状态
 let currentInput: string = '';
@@ -190,21 +196,81 @@ function getCurrentSession(): SessionMeta | null {
 
 function echoSubmittedInput(input: string): void {
   clearRenderedInput();
-  console.log(renderUserInputEcho(input));
+  const rendered = isV2UI()
+    ? renderUserInputEchoFrame(input)
+    : renderUserInputEcho(input);
+  writeLinePreservingInput(rendered);
+  if (isV2UI()) {
+    redrawInputWithPrompt(currentInput);
+  }
+}
+
+function isExitCommandInput(input: string): boolean {
+  const parsed = parseInput(input.trim());
+  if (!parsed.isCommand) return false;
+  const cmd = findCommand(parsed.name);
+  return cmd?.name === 'exit';
 }
 
 function submitInput(input: string): void {
   const submittedInput = input;
   currentInput = '';
   echoSubmittedInput(submittedInput);
-
-  handleInput(submittedInput).catch(err => {
-    console.log(ERROR(`Input error: ${err.message || String(err)}`));
-    redrawInputWithPrompt(currentInput);
-  });
-
   addToInputHistory(submittedInput);
   inputHistory = getInputHistory();
+
+  if (turnController.hasActiveTurn()) {
+    const text = submittedInput.trim();
+    const parsed = parseInput(text);
+
+    if (isExitCommandInput(text)) {
+      void shutdownCli();
+      return;
+    }
+
+    if (parsed.isCommand) {
+      console.log(DIM('Command ignored while agent is running. Press Ctrl+C to interrupt first.'));
+      redrawInputWithPrompt(currentInput);
+      return;
+    }
+
+    if (text) {
+      turnController.clearExitIntent();
+      turnController.requestRevision(submittedInput);
+      redrawInputWithPrompt(currentInput);
+    }
+    return;
+  }
+
+  void runInputTurn(submittedInput);
+}
+
+async function runInputTurn(input: string): Promise<void> {
+  let nextInput: string | undefined = input;
+
+  while (nextInput) {
+    const turn = turnController.beginTurn(nextInput);
+    store.setProcessing(true);
+
+    try {
+      await handleInput(nextInput, turn.abortSignal, { redrawPrompt: false, updateStatus: false });
+    } catch (err: any) {
+      console.log(ERROR(`Input error: ${err.message || String(err)}`));
+    } finally {
+      const revision = turnController.finishTurn(turn.id);
+      store.setProcessing(false);
+
+      if (revision && revision.trim()) {
+        writeLinePreservingInput(DIM('Interrupted. Restarting with latest instruction...'));
+        nextInput = revision;
+      } else {
+        nextInput = undefined;
+      }
+    }
+  }
+
+  updateStatusBar();
+  redrawInputWithPrompt(currentInput);
 }
 
 // ============================================================================
@@ -259,6 +325,11 @@ function handleKeypress(char: string | undefined, key: KeyInfo | undefined): voi
 
   if (k.ctrl && k.name === 'l') {
     clearTerminalView();
+    return;
+  }
+
+  if (k.ctrl && k.name === 'c') {
+    void handleCtrlC();
     return;
   }
 
@@ -578,7 +649,7 @@ function restoreSelectedResumeSession(): void {
   currentInput = '';
   clearRenderedInput();
 
-  handleInput(`/resume ${session.id}${suffix}`).catch(err => {
+  runInputTurn(`/resume ${session.id}${suffix}`).catch(err => {
     console.log(ERROR(`Resume error: ${err.message || String(err)}`));
     redrawInputWithPrompt(currentInput);
   });
@@ -679,7 +750,7 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
     case 'd':
       if (k.ctrl && currentInput === '') {
         // Ctrl+D：退出（空输入时）
-        handleCtrlC();
+        void shutdownCli();
       } else if (char) {
         currentInput += char;
         redrawInputWithPrompt(currentInput);
@@ -688,7 +759,7 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
     case '/':
       // Issue #30 fix: 只在输入为空时触发命令面板（即 `/` 是第一个字符）
       // 避免在 URL（http://）、路径（src/）、正则等场景误触发
-      if (currentInput === '') {
+      if (currentInput === '' && !turnController.hasActiveTurn()) {
         currentInput = '/';
         redrawInputWithPrompt(currentInput);
         showCommandPanel('');
@@ -700,13 +771,18 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
       break;
     case '@':
       // 显示文件补全
-      const baseInput = currentInput;
-      currentInput += '@';
-      showFileCompletion('', baseInput);
-      redrawInputWithPrompt(currentInput);
+      if (turnController.hasActiveTurn()) {
+        currentInput += '@';
+        redrawInputWithPrompt(currentInput);
+      } else {
+        const baseInput = currentInput;
+        currentInput += '@';
+        showFileCompletion('', baseInput);
+        redrawInputWithPrompt(currentInput);
+      }
       break;
     case '?':
-      if (currentInput === '' && store.getSnapshot().config.ui?.renderer === 'v2') {
+      if (currentInput === '' && store.getSnapshot().config.ui?.renderer === 'v2' && !turnController.hasActiveTurn()) {
         showV2Shortcuts();
       } else {
         currentInput += '?';
@@ -772,7 +848,51 @@ function clearTerminalView(): void {
   redrawInputWithPrompt(currentInput);
 }
 
-async function handleCtrlC(): Promise<void> {
+function cancelActiveInputMode(): boolean {
+  if (isMultilineActive()) {
+    resetMultiline();
+    currentInput = '';
+    console.log(DIM('(cancelled)'));
+    redrawInputWithPrompt('');
+    return true;
+  }
+
+  if (isPanelVisible()) {
+    hideCommandPanel();
+    clearPendingCommand();
+    currentInput = '';
+    redrawInputWithPrompt('');
+    return true;
+  }
+
+  if (isFileCompletionVisible()) {
+    hideFileCompletion();
+    currentInput = getBaseInput() + '@' + getFileQuery();
+    redrawInputWithPrompt(currentInput);
+    return true;
+  }
+
+  if (resumePickerState?.visible) {
+    hideResumePicker();
+    redrawInputWithPrompt(currentInput);
+    return true;
+  }
+
+  if (historyMode !== 'none') {
+    historyMode = 'none';
+    searchQuery = '';
+    historyIndex = -1;
+    redrawInputWithPrompt(currentInput);
+    return true;
+  }
+
+  return false;
+}
+
+async function shutdownCli(): Promise<void> {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
   // 保存会话摘要后退出
   if (currentSession) {
     const messages = readSessionMessages(currentSession.id);
@@ -794,6 +914,35 @@ async function handleCtrlC(): Promise<void> {
   await runtime.shutdown();
   console.log(SUCCESS('Goodbye! 🐴'));
   process.exit(0);
+}
+
+async function handleCtrlC(): Promise<void> {
+  if (cancelActiveInputMode()) {
+    turnController.clearExitIntent();
+    return;
+  }
+
+  if (turnController.hasActiveTurn()) {
+    const shouldExit = turnController.registerExitIntent();
+    turnController.interruptActiveTurn();
+
+    if (shouldExit) {
+      await shutdownCli();
+      return;
+    }
+
+    writeLinePreservingInput(DIM('Interrupted. Press Ctrl+C again to exit.'));
+    redrawInputWithPrompt(currentInput);
+    return;
+  }
+
+  if (turnController.registerExitIntent()) {
+    await shutdownCli();
+    return;
+  }
+
+  writeLinePreservingInput(DIM('Press Ctrl+C again to exit.'));
+  redrawInputWithPrompt(currentInput);
 }
 
 // ============================================================================
@@ -843,7 +992,14 @@ function getPrompt(): string {
   return ACCENT('❯ ') + DIM(modeIndicator);
 }
 
-async function handleInput(input: string) {
+interface HandleInputOptions {
+  redrawPrompt?: boolean;
+  updateStatus?: boolean;
+}
+
+async function handleInput(input: string, abortSignal?: AbortSignal, options: HandleInputOptions = {}) {
+  const redrawPrompt = options.redrawPrompt !== false;
+  const shouldUpdateStatus = options.updateStatus !== false;
   const text = input.trim();
   if (!text) return;
 
@@ -860,6 +1016,9 @@ async function handleInput(input: string) {
     ensureSession: ensureCurrentSession,
     setSession: setCurrentSession,
     getSession: getCurrentSession,
+    abortSignal,
+    writeOutput: writeOutputPreservingInput,
+    writeLine: writeLinePreservingInput,
   };
 
   let pendingSessionPicker: CommandResult['sessionPicker'] | undefined;
@@ -894,10 +1053,14 @@ async function handleInput(input: string) {
   }
 
   // 显示状态栏
-  updateStatusBar();
+  if (shouldUpdateStatus) {
+    updateStatusBar();
+  }
 
   // 重新显示 prompt
-  redrawInputWithPrompt(currentInput);
+  if (redrawPrompt) {
+    redrawInputWithPrompt(currentInput);
+  }
   if (pendingSessionPicker) {
     showResumePicker(pendingSessionPicker);
   }
@@ -928,10 +1091,11 @@ function updateStatusBar(): void {
 
   // 在 prompt 上一行显示状态栏
   if (snapshot.config.ui?.renderer === 'v2') {
-    console.log(renderV2StatusLine({
+    setInputStatusText(renderV2StatusBadge({
       ...stats,
       sessionId: currentSession?.id,
       modeText: getModeDisplayText(snapshot.permissionMode) || undefined,
+      width: process.stdout.columns || 80,
     }));
   } else {
     console.log(renderStatusBar(stats));
@@ -1085,6 +1249,9 @@ async function main(): Promise<void> {
   });
 
   // 初始 prompt
+  if (cliConfig.ui?.renderer === 'v2') {
+    updateStatusBar();
+  }
   redrawInputWithPrompt('');
 }
 

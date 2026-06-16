@@ -67,3 +67,9 @@ export function renderUserInputEcho(input: string, width?: number): string {
     .map(line => renderUserInputPrompt() + renderUserInputContent(line, width))
     .join('\n');
 }
+
+export function renderUserInputEchoFrame(input: string, width?: number): string {
+  // Kept for compatibility with the v2 caller. Submitted input should read as
+  // conversation content, not as a bordered live input frame.
+  return renderUserInputEcho(input, width);
+}

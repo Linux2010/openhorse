@@ -132,7 +132,7 @@ describe('Command Panel', () => {
       expect(rendered).not.toContain('Matching "s"');
     });
 
-    it('clears the full v2 input frame before submitted input is echoed', () => {
+    it('clears the v2 input row before submitted input is echoed', () => {
       const {
         clearRenderedInput,
         redrawInputWithPrompt,
@@ -148,12 +148,12 @@ describe('Command Panel', () => {
       clearRenderedInput();
 
       const rendered = output.join('');
-      expect(rendered).toContain('\x1b[1A');
-      expect(rendered.split('\x1b[2K')).toHaveLength(4);
+      expect(rendered).toContain('\x1b[2K');
+      expect(rendered.split('\x1b[2K')).toHaveLength(2);
       expect(rendered.endsWith('\r')).toBe(true);
     });
 
-    it('clears the previous v2 input frame before redrawing slash input', () => {
+    it('clears the previous v2 input row before redrawing slash input', () => {
       const {
         redrawInputWithPrompt,
         resetRenderLength,
@@ -168,8 +168,8 @@ describe('Command Panel', () => {
       redrawInputWithPrompt('/');
 
       const rendered = output.join('');
-      expect(rendered).toContain('\x1b[1A');
-      expect(rendered.split('\x1b[2K')).toHaveLength(4);
+      expect(rendered).toContain('\x1b[2K');
+      expect(rendered.split('\x1b[2K')).toHaveLength(2);
       expect(rendered).toContain('›');
       expect(rendered).not.toContain('oh');
       expect(rendered).toContain('/');
@@ -194,6 +194,48 @@ describe('Command Panel', () => {
       expect(rendered).toContain('\x1b[2B\r');
       expect(rendered).toContain('\x1b[4G');
       expect(rendered).toContain('Commands');
+    });
+
+    it('restores the v2 input frame below an unfinished output line', () => {
+      const {
+        redrawInputWithPrompt,
+        resetRenderLength,
+        setInputPromptRenderer,
+        writeOutputPreservingInput,
+      } = require('../src/ui/command-panel');
+
+      setInputPromptRenderer('v2');
+      resetRenderLength();
+      writeOutputPreservingInput('assistant partial');
+      redrawInputWithPrompt('edit');
+      output = [];
+
+      writeOutputPreservingInput(' chunk');
+
+      const rendered = output.join('').replace(/\x1b\[[0-9;]*m/g, '');
+      expect(rendered).toContain(' chunk\n');
+      expect(rendered).not.toContain(' chunk─');
+    });
+
+    it('keeps an empty v2 input row visible during assistant output without separators', () => {
+      const {
+        redrawInputWithPrompt,
+        resetRenderLength,
+        setInputPromptRenderer,
+        writeOutputPreservingInput,
+      } = require('../src/ui/command-panel');
+
+      setInputPromptRenderer('v2');
+      resetRenderLength();
+      redrawInputWithPrompt('');
+      output = [];
+
+      writeOutputPreservingInput('assistant line\n');
+
+      const rendered = output.join('').replace(/\x1b\[[0-9;]*m/g, '');
+      expect(rendered).toContain('assistant line\n');
+      expect(rendered).not.toContain('─');
+      expect(rendered).toContain('›');
     });
   });
 });

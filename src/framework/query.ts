@@ -19,6 +19,18 @@ import { createStrategyTracker, type StrategyTracker, type StrategyResult } from
 import { getAutoCompact } from '../services/compact/auto-compact';
 import type { ContextHarness } from '../harness';
 
+function isAborted(signal?: AbortSignal): boolean {
+  return signal?.aborted === true;
+}
+
+function cancelledEvent(llm: LLMService): QueryEvent {
+  return {
+    type: 'complete',
+    content: 'Operation cancelled.',
+    model: llm.getModel(),
+  };
+}
+
 // ============================================================================
 // 事件类型
 // ============================================================================
@@ -107,12 +119,8 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     turn++;
 
     // Check abort
-    if (abortSignal?.aborted) {
-      yield {
-        type: 'complete',
-        content: 'Operation cancelled.',
-        model: llm.getModel(),
-      };
+    if (isAborted(abortSignal)) {
+      yield cancelledEvent(llm);
       return;
     }
 
@@ -132,7 +140,12 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     // Stream the LLM response. Harness context is injected into a cloned
     // request payload so the durable conversation history stays clean.
     const requestMessages = harness ? harness.assembleMessages(messages) : messages;
-    const response = await llm.chatStream(requestMessages, streamCallbacks, openaiTools);
+    const response = await llm.chatStream(requestMessages, streamCallbacks, openaiTools, { abortSignal });
+
+    if (isAborted(abortSignal)) {
+      yield cancelledEvent(llm);
+      return;
+    }
 
     // Save assistant message to history
     const assistantMsg: Message = {
@@ -154,6 +167,11 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       };
 
       for (let i = 0; i < response.toolCalls.length; i++) {
+        if (isAborted(abortSignal)) {
+          yield cancelledEvent(llm);
+          return;
+        }
+
         const tc = response.toolCalls[i];
         // Ensure arguments is valid JSON (some APIs like DashScope require this)
         let args: Record<string, unknown> = {};
@@ -270,6 +288,11 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           success: toolSuccess,   // Issue #21: 添加 success 字段
           error: toolError,       // Issue #21: 添加 error 字段
         };
+
+        if (isAborted(abortSignal)) {
+          yield cancelledEvent(llm);
+          return;
+        }
 
         messages.push({
           role: 'tool',
