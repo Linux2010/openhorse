@@ -8,6 +8,9 @@
  *   2. ~/.openhorse/openhorse.json (GlobalConfig)
  *   3. 环境变量
  *   4. Agent 内部默认值
+ *
+ * UI renderer is intentionally not read from openhorse.json. The new UI is the
+ * default, and startup flags such as --ui legacy are the supported fallback.
  */
 
 import {
@@ -72,7 +75,7 @@ const INTERNAL_DEFAULTS = {
   logLevel: 'info',
   toolConfirmation: 'allow' as ToolConfirmationPolicy,
   ui: {
-    renderer: 'legacy' as UIRenderer,
+    renderer: 'v2' as UIRenderer,
     confirmations: 'config' as UIConfirmationMode,
   },
 } as const;
@@ -143,7 +146,6 @@ function loadUIConfig(
   return {
     renderer:
       normalizeUIRenderer(overrides.ui?.renderer)
-      ?? normalizeUIRenderer(globalConfig.ui?.renderer)
       ?? normalizeUIRenderer(envRenderer)
       ?? INTERNAL_DEFAULTS.ui.renderer,
     confirmations:

@@ -34,6 +34,10 @@ export interface SkillDefinition {
   priority?: number;
   /** Skill source path */
   source?: string;
+  /** Source type after discovery. */
+  sourceType?: 'builtin' | 'user' | 'project';
+  /** Root directory for resolving relative skill resources. */
+  resourceRoot?: string;
   /** Tags for categorization */
   tags?: string[];
 }

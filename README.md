@@ -309,7 +309,8 @@ To avoid over-compact, auto-compact runs at most once per 30 seconds. Manual `/c
 
 ## MCP Protocol
 
-Full support for MCP (Model Context Protocol) servers:
+OpenHorse supports stdio MCP (Model Context Protocol) servers and exposes connected
+server tools directly to the agent as first-class tools.
 
 ### Configure MCP Servers
 
@@ -317,7 +318,7 @@ Create `~/.openhorse/mcp.json`:
 
 ```json
 {
-  "servers": {
+  "mcpServers": {
     "telegram": {
       "command": "node",
       "args": ["path/to/plugin-telegram/dist/index.js"],
@@ -331,13 +332,20 @@ Create `~/.openhorse/mcp.json`:
 }
 ```
 
+The legacy top-level `servers` key is still accepted for compatibility. MCP tool
+names follow the `mcp__<server>__<tool>` convention used by Claude Code, Codex,
+and OpenClaude, for example `mcp__filesystem__read_file`.
+
 ### MCP Commands
 
 ```bash
 /mcp                # Show MCP server connection status
+/chat use filesystem MCP to list files
 ```
 
-Servers connect automatically at startup with heartbeat monitoring and exponential backoff reconnect.
+Servers connect automatically at startup with heartbeat monitoring and exponential
+backoff reconnect. HTTP/SSE MCP transports, resources, and prompts are planned
+but not part of the current stdio tool bridge.
 
 ---
 

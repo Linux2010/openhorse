@@ -122,7 +122,7 @@ export class SkillsLoader {
 
   /** Load all skills from configured directories */
   load(): SkillDefinition[] {
-    const allSkills: SkillDefinition[] = [];
+    this.clear();
 
     // 1. Load builtin skills (src/skills/builtin/)
     try {
@@ -131,7 +131,6 @@ export class SkillsLoader {
       const builtinSkills = scanSkillsDirectory(builtinSkillsDir, 'builtin');
       for (const skill of builtinSkills) {
         this.registerSkill(skill, { path: builtinSkillsDir, type: 'builtin' });
-        allSkills.push(skill);
       }
     } catch {
       // Builtin directory may not exist in some environments
@@ -142,7 +141,6 @@ export class SkillsLoader {
     const userSkills = scanSkillsDirectory(userSkillsDir, 'user');
     for (const skill of userSkills) {
       this.registerSkill(skill, { path: userSkillsDir, type: 'user' });
-      allSkills.push(skill);
     }
 
     // 3. Load project skills (.openhorse/skills/)
@@ -151,32 +149,42 @@ export class SkillsLoader {
     for (const skill of projectSkills) {
       // Project skills override user/builtin skills with same name
       this.registerSkill(skill, { path: projectSkillsDir, type: 'project' });
-      allSkills.push(skill);
     }
 
+    this.autoSkills = Array.from(this.skills.values()).filter(skill => !!skill.auto);
     this.lastScan = Date.now();
-    return allSkills;
+    return this.getSkills();
   }
 
   /** Register a skill */
   private registerSkill(skill: SkillDefinition, source: SkillSource): void {
+    const preparedSkill: SkillDefinition = {
+      ...skill,
+      sourceType: source.type,
+      resourceRoot: skill.source,
+    };
+
     // Check for conflicts
-    const existing = this.skills.get(skill.name);
+    const existing = this.skills.get(preparedSkill.name);
     if (existing) {
-      // Higher priority wins
-      if (skill.priority! > existing.priority!) {
-        console.log(`[SkillsLoader] Overriding skill ${skill.name} with higher priority`);
-        this.skills.set(skill.name, skill);
-        this.sources.set(skill.name, source);
+      const existingSource = this.sources.get(preparedSkill.name);
+      const existingRank = sourceRank(existingSource?.type);
+      const incomingRank = sourceRank(source.type);
+      const shouldOverride = incomingRank > existingRank
+        || (incomingRank === existingRank && (preparedSkill.priority || DEFAULT_SKILL_PRIORITY) > (existing.priority || DEFAULT_SKILL_PRIORITY));
+
+      if (shouldOverride) {
+        this.skills.set(preparedSkill.name, preparedSkill);
+        this.sources.set(preparedSkill.name, source);
       }
     } else {
-      this.skills.set(skill.name, skill);
-      this.sources.set(skill.name, source);
+      this.skills.set(preparedSkill.name, preparedSkill);
+      this.sources.set(preparedSkill.name, source);
     }
 
     // Track auto-trigger skills
-    if (skill.auto) {
-      this.autoSkills.push(skill);
+    if (preparedSkill.auto && this.skills.get(preparedSkill.name) === preparedSkill) {
+      this.autoSkills.push(preparedSkill);
     }
   }
 
@@ -243,6 +251,19 @@ export class SkillsLoader {
   /** Get last scan time */
   getLastScan(): number {
     return this.lastScan;
+  }
+}
+
+function sourceRank(type?: SkillSource['type']): number {
+  switch (type) {
+    case 'project':
+      return 3;
+    case 'user':
+      return 2;
+    case 'builtin':
+      return 1;
+    default:
+      return 0;
   }
 }
 

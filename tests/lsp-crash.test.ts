@@ -39,6 +39,18 @@ describe('LSP crash prevention', () => {
   });
 
   describe('lsp_get_definition — binary missing', () => {
+    it('should reject missing position arguments before starting LSP', async () => {
+      const result = await lspGetDefinitionTool.execute(
+        { file_path: '/test/file.ts' },
+        mockCtx,
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('line');
+      expect(spawnSync).not.toHaveBeenCalled();
+      expect(spawn).not.toHaveBeenCalled();
+    });
+
     it('should return failure when typescript-language-server is not installed', async () => {
       (spawnSync as jest.Mock).mockReturnValue({ status: 1 });
 

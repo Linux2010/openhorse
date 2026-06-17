@@ -51,6 +51,16 @@ describe('buildSystemPrompt', () => {
     expect(result.dynamic).toContain('Some project memory');
   });
 
+  test('dynamic part includes active skill instructions when provided', () => {
+    const ctx: PromptContext = {
+      ...baseContext,
+      activeSkillsContent: '## Active Skills\n\n### code-review\nReview carefully.',
+    };
+    const result = buildSystemPrompt(ctx);
+    expect(result.dynamic).toContain('Active Skills');
+    expect(result.dynamic).toContain('code-review');
+  });
+
   test('dynamic part excludes memory when not provided', () => {
     const result = buildSystemPrompt(baseContext);
     expect(result.dynamic).not.toContain('Project memory');

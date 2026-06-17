@@ -21,6 +21,8 @@ export interface PromptContext {
   memoryContent?: string;
   /** Pre-rendered skills section (e.g. from SkillsRegistry.generateSystemPromptInjection) */
   skillsContent?: string;
+  /** Full SKILL.md prompts activated for the current turn. */
+  activeSkillsContent?: string;
 }
 
 /** A named prompt section */
@@ -86,6 +88,14 @@ Use tools when they help complete the task. Prefer the right tool for the job.`;
     render: (ctx) => {
       if (!ctx.skillsContent) return '';
       return ctx.skillsContent;
+    },
+  },
+  {
+    name: 'active_skills',
+    dynamic: true,
+    render: (ctx) => {
+      if (!ctx.activeSkillsContent) return '';
+      return ctx.activeSkillsContent;
     },
   },
 ];

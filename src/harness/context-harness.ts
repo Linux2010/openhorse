@@ -71,6 +71,25 @@ export class ContextHarness {
     this.refreshCapsule();
   }
 
+  recordAppliedSkills(skills: Array<{ name: string; source?: string; tools?: string[] }>): void {
+    if (this.config.enabled === false || skills.length === 0) return;
+    this.ledger.add({
+      type: 'skill',
+      content: `Applied skills: ${skills.map(skill => skill.name).join(', ')}`,
+      source: { kind: 'system', ref: 'skills' },
+      importance: 4,
+      ttl: 'turn',
+      metadata: {
+        skills: skills.map(skill => ({
+          name: skill.name,
+          source: skill.source,
+          tools: skill.tools,
+        })),
+      },
+    });
+    this.refreshCapsule();
+  }
+
   beforeToolUse(params: { name: string; args: Record<string, unknown> }): DriftCheckResult {
     const mode = this.config.driftGuard ?? 'warn';
     const result = checkToolDrift({
@@ -177,4 +196,3 @@ export class ContextHarness {
 export function createContextHarness(options: ContextHarnessOptions): ContextHarness {
   return new ContextHarness(options);
 }
-

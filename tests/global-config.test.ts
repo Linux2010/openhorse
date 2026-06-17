@@ -47,6 +47,7 @@ describe('global-config', () => {
 
       expect(config.defaultModel).toBe('gpt-4o');
       expect(config.toolConfirmation).toBe('allow');
+      expect(config.ui).toBeUndefined();
       expect(config.totalSessions).toBe(0);
       expect(config.totalTokens).toBe(0);
       expect(config.totalCost).toBe(0);
@@ -97,6 +98,24 @@ describe('global-config', () => {
 
       expect(parsed.defaultModel).toBe('glm-5');
       expect(parsed.fallbackModel).toBe('qwen-plus');
+    });
+
+    test('does not persist ui.renderer in openhorse.json', () => {
+      const config = loadGlobalConfig();
+      saveGlobalConfig({
+        ...config,
+        ui: {
+          renderer: 'legacy',
+          confirmations: 'interactive',
+        },
+      });
+
+      const path = join(testDir, 'openhorse.json');
+      const parsed = JSON.parse(readFileSync(path, 'utf-8'));
+
+      expect(parsed.ui).toEqual({ confirmations: 'interactive' });
+      expect(parsed.ui.renderer).toBeUndefined();
+      expect(loadGlobalConfig().ui).toEqual({ confirmations: 'interactive' });
     });
   });
 

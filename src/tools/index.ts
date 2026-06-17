@@ -27,7 +27,7 @@ import {
 import { getSemanticSearchService, isSemanticEnabled } from '../memory/semantic-search';
 import { readSessionMessages, loadSessionMeta, listSessions, type SessionMessage } from '../services/session-storage';
 import { WEB_TOOLS } from './web';
-import { MCP_TOOLS } from './mcp';
+import { MCP_TOOLS, mcpManager } from './mcp';
 import { TODO_TOOLS } from './todo';
 import { PLAN_TOOLS } from './plan';
 import { GIT_TOOLS } from './git';
@@ -118,7 +118,7 @@ export const TOOLS: OpenHorseTool[] = [
       if (!path || typeof path !== 'string') {
         return { success: false, output: '', error: 'write_file requires a path parameter' };
       }
-      if (!content || typeof content !== 'string') {
+      if (typeof content !== 'string') {
         return { success: false, output: '', error: 'write_file requires a content parameter' };
       }
       return writeFileSync_(path, content);
@@ -263,7 +263,7 @@ export const TOOLS: OpenHorseTool[] = [
       if (!old_string || typeof old_string !== 'string') {
         return { success: false, output: '', error: 'edit_file requires an old_string parameter' };
       }
-      if (!new_string || typeof new_string !== 'string') {
+      if (typeof new_string !== 'string') {
         return { success: false, output: '', error: 'edit_file requires a new_string parameter' };
       }
       return editFile_(path, old_string, new_string, args.replace_all as boolean | undefined);
@@ -644,6 +644,17 @@ export const TOOLS: OpenHorseTool[] = [
   }),
 ];
 
+/**
+ * Runtime tool pool.
+ *
+ * Static OpenHorse tools are always present. Connected MCP server tools are
+ * exposed as first-class tools named mcp__<server>__<tool>, matching the
+ * convention used by Claude Code, Codex, and OpenClaude.
+ */
+export function getRuntimeTools(): OpenHorseTool[] {
+  return [...TOOLS, ...mcpManager.getOpenHorseTools()];
+}
+
 // ============================================================================
 // 工具实现
 // ============================================================================
@@ -754,12 +765,25 @@ async function execCommand_(command: string, cwd?: string, timeout?: number, max
     let aborted = false;
 
     // Issue #32 #3.2: AbortSignal 处理
+    let timeoutId: NodeJS.Timeout;
+    let settled = false;
+
+    const finish = (result: ToolResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      if (abortSignal) {
+        abortSignal.removeEventListener('abort', abortHandler);
+      }
+      resolve(result);
+    };
+
     const abortHandler = () => {
       aborted = true;
       if (child.pid) {
         child.kill('SIGTERM');
       }
-      resolve({
+      finish({
         success: false,
         output: stdoutData.slice(0, maxBytes),
         error: 'Command aborted by user',
@@ -771,10 +795,10 @@ async function execCommand_(command: string, cwd?: string, timeout?: number, max
     }
 
     // Timeout handling
-    const timeoutId = setTimeout(() => {
+    timeoutId = setTimeout(() => {
       if (!aborted) {
         child.kill();
-        resolve({
+        finish({
           success: false,
           output: stdoutData.slice(0, maxBytes),
           error: `Command timed out after ${timeoutMs}ms`,
@@ -813,12 +837,6 @@ async function execCommand_(command: string, cwd?: string, timeout?: number, max
     });
 
     child.on('close', (code) => {
-      clearTimeout(timeoutId);
-      // Issue #32 #3.2: 清理 abortSignal 监听器
-      if (abortSignal) {
-        abortSignal.removeEventListener('abort', abortHandler);
-      }
-
       // 如果已被 abort，不再处理结果
       if (aborted) return;
 
@@ -832,13 +850,13 @@ async function execCommand_(command: string, cwd?: string, timeout?: number, max
       }
 
       if (code !== 0) {
-        resolve({
+        finish({
           success: false,
           output: finalOutput || errOutput,
           error: `Command exited with code ${code}`,
         });
       } else {
-        resolve({
+        finish({
           success: true,
           output: finalOutput || '(no output)',
           error: stderrTruncated ? errOutput + '\n\n[... stderr truncated]' : errOutput || undefined,
@@ -847,8 +865,7 @@ async function execCommand_(command: string, cwd?: string, timeout?: number, max
     });
 
     child.on('error', (err) => {
-      clearTimeout(timeoutId);
-      resolve({
+      finish({
         success: false,
         output: '',
         error: err.message,
@@ -1007,7 +1024,7 @@ async function grep_(pattern: string, basePath?: string, globPattern?: string, c
       return { success: false, output: '', error: `Path not found: ${basePath}` };
     }
 
-    const regex = new RegExp(pattern, 'g');
+    const regex = new RegExp(pattern);
     const context = contextLines ?? 0;
     const results: string[] = [];
     const maxResults = 100;
@@ -1038,7 +1055,8 @@ async function grep_(pattern: string, basePath?: string, globPattern?: string, c
     }
 
     function matchGlobSimple(name: string, pat: string): boolean {
-      const regex = pat.replace(/\*/g, '.*').replace(/\?/g, '.').replace(/\./g, '\\.');
+      const escaped = pat.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+      const regex = escaped.replace(/\*/g, '.*').replace(/\?/g, '.');
       return new RegExp(`^${regex}$`).test(name);
     }
 
@@ -1112,11 +1130,12 @@ async function grep_(pattern: string, basePath?: string, globPattern?: string, c
  * Issue #32 #3.2: 支持 abortSignal
  */
 export async function executeTool(name: string, args: Record<string, unknown>, abortSignal?: AbortSignal): Promise<string> {
-  const tool = TOOLS.find(t => t.name === name);
+  const runtimeTools = getRuntimeTools();
+  const tool = runtimeTools.find(t => t.name === name);
   if (!tool) {
     return JSON.stringify({
       success: false,
-      error: `Unknown tool: ${name}. Available tools: ${TOOLS.map(t => t.name).join(', ')}`,
+      error: `Unknown tool: ${name}. Available tools: ${runtimeTools.map(t => t.name).join(', ')}`,
     });
   }
 
@@ -1149,7 +1168,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, a
  * 获取可用工具名称列表
  */
 export function getToolNames(): string {
-  return TOOLS.map(t => t.name).join(', ');
+  return getRuntimeTools().map(t => t.name).join(', ');
 }
 
 // Re-export bash_security module

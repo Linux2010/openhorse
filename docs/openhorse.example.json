@@ -3,9 +3,5 @@
   "apiBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
   "defaultModel": "glm-5",
   "fallbackModel": "qwen-plus",
-  "toolConfirmation": "allow",
-  "ui": {
-    "renderer": "legacy",
-    "confirmations": "config"
-  }
+  "toolConfirmation": "allow"
 }

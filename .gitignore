@@ -4,6 +4,7 @@ dist/
 package-lock.json
 tests/tmp/
 docs/*
+!docs/codex/
 !docs/issues/
 !docs/test/
 !docs/version/

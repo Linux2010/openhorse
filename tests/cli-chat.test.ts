@@ -17,6 +17,8 @@ import { executeChat } from '../src/commands';
 // Mock LLMService for testing without real API
 class MockLLMService {
   private model: string;
+  public lastMessages: Message[] = [];
+  public lastTools: Tool[] = [];
 
   constructor(model: string = 'gpt-4o') {
     this.model = model;
@@ -32,6 +34,8 @@ class MockLLMService {
     usage?: { promptTokens: number; completionTokens: number };
     toolCalls?: any[];
   }> {
+    this.lastMessages = messages;
+    this.lastTools = tools || [];
     // Simulate streaming response
     const response = 'This is a mock response.';
     if (callbacks?.onChunk) {
@@ -187,7 +191,7 @@ describe('CLI Chat Regression', () => {
       });
       const mockLLM = new MockLLMService('gpt-4o') as unknown as LLMService;
       const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
-      const writeSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+      const outputChunks: string[] = [];
 
       try {
         await executeChat({
@@ -196,18 +200,51 @@ describe('CLI Chat Regression', () => {
           store,
           llm: mockLLM,
           runtime: {} as any,
+          writeOutput: (text: string) => outputChunks.push(text),
+          writeLine: (text: string = '') => outputChunks.push(text + '\n'),
         }, 'Hello');
 
-        const output = [
-          ...logSpy.mock.calls.flat().map(String),
-          ...writeSpy.mock.calls.flat().map(String),
-        ].join('\n');
+        const output = outputChunks.join('');
 
         expect(output).toContain('This is a mock response.');
         expect(output).not.toContain('tokens: 100+20');
+        expect(output.replace(/\x1b\[[0-9;]*m/g, '')).toContain('response. \n\n');
       } finally {
         logSpy.mockRestore();
-        writeSpy.mockRestore();
+      }
+    });
+
+    test('executeChat injects active skill prompt and scopes tools', async () => {
+      const config = loadConfig({
+        apiKey: 'test-key',
+        ui: { renderer: 'v2', confirmations: 'config' },
+      });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'gpt-4o',
+      });
+      const mockLLM = new MockLLMService('gpt-4o') as unknown as MockLLMService & LLMService;
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+      try {
+        await executeChat({
+          cwd: process.cwd(),
+          config,
+          store,
+          llm: mockLLM,
+          runtime: {} as any,
+          writeOutput: () => {},
+          writeLine: () => {},
+        }, '/review src');
+
+        const systemPrompt = mockLLM.lastMessages[0]?.content || '';
+        expect(systemPrompt).toContain('## Active Skills');
+        expect(systemPrompt).toContain('# Code Review Skill');
+        expect(mockLLM.lastTools.map(tool => tool.function.name).sort()).toEqual(['glob', 'grep', 'read_file']);
+        expect(store.getSnapshot().harnessState?.ledger.some(entry => entry.type === 'skill')).toBe(true);
+      } finally {
+        logSpy.mockRestore();
       }
     });
   });

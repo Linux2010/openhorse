@@ -23,10 +23,14 @@ interface ExecResult {
 }
 
 async function execGit(command: string, cwd?: string, timeout = 30000): Promise<ExecResult> {
+  return execGitArgs(command.split(' '), cwd, timeout);
+}
+
+async function execGitArgs(args: string[], cwd?: string, timeout = 30000): Promise<ExecResult> {
   return new Promise((resolve) => {
     const workdir = cwd || process.cwd();
 
-    execFile('git', command.split(' '), {
+    execFile('git', args, {
       cwd: workdir,
       timeout,
       maxBuffer: 1024 * 1024,
@@ -54,8 +58,8 @@ async function execGit(command: string, cwd?: string, timeout = 30000): Promise<
 /**
  * 检查是否有未暂存/未提交的文件
  */
-async function checkUncommittedChanges(): Promise<{ hasChanges: boolean; files: string[] }> {
-  const statusResult = await execGit('status --porcelain');
+async function checkUncommittedChanges(cwd?: string): Promise<{ hasChanges: boolean; files: string[] }> {
+  const statusResult = await execGit('status --porcelain', cwd);
 
   if (!statusResult.success) {
     return { hasChanges: false, files: [] };
@@ -72,14 +76,14 @@ async function checkUncommittedChanges(): Promise<{ hasChanges: boolean; files: 
 /**
  * 检查远程认证状态
  */
-async function checkRemoteAuth(): Promise<{ authenticated: boolean; error?: string }> {
-  const remoteResult = await execGit('remote -v');
+async function checkRemoteAuth(cwd?: string): Promise<{ authenticated: boolean; error?: string }> {
+  const remoteResult = await execGit('remote -v', cwd);
   if (!remoteResult.success || !remoteResult.output.includes('origin')) {
     return { authenticated: false, error: 'No remote origin configured' };
   }
 
   // 尝试 ls-remote 检测认证
-  const lsRemoteResult = await execGit('ls-remote --heads origin 2>&1', undefined, 10000);
+  const lsRemoteResult = await execGitArgs(['ls-remote', '--heads', 'origin'], cwd, 10000);
 
   if (lsRemoteResult.output.includes('Authentication failed') ||
       lsRemoteResult.output.includes('Permission denied') ||
@@ -218,7 +222,7 @@ Issue #18/#23 修复：不再在未验证的情况下声称成功。`,
 
     // 1. 检查当前状态
     log.push('🔍 Checking git status...');
-    const changes = await checkUncommittedChanges();
+    const changes = await checkUncommittedChanges(cwd);
 
     if (changes.hasChanges) {
       log.push(`  Found ${changes.files.length} uncommitted files: ${changes.files.slice(0, 5).join(', ')}${changes.files.length > 5 ? '...' : ''}`);
@@ -237,7 +241,7 @@ Issue #18/#23 修复：不再在未验证的情况下声称成功。`,
 
       // 3. git commit
       log.push(`📝 Committing with message: "${message.slice(0, 50)}..."`);
-      const commitResult = await execGit(`commit -m "${message}"`, cwd);
+      const commitResult = await execGitArgs(['commit', '-m', message], cwd);
       if (!commitResult.success) {
         // 可能是 "nothing to commit"
         if (commitResult.output.includes('nothing to commit')) {
@@ -255,7 +259,7 @@ Issue #18/#23 修复：不再在未验证的情况下声称成功。`,
     // 4. 检查认证（如果启用）
     if (verify) {
       log.push('🔐 Checking remote authentication...');
-      const auth = await checkRemoteAuth();
+      const auth = await checkRemoteAuth(cwd);
       if (!auth.authenticated) {
         return {
           success: false,
@@ -277,7 +281,7 @@ Issue #18/#23 修复：不再在未验证的情况下声称成功。`,
 
     // 6. 验证最终状态（v0.1.11 增强）
     log.push('✅ Verifying final status...');
-    const finalChanges = await checkUncommittedChanges();
+    const finalChanges = await checkUncommittedChanges(cwd);
     const logResult = await execGit('log --oneline -1', cwd);
     const untrackedResult = await execGit('status --short', cwd);
 

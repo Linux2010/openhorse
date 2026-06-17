@@ -58,18 +58,13 @@ OpenClaude 的关键价值不是某个组件样式，而是架构原则：
 
 ## 4. 推荐目标架构
 
-建议新增 `src/ui-v2/`，保留现有 `src/ui/` 作为 fallback。通过配置或环境变量灰度：
+建议新增 `src/ui-v2/`，保留现有 `src/ui/` 作为 fallback。历史灰度方案曾使用环境变量或 `openhorse.json`：
 
 ```text
 OPENHORSE_UI=v2
-# 或 ~/.openhorse/openhorse.json
-{
-  "ui": {
-    "renderer": "v2",
-    "confirmations": "interactive"
-  }
-}
 ```
+
+v0.1.22 起，v2 已是默认 UI，`renderer` 不再写入 `~/.openhorse/openhorse.json`；需要回退时使用 `openhorse --ui legacy`。
 
 目标目录：
 
@@ -242,8 +237,8 @@ flowchart TD
 
 - 增加 `react`、`ink` 依赖。
 - 新建 `src/ui-v2/App.tsx`，只实现 transcript、PromptInput、FooterStatus。
-- `openhorse --ui=v2` 或 `OPENHORSE_UI=v2 npx openhorse` 启用。
-- 旧 UI 仍为默认，发布风险可控。
+- 历史灰度期通过 `openhorse --ui=v2` 或 `OPENHORSE_UI=v2 npx openhorse` 启用。
+- v0.1.22 起默认使用 v2；旧 UI 仅作为 `openhorse --ui legacy` 回退。
 
 验收：基础对话、Ctrl+C、/exit、流式输出、状态栏正常。
 

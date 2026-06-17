@@ -15,7 +15,7 @@ import { createStreamRenderer, type StreamMarkdownRenderer } from '../ui/stream-
 import { showProgress, hideProgress, showToolProgress } from '../ui/progress';
 import { renderSessionPicker } from '../ui-v2';
 import { query, getSystemPrompt, resetToolState, type QueryEvent, type PromptContext } from '../framework';
-import { TOOLS, executeTool, getToolNames } from '../tools';
+import { executeTool, getRuntimeTools, getToolNames } from '../tools';
 import { mcpManager } from '../tools/mcp';
 import type { Message, StreamCallbacks } from '../services/llm';
 import {
@@ -29,6 +29,7 @@ import {
   endSession,
   updateSessionSummary,
   updateSessionHarnessState,
+  updateSessionSkills,
   resumeSession,
   renameSession,
   resolveProjectPath,
@@ -38,6 +39,7 @@ import {
 } from '../services/session-storage';
 import { getAutoCompact } from '../services/compact/auto-compact';
 import { createContextHarness } from '../harness';
+import { resolveSkillsForTurn } from '../skills';
 
 // ============================================================================
 // 颜色常量
@@ -552,6 +554,15 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
 
   const activeSession = ctx.getSession?.() ?? ctx.ensureSession?.() ?? (ctx.sessionId ? loadSessionMeta(ctx.sessionId) : null);
   const sessionId = activeSession?.id ?? ctx.sessionId;
+  const runtimeTools = getRuntimeTools();
+  const skillResolution = resolveSkillsForTurn({
+    cwd: ctx.cwd,
+    input,
+    tools: runtimeTools,
+    projectPath: activeSession?.projectPath,
+    sessionId,
+  });
+  const appliedSkillNames = skillResolution.skills.map(skill => skill.name);
 
   // Record user message to session
   if (sessionId) {
@@ -559,6 +570,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       role: 'user',
       content: input,
       timestamp: Date.now(),
+      appliedSkills: appliedSkillNames.length > 0 ? appliedSkillNames : undefined,
     });
   }
 
@@ -575,14 +587,16 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
     },
   });
   harness.updateContractFromUserInput(input);
+  harness.recordAppliedSkills(skillResolution.skills);
 
   const promptCtx: PromptContext = {
     cwd: ctx.cwd,
     platform: process.platform,
     nodeVersion: process.version,
-    tools: TOOLS,
+    tools: skillResolution.tools,
     memoryContent: snapshot.memoryContent,
     skillsContent: snapshot.skillsContent,
+    activeSkillsContent: skillResolution.promptInjection,
   };
   const systemPrompt = getSystemPrompt(promptCtx);
 
@@ -609,6 +623,14 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
 
   // Issue #32 #3.2: toolExecutor 支持 abortSignal
   const toolExecutor = async (name: string, args: Record<string, unknown>, abortSignal?: AbortSignal) => {
+    if (!skillResolution.tools.some(tool => tool.name === name)) {
+      return JSON.stringify({
+        success: false,
+        error: skillResolution.toolScopeActive
+          ? `Tool ${name} is not available for the active skill scope. Available tools: ${skillResolution.tools.map(tool => tool.name).join(', ') || 'none'}`
+          : `Tool ${name} is not available.`,
+      });
+    }
     const result = await executeTool(name, args, abortSignal);
     // 不在这里打印，让 tool_result 事件处理
     return result;
@@ -645,7 +667,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
 
     for await (const event of query({
       messages,
-      tools: TOOLS,
+      tools: skillResolution.tools,
       toolExecutor,
       llm: ctx.llm,
       streamCallbacks,
@@ -770,6 +792,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       const harnessState = harness.toJSON();
       ctx.store.setState({ harnessState });
       if (sessionId) {
+        updateSessionSkills(sessionId, appliedSkillNames);
         updateSessionHarnessState(sessionId, harnessState);
         const recordedMessages = readSessionMessages(sessionId);
         if (recordedMessages.length > 0) {
@@ -780,6 +803,9 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
 
     if (responseStarted) {
       writeLine();
+      if (ctx.config.ui?.renderer === 'v2') {
+        writeLine();
+      }
     }
     if (ctx.config.ui?.renderer !== 'v2') {
       const stats = [

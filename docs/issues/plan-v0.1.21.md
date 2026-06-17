@@ -58,9 +58,8 @@ Automated checks:
 
 Manual checks:
 
-- Start with `npm run start -- --ui v2`.
+- Start with `npm run start` or `openhorse`; use `--ui legacy` only for fallback checks.
 - Send a slow prompt, then type a new instruction while output is streaming; the first turn should stop and restart with the latest instruction.
 - Type several revisions quickly; only the final revision should run.
 - Press `Ctrl+C` once while running; the turn should stop without exiting.
 - Press `Ctrl+C` twice within 2 seconds while idle; the CLI should exit.
-

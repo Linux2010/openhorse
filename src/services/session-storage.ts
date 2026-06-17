@@ -85,6 +85,8 @@ export interface SessionMeta {
   harnessState?: HarnessState;
   /** 最近一次可恢复上下文包 */
   contextCapsule?: ContextCapsule;
+  /** Skills applied in this session. */
+  skillsUsed?: string[];
 }
 
 /** 历史记录条目 */
@@ -113,6 +115,8 @@ export interface SessionMessage {
   toolCallId?: string;
   /** 工具调用列表 (assistant role) */
   tool_calls?: ToolCallRecord[];
+  /** Skills applied for this turn (usually stored on the user message). */
+  appliedSkills?: string[];
 }
 
 export interface ListSessionsOptions {
@@ -373,6 +377,17 @@ export function updateSessionHarnessState(sessionId: string, harnessState: Harne
 
   session.harnessState = harnessState;
   session.contextCapsule = harnessState.capsule;
+  saveSessionMeta(session);
+}
+
+export function updateSessionSkills(sessionId: string, skills: string[]): void {
+  if (skills.length === 0) return;
+  const session = loadSessionMeta(sessionId);
+  if (!session) return;
+
+  session.skillsUsed = [...new Set([...(session.skillsUsed || []), ...skills])];
+  session.updatedAt = Date.now();
+  session.updatedAtIso = new Date(session.updatedAt).toISOString();
   saveSessionMeta(session);
 }
 
