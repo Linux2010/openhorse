@@ -52,7 +52,7 @@ describe('loadConfig', () => {
     expect(config.logLevel).toBe('info');
     expect(config.apiKey).toBe('');
     expect(config.toolConfirmation).toBe('allow');
-    expect(config.ui).toEqual({ renderer: 'v2', confirmations: 'config' });
+    expect(config.ui).toEqual({ renderer: 'ink', confirmations: 'config' });
   });
 
   test('overrides take priority', () => {
@@ -142,8 +142,8 @@ describe('loadConfig', () => {
     expect(config.model).toBe('glm-5');
     expect(config.fallbackModel).toBe('qwen-plus');
     expect(config.toolConfirmation).toBe('deny');
-    // openhorse.json no longer controls renderer; use --ui legacy for fallback.
-    expect(config.ui).toEqual({ renderer: 'v2', confirmations: 'interactive' });
+    // openhorse.json no longer controls renderer; Ink is the default UI.
+    expect(config.ui).toEqual({ renderer: 'ink', confirmations: 'interactive' });
     expect(config.webSearch?.endpoint).toBe('https://dashscope.example/mcp');
     expect(config.webSearch?.apiKey).toBe('sk-websearch-global');
     expect(config.webSearch?.toolName).toBe('web_search');
@@ -180,7 +180,7 @@ describe('loadConfig', () => {
 
     const config = loadConfig();
     expect(config.toolConfirmation).toBe('allow');
-    expect(config.ui).toEqual({ renderer: 'v2', confirmations: 'config' });
+    expect(config.ui).toEqual({ renderer: 'ink', confirmations: 'config' });
   });
 });
 
@@ -238,7 +238,7 @@ describe('getConfigSummary', () => {
     expect(summary.model).toBe('gpt-4o');
     expect(summary.fallback).toBe('claude-sonnet-4-6');
     expect(summary.toolConfirmation).toBe('allow');
-    expect(summary.ui).toBe('v2/config');
+    expect(summary.ui).toBe('ink/config');
     expect(summary.webSearch).toBe('(default)');
   });
 });

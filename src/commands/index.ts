@@ -1320,7 +1320,7 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
       maxVisibleItems: 10,
     };
 
-    if (ctx.config.ui?.renderer === 'v2') {
+    if (ctx.config.ui?.renderer === 'v2' || ctx.config.ui?.renderer === 'ink') {
       return { success: true, sessionPicker: picker };
     }
 
