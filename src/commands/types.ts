@@ -68,6 +68,17 @@ export interface CommandParam {
 /** 命令类型 */
 export type CommandType = 'builtin' | 'tool' | 'chat';
 
+/** Command category used by Ink palettes and grouped help output. */
+export type CommandCategory =
+  | 'workflow'
+  | 'session'
+  | 'context'
+  | 'tools'
+  | 'model'
+  | 'system'
+  | 'diagnostics'
+  | 'legacy';
+
 /** Permission Mode - controls how tools/edits are handled */
 export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto';
 
@@ -100,6 +111,10 @@ export interface SlashCommand {
   aliases?: string[];
   /** 描述（可以是 getter 函数支持动态） */
   description: string;
+  /** Product-facing grouping for command palettes and help output. */
+  category?: CommandCategory;
+  /** Lower values appear earlier inside grouped command lists. */
+  priority?: number;
   /** 参数提示（显示在命令名后面） */
   argumentHint?: string;
   params?: CommandParam[];

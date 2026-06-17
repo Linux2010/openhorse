@@ -157,7 +157,7 @@ export async function forkSubagent(options: ForkOptions): Promise<ForkResult> {
         case 'tool_result':
           toolCalls.push({
             name: event.name,
-            args: {},  // 简化
+            args: event.args,
             result: event.result,
           });
           break;

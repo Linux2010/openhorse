@@ -39,7 +39,18 @@ export type QueryEvent =
   | { type: 'request_start'; model: string; turn: number }
   | { type: 'assistant_tool_calls'; content: string; toolCalls: NonNullable<Message['tool_calls']> }
   | { type: 'tool_call'; name: string; args: Record<string, unknown>; callId: string; batchCount?: number; batchIndex?: number }
-  | { type: 'tool_result'; name: string; result: string; duration: number; success: boolean; error?: string }
+  | {
+      type: 'tool_result';
+      name: string;
+      args: Record<string, unknown>;
+      callId: string;
+      result: string;
+      duration: number;
+      success: boolean;
+      error?: string;
+      batchCount?: number;
+      batchIndex?: number;
+    }
   | { type: 'strategy_exhausted'; suggestion: string }
   | { type: 'message'; role: 'assistant'; content: string }
   | { type: 'complete'; content: string; usage?: { promptTokens: number; completionTokens: number }; model: string };
@@ -288,10 +299,14 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         yield {
           type: 'tool_result',
           name: tc.function.name,
+          args,
+          callId: tc.id,
           result,
           duration,
           success: toolSuccess,   // Issue #21: 添加 success 字段
           error: toolError,       // Issue #21: 添加 error 字段
+          batchCount: response.toolCalls.length,
+          batchIndex: i,
         };
 
         if (isAborted(abortSignal)) {

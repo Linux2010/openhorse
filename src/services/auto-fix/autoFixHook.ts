@@ -59,7 +59,7 @@ export async function autoFixHook(
   }
 
   // 检查是否触发
-  const check = shouldTriggerAutoFix(event.name, {}, triggers);
+  const check = shouldTriggerAutoFix(event.name, event.args, triggers);
 
   if (!check.trigger) {
     return;

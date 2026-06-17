@@ -114,7 +114,13 @@ describe('query generator', () => {
       expect.objectContaining({ type: 'tool_call', name: 'read_file' })
     );
     expect(events).toContainEqual(
-      expect.objectContaining({ type: 'tool_result', name: 'read_file', result: 'file content here' })
+      expect.objectContaining({
+        type: 'tool_result',
+        name: 'read_file',
+        callId: 'call-1',
+        args: { path: '/test' },
+        result: 'file content here',
+      })
     );
     expect(executedTools).toHaveLength(1);
     expect(executedTools[0].name).toBe('read_file');
