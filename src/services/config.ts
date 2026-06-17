@@ -75,7 +75,7 @@ const INTERNAL_DEFAULTS = {
   logLevel: 'info',
   toolConfirmation: 'allow' as ToolConfirmationPolicy,
   ui: {
-    renderer: 'v2' as UIRenderer,
+    renderer: 'ink' as UIRenderer,
     confirmations: 'config' as UIConfirmationMode,
   },
 } as const;
@@ -87,7 +87,7 @@ function normalizeToolConfirmationPolicy(value: unknown): ToolConfirmationPolicy
 }
 
 function normalizeUIRenderer(value: unknown): UIRenderer | undefined {
-  return value === 'legacy' || value === 'v2'
+  return value === 'ink' || value === 'legacy' || value === 'v2'
     ? value
     : undefined;
 }
