@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import type { TaskContract } from './types';
+import type { IntentUpdate, TaskContract } from './types';
 
 const MAX_LINE = 180;
 
@@ -53,21 +53,26 @@ export function updateTaskContract(
   previous: TaskContract | undefined,
   input: string,
   cwd: string,
+  intent?: IntentUpdate,
 ): TaskContract {
   if (!previous) {
     return createTaskContract(input, cwd);
   }
 
   const next = createTaskContract(input, cwd);
+  if (intent?.kind === 'new_task') {
+    return next;
+  }
+
   return {
     ...previous,
-    objective: next.objective,
+    objective: previous.objective,
     userIntent: input.trim(),
     requirements: unique([...previous.requirements, ...next.requirements]),
     successCriteria: unique([...previous.successCriteria, ...next.successCriteria]),
-    prohibitions: unique([...previous.prohibitions, ...next.prohibitions]),
+    constraints: unique([...previous.constraints, ...next.constraints, ...(intent?.constraints ?? [])]),
+    prohibitions: unique([...previous.prohibitions, ...next.prohibitions, ...(intent?.nonGoals ?? [])]),
     allowedScope: { ...previous.allowedScope, cwd },
     updatedAt: Date.now(),
   };
 }
-

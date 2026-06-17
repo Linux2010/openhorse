@@ -76,6 +76,8 @@ export interface QueryParams {
   strategyTracker?: StrategyTracker;
   /** Optional Context Harness for turn-level context, ledger, and completion gates */
   harness?: ContextHarness;
+  /** Current user input, used by Context Harness for evidence ranking */
+  input?: string;
 }
 
 // ============================================================================
@@ -109,6 +111,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     costTracker,
     strategyTracker = createStrategyTracker({ maxAttempts: 5 }),  // 增加到 5 次
     harness,
+    input,
   } = params;
 
   const openaiTools = toOpenAITools(tools) as unknown as Tool[];
@@ -139,7 +142,9 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
     // Stream the LLM response. Harness context is injected into a cloned
     // request payload so the durable conversation history stays clean.
-    const requestMessages = harness ? harness.assembleMessages(messages) : messages;
+    const requestMessages = harness
+      ? harness.assembleMessages(messages, { input, tools: tools.map(tool => ({ name: tool.name, description: tool.description })) })
+      : messages;
     const response = await llm.chatStream(requestMessages, streamCallbacks, openaiTools, { abortSignal });
 
     if (isAborted(abortSignal)) {
@@ -346,6 +351,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     const autoCompact = getAutoCompact({
       modelId: response.model || llm.getModel(),
       getContextCapsule: harness ? () => harness.getCapsule() : undefined,
+      getHarnessState: harness ? () => harness.toJSON() : undefined,
     });
     const compacted = await autoCompact.checkAndCompact(messages, totalTokens);
     if (compacted.length < messages.length) {

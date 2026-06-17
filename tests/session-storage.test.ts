@@ -17,14 +17,17 @@ import {
   getLastSession,
   resumeSession,
   resolveProjectPath,
+  updateSessionHarnessState,
+  loadSessionHarnessState,
   type SessionMeta,
   type HistoryEntry,
   type SessionMessage,
 } from '../src/services/session-storage';
+import { createContextHarness } from '../src/harness';
 import { existsSync, rmSync, realpathSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { getProjectSessionMessagesPath, getProjectSessionMetaPath } from '../src/services/config-dir';
+import { getProjectSessionHarnessPath, getProjectSessionMessagesPath, getProjectSessionMetaPath } from '../src/services/config-dir';
 
 describe('session-storage', () => {
   // Use a unique test directory based on timestamp to avoid conflicts
@@ -427,6 +430,33 @@ describe('session-storage', () => {
       const resumed = resumeSession(session.id);
       expect(resumed?.endTime).toBeUndefined();
       expect(resumed?.updatedAt).toBeGreaterThanOrEqual(session.startTime);
+    });
+
+    test('stores full harness state in project sidecar and loads sidecar on resume', () => {
+      const session = createSession('/tmp/project-harness-sidecar', 'gpt-4o');
+      const harness = createContextHarness({ cwd: session.projectPath, modelId: 'gpt-4o' });
+      harness.updateContractFromUserInput('实现 Context Harness sidecar，必须支持 resume');
+      for (let i = 0; i < 40; i++) {
+        harness.recordToolResult({
+          name: 'bash',
+          args: { command: `npm test -- case-${i}` },
+          result: JSON.stringify({ success: true, output: 'ok' }),
+          duration: 1,
+          success: true,
+        });
+      }
+
+      updateSessionHarnessState(session.id, harness.toJSON());
+
+      const sidecarPath = getProjectSessionHarnessPath(session.projectPath, session.id);
+      const meta = loadSessionMeta(session.id);
+      const loaded = loadSessionHarnessState(session.id);
+
+      expect(existsSync(sidecarPath)).toBe(true);
+      expect(meta?.harnessState?.version).toBe(2);
+      expect((meta?.harnessState?.ledger.length ?? 0)).toBeLessThan(40);
+      expect(loaded?.rootObjective).toContain('Context Harness sidecar');
+      expect((loaded?.ledger.length ?? 0)).toBeGreaterThanOrEqual(40);
     });
 
     test('resolveProjectPath returns a stable absolute path for non-git folders', () => {

@@ -1,4 +1,4 @@
-import type { ContextCapsule, ContextLedgerEntry, PlanStep, TaskContract } from './types';
+import type { ContextCapsule, ContextLedgerEntry, HarnessState, PlanStep, TaskContract } from './types';
 
 function metadataString(entry: ContextLedgerEntry, key: string): string | undefined {
   const value = entry.metadata?.[key];
@@ -112,3 +112,78 @@ export function renderContextCapsule(capsule: ContextCapsule): string {
   return lines.join('\n');
 }
 
+export function renderHarnessStateForCompact(
+  state: HarnessState,
+  mode: 'manual' | 'auto_pre_turn' | 'mid_turn' = 'manual',
+): string {
+  const lines: string[] = ['[OpenHorse Context State v2]'];
+  lines.push(`mode: ${mode}`);
+  lines.push(`taskEpoch: ${state.taskEpoch ?? 1}`);
+  if (state.rootObjective || state.contract?.objective) {
+    lines.push(`rootObjective: ${compactLine(state.rootObjective ?? state.contract!.objective, 220)}`);
+  }
+  if (state.activeInstruction || state.contract?.userIntent) {
+    lines.push(`activeInstruction: ${compactLine(state.activeInstruction ?? state.contract!.userIntent, 260)}`);
+  }
+
+  const latestIntent = state.intentHistory?.[state.intentHistory.length - 1];
+  if (latestIntent) {
+    lines.push(`latestIntent: ${latestIntent.kind} (${Math.round(latestIntent.confidence * 100)}%)`);
+  }
+
+  const constraints = state.activeConstraints ?? state.contract?.constraints ?? [];
+  if (constraints.length > 0) {
+    lines.push('activeConstraints:');
+    lines.push(...constraints.slice(0, 8).map(item => `- ${compactLine(item)}`));
+  }
+
+  const nonGoals = state.nonGoals ?? state.contract?.prohibitions ?? [];
+  if (nonGoals.length > 0) {
+    lines.push('nonGoals:');
+    lines.push(...nonGoals.slice(0, 8).map(item => `- ${compactLine(item)}`));
+  }
+
+  if (state.openQuestions && state.openQuestions.length > 0) {
+    lines.push('openQuestions:');
+    lines.push(...state.openQuestions.slice(0, 6).map(item => `- ${compactLine(item)}`));
+  }
+
+  if (state.capsule) {
+    if (state.capsule.openTodos.length > 0) {
+      lines.push('openTodos:');
+      lines.push(...state.capsule.openTodos.slice(0, 8).map(item => `- ${compactLine(item)}`));
+    }
+    const verification = state.capsule.verification;
+    if (verification.passed.length > 0 || verification.failed.length > 0 || verification.warnings.length > 0) {
+      lines.push('verification:');
+      lines.push(...verification.passed.slice(0, 5).map(item => `- passed: ${compactLine(item)}`));
+      lines.push(...verification.failed.slice(0, 5).map(item => `- failed: ${compactLine(item)}`));
+      lines.push(...verification.warnings.slice(0, 4).map(item => `- warning: ${compactLine(item)}`));
+    }
+    if (state.capsule.changedFiles.length > 0) {
+      lines.push(`changedFiles: ${state.capsule.changedFiles.slice(0, 12).join(', ')}`);
+    }
+    lines.push(`nextAction: ${compactLine(state.capsule.nextAction, 220)}`);
+  }
+
+  const turns = state.turnSummaries ?? [];
+  if (turns.length > 0) {
+    lines.push('recentTurns:');
+    for (const turn of turns.slice(-5)) {
+      lines.push(`- turn ${turn.turn} [${turn.intentKind}]: ${compactLine(turn.userIntent, 100)} -> ${compactLine(turn.assistantOutcome, 140)}`);
+    }
+  }
+
+  const evidenceIds = state.promptAssemblyStats?.includedEvidence.map(item => item.id) ?? state.evidenceIndex?.slice(0, 8).map(item => item.id) ?? [];
+  if (evidenceIds.length > 0) {
+    lines.push(`evidenceIds: ${evidenceIds.slice(0, 12).join(', ')}`);
+  }
+
+  if (state.diagnostics && state.diagnostics.length > 0) {
+    lines.push('diagnostics:');
+    lines.push(...state.diagnostics.slice(-5).map(item => `- ${compactLine(item)}`));
+  }
+
+  lines.push('[/OpenHorse Context State v2]');
+  return lines.join('\n');
+}

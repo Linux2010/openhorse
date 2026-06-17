@@ -34,14 +34,24 @@ export {
   ContextLedger,
   createContextCapsule,
   renderContextCapsule,
+  renderHarnessStateForCompact,
   assembleHarnessMessages,
+  buildHarnessContext,
+  classifyIntent,
+  rankEvidence,
+  upgradeHarnessState,
 } from '../harness';
 export type {
   ContextCapsule,
   ContextLedgerEntry,
+  EvidenceRecord,
   HarnessConfig,
+  IntentKind,
+  IntentUpdate,
   HarnessState,
+  PromptAssemblyStats,
   TaskContract,
+  TurnSummary,
 } from '../harness';
 
 export {

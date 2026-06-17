@@ -8,7 +8,7 @@
 import type { Message } from '../llm';
 import { compactMessages, type CompactOptions } from './compact';
 import { getModelContextWindow, AUTO_COMPACT_THRESHOLD } from '../model-context';
-import type { ContextCapsule } from '../../harness';
+import type { ContextCapsule, HarnessState } from '../../harness';
 
 // ============================================================================
 // 类型定义
@@ -29,6 +29,8 @@ export interface AutoCompactConfig {
   preCompactThreshold?: number;
   /** 获取最新 Context Capsule */
   getContextCapsule?: () => ContextCapsule | undefined | null;
+  /** 获取最新完整 Harness State */
+  getHarnessState?: () => HarnessState | undefined | null;
 }
 
 // ============================================================================
@@ -39,6 +41,7 @@ export class AutoCompact {
   private config: Required<Pick<AutoCompactConfig, 'threshold' | 'modelId' | 'maxMessages' | 'enabled' | 'preCompactThreshold'>> & {
     onCompact?: AutoCompactConfig['onCompact'];
     getContextCapsule?: AutoCompactConfig['getContextCapsule'];
+    getHarnessState?: AutoCompactConfig['getHarnessState'];
   };
   private lastCompactTime: number = 0;
   private compactCount: number = 0;
@@ -54,6 +57,7 @@ export class AutoCompact {
       preCompactThreshold: config?.preCompactThreshold ?? 0.8,
       onCompact: config?.onCompact,
       getContextCapsule: config?.getContextCapsule,
+      getHarnessState: config?.getHarnessState,
     };
   }
 
@@ -70,6 +74,7 @@ export class AutoCompact {
     if (config.preCompactThreshold !== undefined) this.config.preCompactThreshold = config.preCompactThreshold;
     if (config.onCompact !== undefined) this.config.onCompact = config.onCompact;
     if (config.getContextCapsule !== undefined) this.config.getContextCapsule = config.getContextCapsule;
+    if (config.getHarnessState !== undefined) this.config.getHarnessState = config.getHarnessState;
   }
 
   /**
@@ -94,6 +99,10 @@ export class AutoCompact {
       ctxPercent >= this.config.preCompactThreshold * 100
         ? this.config.getContextCapsule?.() ?? undefined
         : undefined;
+    const harnessState =
+      ctxPercent >= this.config.preCompactThreshold * 100
+        ? this.config.getHarnessState?.() ?? undefined
+        : undefined;
 
     // 达到阈值才触发
     if (ctxPercent < this.config.threshold * 100) {
@@ -110,6 +119,8 @@ export class AutoCompact {
     const result = await compactMessages(messages, {
       maxMessages: this.config.maxMessages,
       contextCapsule,
+      harnessState,
+      compactMode: 'auto_pre_turn',
     });
 
     // 更新状态
@@ -157,6 +168,8 @@ export class AutoCompact {
     const result = await compactMessages(messages, {
       maxMessages: this.config.maxMessages,
       contextCapsule: this.config.getContextCapsule?.() ?? undefined,
+      harnessState: this.config.getHarnessState?.() ?? undefined,
+      compactMode: 'manual',
     });
 
     this.compactCount++;

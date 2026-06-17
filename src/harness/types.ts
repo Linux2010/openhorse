@@ -68,12 +68,140 @@ export interface ContextCapsule {
   updatedAt: number;
 }
 
+export type IntentKind =
+  | 'new_task'
+  | 'refine_current_task'
+  | 'interrupt_and_replace_current_step'
+  | 'verify_or_test'
+  | 'meta_configuration'
+  | 'casual_or_feedback'
+  | 'continue_current_task';
+
+export interface IntentUpdate {
+  id: string;
+  kind: IntentKind;
+  input: string;
+  summary: string;
+  confidence: number;
+  reason: string;
+  taskEpoch: number;
+  rootObjectiveChanged: boolean;
+  activeInstruction: string;
+  constraints: string[];
+  nonGoals: string[];
+  openQuestions: string[];
+  filesMentioned: string[];
+  toolsMentioned: string[];
+  createdAt: number;
+}
+
+export type EvidenceKind =
+  | 'requirement'
+  | 'decision'
+  | 'file_fact'
+  | 'tool_result'
+  | 'verification'
+  | 'skill'
+  | 'risk'
+  | 'todo'
+  | 'turn_summary'
+  | 'mcp_fact';
+
+export interface EvidenceRecord {
+  id: string;
+  kind: EvidenceKind;
+  content: string;
+  source: 'ledger' | 'turn_summary' | 'session' | 'system';
+  sourceId?: string;
+  importance: 1 | 2 | 3 | 4 | 5;
+  taskEpoch?: number;
+  createdAt: number;
+  tokenEstimate: number;
+  tags: string[];
+  path?: string;
+  toolName?: string;
+  verificationStatus?: 'passed' | 'failed' | 'unknown';
+  metadata?: Record<string, unknown>;
+}
+
+export interface RankedEvidenceRecord extends EvidenceRecord {
+  score: number;
+  reasons: string[];
+}
+
+export interface TurnSummary {
+  id: string;
+  turn: number;
+  taskEpoch: number;
+  intentKind: IntentKind;
+  userIntent: string;
+  assistantOutcome: string;
+  filesTouched: string[];
+  toolsUsed: string[];
+  decisions: string[];
+  verification: {
+    commandsRun: string[];
+    passed: string[];
+    failed: string[];
+  };
+  unresolved: string[];
+  createdAt: number;
+}
+
+export interface PromptAssemblyStats {
+  createdAt: number;
+  modelId: string;
+  budgetTokens: number;
+  estimatedTokens: number;
+  coreTokens: number;
+  evidenceBudgetTokens: number;
+  recentTurnBudgetTokens: number;
+  includedEvidence: Array<{
+    id: string;
+    kind: EvidenceKind;
+    score: number;
+    tokens: number;
+    reason: string;
+  }>;
+  omittedEvidence: Array<{
+    id: string;
+    kind: EvidenceKind;
+    score: number;
+    tokens: number;
+    reason: string;
+  }>;
+  sections: string[];
+}
+
 export interface HarnessState {
+  version?: 2;
   contract?: TaskContract;
   ledger: ContextLedgerEntry[];
   capsule?: ContextCapsule;
   completionBlockCount?: number;
+  taskEpoch?: number;
+  rootObjective?: string;
+  activeInstruction?: string;
+  intentHistory?: IntentUpdate[];
+  activeConstraints?: string[];
+  nonGoals?: string[];
+  openQuestions?: string[];
+  evidenceIndex?: EvidenceRecord[];
+  turnSummaries?: TurnSummary[];
+  promptAssemblyStats?: PromptAssemblyStats;
+  diagnostics?: string[];
+  reconciledAt?: number;
   updatedAt: number;
+}
+
+export interface HarnessSidecar {
+  version: 2;
+  sessionId: string;
+  projectPath: string;
+  state: HarnessState;
+  contextCapsule?: ContextCapsule;
+  updatedAt: number;
+  diagnostics?: string[];
 }
 
 export interface HarnessConfig {

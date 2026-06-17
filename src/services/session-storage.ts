@@ -5,7 +5,7 @@
  * 参考 OpenClaude 的 history.jsonl 和 sessions/ 目录。
  */
 
-import { existsSync, readFileSync, appendFileSync, readdirSync, unlinkSync, realpathSync } from 'fs';
+import { existsSync, readFileSync, appendFileSync, readdirSync, unlinkSync, realpathSync, statSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { execFileSync } from 'child_process';
 import { join, resolve } from 'path';
@@ -15,6 +15,7 @@ import {
   ensureProjectDir,
   getHistoryPath,
   getProjectSessionMessagesPath,
+  getProjectSessionHarnessPath,
   getProjectSessionMetaPath,
   getProjectSessionsDir,
   getProjectsDir,
@@ -24,7 +25,7 @@ import {
 } from './config-dir';
 import { atomicWriteFileSync } from './atomic-write';
 import type { Message } from './llm';
-import type { ContextCapsule, HarnessState } from '../harness';
+import { summarizeHarnessStateForMeta, upgradeHarnessState, type ContextCapsule, type HarnessSidecar, type HarnessState } from '../harness';
 
 // ============================================================================
 // 类型定义
@@ -67,6 +68,8 @@ export interface SessionMeta {
   endTime?: number;
   /** Number of recorded transcript messages */
   messageCount?: number;
+  /** Size of the session transcript history file in bytes */
+  historySizeBytes?: number;
   /** Optional human-readable name */
   name?: string;
   /** Git branch at session creation/resume time */
@@ -223,6 +226,7 @@ function normalizeSessionMeta(session: SessionMeta): SessionMeta {
     updatedAt,
     updatedAtIso: session.updatedAtIso ?? new Date(updatedAt).toISOString(),
     messageCount: session.messageCount ?? 0,
+    historySizeBytes: computeSessionHistorySizeBytes({ id: session.id, projectPath }),
     tokenCount: session.tokenCount ?? 0,
     cost: session.cost ?? 0,
     gitBranch: session.gitBranch ?? getGitBranch(projectPath),
@@ -242,6 +246,16 @@ function parseSessionMetaFile(path: string): SessionMeta | null {
   }
 }
 
+function parseHarnessSidecarFile(path: string): HarnessSidecar | null {
+  try {
+    const content = readFileSync(path, 'utf-8');
+    const parsed = JSON.parse(content) as HarnessSidecar;
+    return parsed?.version === 2 && parsed.state ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function upsertNewestSession(sessionsById: Map<string, SessionMeta>, session: SessionMeta): void {
   const existing = sessionsById.get(session.id);
   const existingTime = existing ? existing.updatedAt ?? existing.startTime : 0;
@@ -254,6 +268,20 @@ function upsertNewestSession(sessionsById: Map<string, SessionMeta>, session: Se
 
 function sortSessionsNewestFirst(sessions: SessionMeta[]): SessionMeta[] {
   return sessions.sort((a, b) => (b.updatedAt ?? b.startTime) - (a.updatedAt ?? a.startTime));
+}
+
+function safeFileSize(path: string): number | null {
+  try {
+    return existsSync(path) ? statSync(path).size : null;
+  } catch {
+    return null;
+  }
+}
+
+function computeSessionHistorySizeBytes(session: Pick<SessionMeta, 'id' | 'projectPath'>): number {
+  const projectSize = safeFileSize(getProjectSessionMessagesPath(session.projectPath, session.id));
+  if (projectSize !== null) return projectSize;
+  return safeFileSize(getSessionMessagesPath(session.id)) ?? 0;
 }
 
 // ============================================================================
@@ -375,9 +403,62 @@ export function updateSessionHarnessState(sessionId: string, harnessState: Harne
   const session = loadSessionMeta(sessionId);
   if (!session) return;
 
-  session.harnessState = harnessState;
-  session.contextCapsule = harnessState.capsule;
+  const fullState = upgradeHarnessState(harnessState, { cwd: session.cwd ?? session.projectPath });
+  const sidecar: HarnessSidecar = {
+    version: 2,
+    sessionId,
+    projectPath: session.projectPath,
+    state: fullState,
+    contextCapsule: fullState.capsule,
+    updatedAt: Date.now(),
+    diagnostics: fullState.diagnostics,
+  };
+
+  ensureProjectDir(session.projectPath);
+  atomicWriteFileSync(
+    getProjectSessionHarnessPath(session.projectPath, sessionId),
+    JSON.stringify(sidecar, null, 2),
+    { mode: 0o600 }
+  );
+
+  session.harnessState = summarizeHarnessStateForMeta(fullState);
+  session.contextCapsule = fullState.capsule;
+  session.updatedAt = Date.now();
+  session.updatedAtIso = new Date(session.updatedAt).toISOString();
   saveSessionMeta(session);
+}
+
+export function loadSessionHarnessState(sessionId: string): HarnessState | null {
+  const session = loadSessionMeta(sessionId);
+  if (!session) return null;
+
+  const sidecarPath = getProjectSessionHarnessPath(session.projectPath, sessionId);
+  if (existsSync(sidecarPath)) {
+    const sidecar = parseHarnessSidecarFile(sidecarPath);
+    if (sidecar?.state) {
+      return upgradeHarnessState(sidecar.state, {
+        cwd: session.cwd ?? session.projectPath,
+        messages: readSessionMessages(sessionId),
+      });
+    }
+  }
+
+  if (session.harnessState) {
+    return upgradeHarnessState(session.harnessState, {
+      cwd: session.cwd ?? session.projectPath,
+      messages: readSessionMessages(sessionId),
+    });
+  }
+
+  const messages = readSessionMessages(sessionId);
+  if (messages.length > 0) {
+    return upgradeHarnessState(null, {
+      cwd: session.cwd ?? session.projectPath,
+      messages,
+    });
+  }
+
+  return null;
 }
 
 export function updateSessionSkills(sessionId: string, skills: string[]): void {
@@ -618,7 +699,7 @@ export function listSessions(limit?: number): SessionMeta[] {
   const sessionsById = new Map<string, SessionMeta>();
 
   if (existsSync(sessionsDir)) {
-    const files = readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
+    const files = readdirSync(sessionsDir).filter(f => f.endsWith('.json') && !f.endsWith('.harness.json'));
     for (const file of files) {
       const rawSession = parseSessionMetaFile(join(sessionsDir, file));
       if (rawSession) {
@@ -633,7 +714,7 @@ export function listSessions(limit?: number): SessionMeta[] {
       const projectSessionsDir = join(projectsDir, projectKey, 'sessions');
       if (!existsSync(projectSessionsDir)) continue;
 
-      const files = readdirSync(projectSessionsDir).filter(f => f.endsWith('.json'));
+      const files = readdirSync(projectSessionsDir).filter(f => f.endsWith('.json') && !f.endsWith('.harness.json'));
       for (const file of files) {
         const rawSession = parseSessionMetaFile(join(projectSessionsDir, file));
         if (rawSession) {
@@ -656,7 +737,7 @@ export function listProjectSessions(projectPath: string, limit?: number): Sessio
 
   const projectSessionsDir = getProjectSessionsDir(canonicalProjectPath);
   if (existsSync(projectSessionsDir)) {
-    const files = readdirSync(projectSessionsDir).filter(f => f.endsWith('.json'));
+    const files = readdirSync(projectSessionsDir).filter(f => f.endsWith('.json') && !f.endsWith('.harness.json'));
     for (const file of files) {
       const rawSession = parseSessionMetaFile(join(projectSessionsDir, file));
       if (rawSession) {
@@ -751,7 +832,8 @@ export function deleteSession(sessionId: string): boolean {
   if (session) {
     paths.push(
       getProjectSessionMetaPath(session.projectPath, sessionId),
-      getProjectSessionMessagesPath(session.projectPath, sessionId)
+      getProjectSessionMessagesPath(session.projectPath, sessionId),
+      getProjectSessionHarnessPath(session.projectPath, sessionId)
     );
   }
 

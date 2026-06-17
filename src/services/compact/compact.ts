@@ -7,7 +7,7 @@
 
 import type { Message } from '../llm';
 import { summaryGenerator, type SummaryOptions } from './summary-generator';
-import { renderContextCapsule, type ContextCapsule } from '../../harness';
+import { renderContextCapsule, renderHarnessStateForCompact, type ContextCapsule, type HarnessState } from '../../harness';
 
 // ============================================================================
 // 类型定义
@@ -26,6 +26,10 @@ export interface CompactOptions {
   summaryOptions?: SummaryOptions;
   /** Harness capsule that must survive compaction */
   contextCapsule?: ContextCapsule;
+  /** Full Context Harness state that must survive compaction */
+  harnessState?: HarnessState;
+  /** Why this compaction happened */
+  compactMode?: 'manual' | 'auto_pre_turn' | 'mid_turn';
 }
 
 export interface CompactResult {
@@ -107,7 +111,16 @@ export async function compactMessages(
   }
 
   // Preserve structured task state before the lossy natural-language summary.
-  if (opts.contextCapsule) {
+  if (opts.harnessState) {
+    compactedMessages.push({
+      role: 'user',
+      content: renderHarnessStateForCompact(opts.harnessState, opts.compactMode ?? 'manual'),
+    });
+    compactedMessages.push({
+      role: 'assistant',
+      content: 'I will continue from this OpenHorse Context State and preserve its root objective, active instruction, constraints, and verification state.',
+    });
+  } else if (opts.contextCapsule) {
     compactedMessages.push({
       role: 'user',
       content: renderContextCapsule(opts.contextCapsule),

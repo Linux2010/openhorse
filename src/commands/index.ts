@@ -14,6 +14,7 @@ import { createSpinner, toolLine } from '../ui/box';
 import { createStreamRenderer, type StreamMarkdownRenderer } from '../ui/stream-markdown';
 import { showProgress, hideProgress, showToolProgress } from '../ui/progress';
 import { renderSessionPicker } from '../ui-v2';
+import { formatBytes } from '../ui-v2/state/sessions';
 import { query, getSystemPrompt, resetToolState, type QueryEvent, type PromptContext } from '../framework';
 import { executeTool, getRuntimeTools, getToolNames } from '../tools';
 import { mcpManager } from '../tools/mcp';
@@ -29,6 +30,7 @@ import {
   endSession,
   updateSessionSummary,
   updateSessionHarnessState,
+  loadSessionHarnessState,
   updateSessionSkills,
   resumeSession,
   renameSession,
@@ -251,21 +253,85 @@ function showSafety(ctx: CommandContext): CommandResult {
   return { success: true };
 }
 
-function showHarness(ctx: CommandContext): CommandResult {
+function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
+  const explain = args.trim().toLowerCase() === 'explain';
   console.log();
-  console.log(HEADER('Harness Config'));
+  console.log(HEADER(explain ? 'Harness Explain' : 'Harness'));
   console.log(DIM('─'.repeat(40)));
 
   const cfg = ctx.runtime.harness.getConfig();
   console.log();
-  console.log(`  Max steps       ${cfg.maxSteps}`);
-  console.log(`  Boundary check  ${cfg.boundaryCheck ? SUCCESS('on') : ERROR('off')}`);
-  console.log(`  Goal constraint ${cfg.goalConstraint ? SUCCESS('on') : ERROR('off')}`);
-  console.log(`  Result validate ${cfg.resultValidation ? SUCCESS('on') : ERROR('off')}`);
-  console.log(`  Sandbox         ${cfg.sandbox ? WARN('on') : DIM('off')}`);
-  console.log(`  Timeout         ${cfg.timeout}ms`);
+  if (!explain) {
+    console.log(`  Max steps       ${cfg.maxSteps}`);
+    console.log(`  Boundary check  ${cfg.boundaryCheck ? SUCCESS('on') : ERROR('off')}`);
+    console.log(`  Goal constraint ${cfg.goalConstraint ? SUCCESS('on') : ERROR('off')}`);
+    console.log(`  Result validate ${cfg.resultValidation ? SUCCESS('on') : ERROR('off')}`);
+    console.log(`  Sandbox         ${cfg.sandbox ? WARN('on') : DIM('off')}`);
+    console.log(`  Timeout         ${cfg.timeout}ms`);
+    console.log(`  Blocked actions ${DIM(cfg.blockedActions.join(', ') || 'none')}`);
+  }
+
+  const state = ctx.store.getSnapshot().harnessState;
+  if (!state) {
+    console.log();
+    console.log(DIM('  No Context Harness state for this session yet.'));
+    console.log();
+    return { success: true };
+  }
+
+  if (explain) {
+    const stats = state.promptAssemblyStats;
+    if (!stats) {
+      console.log(DIM('  No prompt assembly stats recorded yet. Run a chat turn first.'));
+      console.log();
+      return { success: true };
+    }
+    console.log(`  Model       ${ACCENT(stats.modelId)}`);
+    console.log(`  Budget      ${DIM(`${stats.estimatedTokens}/${stats.budgetTokens} tokens`)}`);
+    console.log(`  Sections    ${DIM(stats.sections.join(', ') || 'none')}`);
+    console.log();
+    console.log(HEADER('  Included Evidence'));
+    for (const item of stats.includedEvidence.slice(0, 12)) {
+      console.log(`    ${ACCENT(item.id)} ${DIM(`[${item.kind}] score=${item.score} tokens=${item.tokens}`)}`);
+      console.log(`      ${DIM(item.reason)}`);
+    }
+    if (stats.includedEvidence.length === 0) {
+      console.log(DIM('    none'));
+    }
+    console.log();
+    console.log(HEADER('  Omitted Evidence'));
+    for (const item of stats.omittedEvidence.slice(0, 12)) {
+      console.log(`    ${DIM(item.id)} ${DIM(`[${item.kind}] score=${item.score} tokens=${item.tokens}`)}`);
+      console.log(`      ${DIM(item.reason)}`);
+    }
+    if (stats.omittedEvidence.length === 0) {
+      console.log(DIM('    none'));
+    }
+    console.log();
+    return { success: true };
+  }
+
   console.log();
-  console.log(`  Blocked actions: ${cfg.blockedActions.join(', ')}`);
+  console.log(HEADER('  Context State'));
+  console.log(`    Version     ${ACCENT(String(state.version ?? 1))}`);
+  console.log(`    Epoch       ${ACCENT(String(state.taskEpoch ?? 1))}`);
+  console.log(`    Objective   ${ACCENT(state.rootObjective ?? state.contract?.objective ?? '(none)')}`);
+  console.log(`    Active      ${DIM(state.activeInstruction ?? state.contract?.userIntent ?? '(none)')}`);
+  console.log(`    Ledger      ${DIM(`${state.ledger.length} entries`)}`);
+  console.log(`    Evidence    ${DIM(`${state.evidenceIndex?.length ?? 0} records`)}`);
+  console.log(`    Turns       ${DIM(`${state.turnSummaries?.length ?? 0} summaries`)}`);
+  if (state.activeConstraints && state.activeConstraints.length > 0) {
+    console.log(`    Constraints ${DIM(state.activeConstraints.slice(0, 3).join(' | '))}`);
+  }
+  if (state.capsule) {
+    console.log(`    Next        ${DIM(state.capsule.nextAction)}`);
+    const passed = state.capsule.verification.passed.length;
+    const failed = state.capsule.verification.failed.length;
+    console.log(`    Verify      ${SUCCESS(`${passed} passed`)} / ${failed > 0 ? ERROR(`${failed} failed`) : DIM('0 failed')}`);
+  }
+  if (state.diagnostics && state.diagnostics.length > 0) {
+    console.log(`    Diagnostics ${WARN(state.diagnostics.slice(-2).join(' | '))}`);
+  }
   console.log();
   return { success: true };
 }
@@ -586,7 +652,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       completionGate: true,
     },
   });
-  harness.updateContractFromUserInput(input);
+  const intent = harness.updateContractFromUserInput(input);
   harness.recordAppliedSkills(skillResolution.skills);
 
   const promptCtx: PromptContext = {
@@ -683,6 +749,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       },
       abortSignal: ctx.abortSignal,
       harness,
+      input,
     })) {
       switch (event.type) {
         case 'request_start':
@@ -789,6 +856,12 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
     }
 
     if (!wasAborted) {
+      harness.ingestTurn({
+        userInput: input,
+        assistantContent: finalContent,
+        sessionMessages: sessionMessagesToRecord,
+        intent,
+      });
       const harnessState = harness.toJSON();
       ctx.store.setState({ harnessState });
       if (sessionId) {
@@ -1013,6 +1086,7 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
     autoCompact.configure({
       maxMessages: threshold,
       getContextCapsule: () => ctx.store.getSnapshot().harnessState?.capsule,
+      getHarnessState: () => ctx.store.getSnapshot().harnessState,
     });
     const compacted = await autoCompact.forceCompact(history);
 
@@ -1145,7 +1219,7 @@ function printSessionRows(sessions: SessionMeta[], options: { showProject?: bool
     console.log(`${index}${status} ${BRAND(session.id.slice(0, 8))}${name} ${DIM(session.model)}`);
     console.log(`    ${truncateText(sessionTitle(session), 96)}`);
     console.log(`    ${DIM(`Started: ${startTime}`)} ${DIM(`Updated: ${updatedTime}`)} ${DIM(`Duration: ${duration}`)}`);
-    console.log(`    ${DIM(`Messages: ${session.messageCount ?? 0}`)} ${DIM(`Tokens: ${session.tokenCount}`)} ${DIM(`Cost: $${session.cost.toFixed(4)}`)}`);
+    console.log(`    ${DIM(`Messages: ${session.messageCount ?? 0}`)} ${DIM(`Size: ${formatBytes(session.historySizeBytes ?? 0)}`)} ${DIM(`Tokens: ${session.tokenCount}`)} ${DIM(`Cost: $${session.cost.toFixed(4)}`)}`);
     if (options.showProject) {
       console.log(`    ${DIM(`Project: ${session.projectPath}`)}`);
     }
@@ -1237,24 +1311,25 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
       return restoreSession(ctx, lastSession, true);
     }
 
-    const visibleSessions = scopedSessions.slice(0, 10);
     const picker = {
       title: scope.allProjects ? 'Pick a Session (all projects)' : 'Pick a Session',
       showProject: scope.allProjects,
-      moreCount: Math.max(0, scopedSessions.length - visibleSessions.length),
-      sessions: visibleSessions,
+      moreCount: 0,
+      sessions: scopedSessions,
       allProjects: scope.allProjects,
+      maxVisibleItems: 10,
     };
 
     if (ctx.config.ui?.renderer === 'v2') {
       return { success: true, sessionPicker: picker };
     }
 
+    const visibleSessions = scopedSessions.slice(0, 10);
     console.log();
     printSessionPicker(visibleSessions, {
       title: picker.title,
       showProject: picker.showProject,
-      moreCount: picker.moreCount,
+      moreCount: Math.max(0, scopedSessions.length - visibleSessions.length),
     });
     console.log();
     return { success: true };
@@ -1302,7 +1377,7 @@ function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boole
     console.log();
 
     ctx.store.setState({ conversationHistory: history });
-    ctx.store.setState({ harnessState: resumed.harnessState });
+    ctx.store.setState({ harnessState: loadSessionHarnessState(resumed.id) ?? resumed.harnessState });
     resetToolState();
     console.log(SUCCESS(`✔ Restored ${history.length} messages`));
   } else {
@@ -1505,9 +1580,10 @@ const COMMANDS: SlashCommand[] = [
   },
   {
     name: 'harness',
-    description: 'Show harness configuration',
+    description: 'Show Context Harness state, or `/harness explain` for prompt assembly details',
+    argumentHint: '[explain]',
     type: 'builtin',
-    execute: (ctx) => showHarness(ctx),
+    execute: (ctx, args) => showHarness(ctx, args),
   },
 
   // Task 命令

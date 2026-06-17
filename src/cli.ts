@@ -70,7 +70,7 @@ import {
 } from './ui/file-completion';
 import { renderStatusBar, type StatusBarStats } from './ui/status-bar';
 import { renderUserInputEcho, renderUserInputEchoFrame } from './ui/user-input';
-import { renderSessionPicker, renderV2FooterHint, renderV2ShellHeader, renderV2Shortcuts, renderV2StatusBadge } from './ui-v2';
+import { getSessionWindowStart, renderSessionPicker, renderV2FooterHint, renderV2ShellHeader, renderV2Shortcuts, renderV2StatusBadge } from './ui-v2';
 import { TurnController } from './runtime/turn-controller';
 
 // Get version from package.json
@@ -172,11 +172,17 @@ interface ResumePickerState {
   showProject?: boolean;
   moreCount?: number;
   allProjects?: boolean;
+  maxVisibleItems?: number;
 }
 
 let resumePickerState: ResumePickerState | null = null;
 let resumePickerLines: string[] = [];
 let resumePickerReservedHeight = 0;
+const DEFAULT_RESUME_PICKER_VISIBLE_ITEMS = 10;
+
+let shortcutsOverlayVisible = false;
+let shortcutsOverlayLines: string[] = [];
+let shortcutsOverlayReservedHeight = 0;
 
 function ensureCurrentSession(): SessionMeta {
   if (!currentSession) {
@@ -348,6 +354,11 @@ function handleKeypress(char: string | undefined, key: KeyInfo | undefined): voi
   // Resume session picker mode
   if (resumePickerState?.visible) {
     handleResumePickerKeypress(k, char);
+    return;
+  }
+
+  if (shortcutsOverlayVisible) {
+    handleShortcutsOverlayKeypress(k, char);
     return;
   }
 
@@ -525,6 +536,7 @@ function handleFileCompletionKeypress(k: KeyInfo, char: string | undefined): voi
 
 function handleResumePickerKeypress(k: KeyInfo, char: string | undefined): void {
   if (!resumePickerState?.visible) return;
+  const pageSize = resumePickerState.maxVisibleItems ?? DEFAULT_RESUME_PICKER_VISIBLE_ITEMS;
 
   switch (k.name) {
     case 'up':
@@ -535,6 +547,22 @@ function handleResumePickerKeypress(k: KeyInfo, char: string | undefined): void 
       resumePickerState.selectedIndex = Math.min(resumePickerState.sessions.length - 1, resumePickerState.selectedIndex + 1);
       renderResumePicker();
       break;
+    case 'pageup':
+      resumePickerState.selectedIndex = Math.max(0, resumePickerState.selectedIndex - pageSize);
+      renderResumePicker();
+      break;
+    case 'pagedown':
+      resumePickerState.selectedIndex = Math.min(resumePickerState.sessions.length - 1, resumePickerState.selectedIndex + pageSize);
+      renderResumePicker();
+      break;
+    case 'home':
+      resumePickerState.selectedIndex = 0;
+      renderResumePicker();
+      break;
+    case 'end':
+      resumePickerState.selectedIndex = Math.max(0, resumePickerState.sessions.length - 1);
+      renderResumePicker();
+      break;
     case 'enter':
       restoreSelectedResumeSession();
       break;
@@ -543,9 +571,15 @@ function handleResumePickerKeypress(k: KeyInfo, char: string | undefined): void 
       redrawInputWithPrompt(currentInput);
       break;
     default:
-      if (char && /^[1-9]$/.test(char)) {
-        const index = Number(char) - 1;
-        if (index >= 0 && index < resumePickerState.sessions.length) {
+      if (char && /^[0-9]$/.test(char)) {
+        const visibleOffset = char === '0' ? 9 : Number(char) - 1;
+        const windowStart = getSessionWindowStart(
+          resumePickerState.selectedIndex,
+          resumePickerState.sessions.length,
+          pageSize
+        );
+        const index = windowStart + visibleOffset;
+        if (visibleOffset >= 0 && visibleOffset < pageSize && index < resumePickerState.sessions.length) {
           resumePickerState.selectedIndex = index;
           restoreSelectedResumeSession();
         }
@@ -562,6 +596,7 @@ function showResumePicker(options: NonNullable<CommandResult['sessionPicker']>):
     showProject: options.showProject,
     moreCount: options.moreCount,
     allProjects: options.allProjects,
+    maxVisibleItems: options.maxVisibleItems ?? DEFAULT_RESUME_PICKER_VISIBLE_ITEMS,
   };
   renderResumePicker();
 }
@@ -575,10 +610,11 @@ function renderResumePicker(): void {
     title: resumePickerState.title,
     sessions: resumePickerState.sessions,
     selectedIndex: resumePickerState.selectedIndex,
+    maxVisibleItems: resumePickerState.maxVisibleItems ?? DEFAULT_RESUME_PICKER_VISIBLE_ITEMS,
     width: process.stdout.columns || 80,
     showProject: resumePickerState.showProject,
     moreCount: resumePickerState.moreCount,
-    footer: '  ↑↓ Select  Enter Resume  1-9 Quick  Esc Cancel',
+    footer: '  ↑↓ Scroll  PgUp/PgDn  Enter Resume  1-9/0 Quick  Esc Cancel',
     theme: {
       accent: ACCENT,
       dim: DIM,
@@ -653,6 +689,93 @@ function restoreSelectedResumeSession(): void {
     console.log(ERROR(`Resume error: ${err.message || String(err)}`));
     redrawInputWithPrompt(currentInput);
   });
+}
+
+function handleShortcutsOverlayKeypress(k: KeyInfo, char: string | undefined): void {
+  if (k.name === 'escape' || k.name === 'enter' || k.name === '?') {
+    hideShortcutsOverlay();
+    redrawInputWithPrompt(currentInput);
+    return;
+  }
+
+  if (char && char.length === 1 && !k.ctrl && !k.meta) {
+    hideShortcutsOverlay();
+    handleNormalKeypress(k, char);
+  }
+}
+
+function toggleV2Shortcuts(): void {
+  if (shortcutsOverlayVisible) {
+    hideShortcutsOverlay();
+    redrawInputWithPrompt(currentInput);
+  } else {
+    showShortcutsOverlay();
+  }
+}
+
+function showShortcutsOverlay(): void {
+  if (!isV2UI()) return;
+  shortcutsOverlayVisible = true;
+  renderShortcutsOverlay();
+}
+
+function renderShortcutsOverlay(): void {
+  if (!shortcutsOverlayVisible) return;
+
+  clearShortcutsOverlay({ release: false });
+  const lines = renderV2Shortcuts(process.stdout.columns || 80).split('\n');
+  const offset = getShortcutsOverlayOffsetRows();
+  reserveShortcutsOverlaySpace(lines.length + offset);
+  shortcutsOverlayLines = lines;
+
+  process.stdout.write('\x1b7');
+  if (offset > 0) {
+    process.stdout.write(`\x1b[${offset}B\r`);
+  }
+  process.stdout.write('\x1b[J');
+  for (let index = 0; index < lines.length; index++) {
+    if (index > 0 || offset === 0) {
+      process.stdout.write('\n');
+    }
+    process.stdout.write('\r' + lines[index]);
+  }
+  process.stdout.write('\x1b8');
+}
+
+function hideShortcutsOverlay(): void {
+  clearShortcutsOverlay({ release: true });
+  shortcutsOverlayVisible = false;
+}
+
+function clearShortcutsOverlay(options: { release?: boolean } = {}): void {
+  const height = Math.max(shortcutsOverlayReservedHeight, shortcutsOverlayLines.length);
+  if (height <= 0) return;
+
+  process.stdout.write('\x1b7');
+  const offset = getShortcutsOverlayOffsetRows();
+  if (offset > 0) {
+    process.stdout.write(`\x1b[${offset}B\r`);
+  }
+  process.stdout.write('\x1b[J');
+  process.stdout.write('\x1b8');
+
+  shortcutsOverlayLines = [];
+  if (options.release) {
+    shortcutsOverlayReservedHeight = 0;
+  }
+}
+
+function reserveShortcutsOverlaySpace(requiredHeight: number): void {
+  if (requiredHeight <= shortcutsOverlayReservedHeight) return;
+
+  const extraLines = requiredHeight - shortcutsOverlayReservedHeight;
+  process.stdout.write('\n'.repeat(extraLines));
+  process.stdout.write(`\x1b[${extraLines}A`);
+  shortcutsOverlayReservedHeight = requiredHeight;
+}
+
+function getShortcutsOverlayOffsetRows(): number {
+  return isV2UI() ? 2 : 1;
 }
 
 function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
@@ -783,7 +906,7 @@ function handleNormalKeypress(k: KeyInfo, char: string | undefined): void {
       break;
     case '?':
       if (currentInput === '' && store.getSnapshot().config.ui?.renderer === 'v2' && !turnController.hasActiveTurn()) {
-        showV2Shortcuts();
+        toggleV2Shortcuts();
       } else {
         currentInput += '?';
         redrawInputWithPrompt(currentInput);
@@ -826,15 +949,10 @@ function isV2UI(): boolean {
   return store.getSnapshot().config.ui?.renderer === 'v2';
 }
 
-function showV2Shortcuts(): void {
-  console.log();
-  console.log(renderV2Shortcuts(process.stdout.columns || 80));
-  redrawInputWithPrompt(currentInput);
-}
-
 function clearTerminalView(): void {
   hideCommandPanel();
   hideFileCompletion();
+  hideShortcutsOverlay();
   resetRenderLength();
   process.stdout.write('\x1Bc');
   showBanner();
@@ -874,6 +992,12 @@ function cancelActiveInputMode(): boolean {
 
   if (resumePickerState?.visible) {
     hideResumePicker();
+    redrawInputWithPrompt(currentInput);
+    return true;
+  }
+
+  if (shortcutsOverlayVisible) {
+    hideShortcutsOverlay();
     redrawInputWithPrompt(currentInput);
     return true;
   }
