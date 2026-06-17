@@ -55,7 +55,7 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
 const RECONNECT_MAX_ATTEMPTS = 3;
 const RECONNECT_BASE_DELAY_MS = 1000;
 const MCP_REQUEST_TIMEOUT_MS = 30_000;
-const MCP_CLIENT_VERSION = process.env.npm_package_version || '0.1.22';
+const MCP_CLIENT_VERSION = process.env.npm_package_version || '0.1.23';
 
 export function getMcpConfigPath(): string {
   return join(getConfigHome(), 'mcp.json');

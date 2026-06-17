@@ -90,12 +90,14 @@ export {
   buildSystemPrompt, getSystemPrompt,
   Store,
   ContextHarness, createContextHarness, ContextLedger,
-  createContextCapsule, renderContextCapsule, assembleHarnessMessages,
+  createContextCapsule, renderContextCapsule, renderHarnessStateForCompact,
+  assembleHarnessMessages, buildHarnessContext, classifyIntent, rankEvidence, upgradeHarnessState,
 } from './framework';
 export type {
   OpenHorseTool, ToolResult, ToolContext, ToolConfig, PermissionResult, ToolInputJSONSchema, OpenAITool,
   QueryEvent, QueryParams,
   PromptContext, PromptSection,
   AppState,
-  ContextCapsule, ContextLedgerEntry, HarnessConfig as ContextHarnessConfig, HarnessState, TaskContract,
+  ContextCapsule, ContextLedgerEntry, EvidenceRecord, HarnessConfig as ContextHarnessConfig,
+  HarnessState, IntentKind, IntentUpdate, PromptAssemblyStats, TaskContract, TurnSummary,
 } from './framework';

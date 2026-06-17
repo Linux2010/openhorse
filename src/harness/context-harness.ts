@@ -1,15 +1,23 @@
 import type { LLMResponse, Message } from '../services/llm';
-import { assembleHarnessMessages } from './assembler';
+import { buildHarnessContext, type PromptAssemblyOptions } from './assembler';
 import { createContextCapsule } from './capsule';
 import { createTaskContract, updateTaskContract } from './contract';
 import { checkToolDrift, evaluateCompletionGate } from './drift-guard';
+import { buildEvidenceIndex } from './evidence';
+import { classifyIntent, shouldReplaceActiveInstruction } from './intent';
 import { ContextLedger } from './ledger';
+import { upgradeHarnessState } from './state';
+import { createTurnSummary, type CreateTurnSummaryInput } from './turn-summary';
 import type {
   CompletionGateResult,
   ContextCapsule,
   DriftCheckResult,
+  EvidenceRecord,
   HarnessConfig,
   HarnessState,
+  IntentUpdate,
+  PromptAssemblyStats,
+  TurnSummary,
 } from './types';
 
 const DEFAULT_CONFIG: Required<Pick<HarnessConfig, 'enabled' | 'preCompactThreshold' | 'compactThreshold' | 'maxRecentTurns' | 'evidenceBudgetRatio' | 'driftGuard'>> & {
@@ -39,28 +47,87 @@ export class ContextHarness {
   private ledger: ContextLedger;
   private capsule?: ContextCapsule;
   private completionBlockCount: number;
+  private taskEpoch: number;
+  private rootObjective?: string;
+  private activeInstruction?: string;
+  private intentHistory: IntentUpdate[];
+  private activeConstraints: string[];
+  private nonGoals: string[];
+  private openQuestions: string[];
+  private evidenceIndex: EvidenceRecord[];
+  private turnSummaries: TurnSummary[];
+  private promptAssemblyStats?: PromptAssemblyStats;
+  private diagnostics: string[];
+  private reconciledAt?: number;
 
   constructor(options: ContextHarnessOptions) {
     this.cwd = options.cwd;
     this.modelId = options.modelId;
     this.config = { ...DEFAULT_CONFIG, ...options.config };
-    this.contract = options.state?.contract;
-    this.ledger = new ContextLedger(options.state?.ledger ?? []);
-    this.capsule = options.state?.capsule;
-    this.completionBlockCount = options.state?.completionBlockCount ?? 0;
+    const state = upgradeHarnessState(options.state, { cwd: options.cwd });
+    this.contract = state.contract;
+    this.ledger = new ContextLedger(state.ledger);
+    this.capsule = state.capsule;
+    this.completionBlockCount = state.completionBlockCount ?? 0;
+    this.taskEpoch = state.taskEpoch ?? 1;
+    this.rootObjective = state.rootObjective;
+    this.activeInstruction = state.activeInstruction;
+    this.intentHistory = state.intentHistory ?? [];
+    this.activeConstraints = state.activeConstraints ?? [];
+    this.nonGoals = state.nonGoals ?? [];
+    this.openQuestions = state.openQuestions ?? [];
+    this.evidenceIndex = state.evidenceIndex ?? [];
+    this.turnSummaries = state.turnSummaries ?? [];
+    this.promptAssemblyStats = state.promptAssemblyStats;
+    this.diagnostics = state.diagnostics ?? [];
+    this.reconciledAt = state.reconciledAt;
   }
 
-  updateContractFromUserInput(input: string): void {
+  updateContractFromUserInput(input: string): IntentUpdate | undefined {
     if (this.config.enabled === false) return;
+    const intent = classifyIntent(input, this.toJSON());
     this.contract = this.contract
-      ? updateTaskContract(this.contract, input, this.cwd)
+      ? updateTaskContract(this.contract, input, this.cwd, intent)
       : createTaskContract(input, this.cwd);
+    this.taskEpoch = intent.taskEpoch;
+    if (intent.rootObjectiveChanged || !this.rootObjective) {
+      this.rootObjective = this.contract.objective;
+    }
+    if (shouldReplaceActiveInstruction(intent) || !this.activeInstruction) {
+      this.activeInstruction = intent.activeInstruction;
+    }
+    this.activeConstraints = this.mergeList(this.activeConstraints, intent.constraints);
+    this.nonGoals = this.mergeList(this.nonGoals, intent.nonGoals);
+    this.openQuestions = this.mergeList(this.openQuestions, intent.openQuestions);
+    this.intentHistory = [...this.intentHistory, intent].slice(-40);
     this.ledger.recordUserRequirement(input);
     this.refreshCapsule();
+    return intent;
   }
 
-  assembleMessages(messages: Message[]): Message[] {
-    return assembleHarnessMessages(messages, this.toJSON(), this.modelId, this.config);
+  classifyIntent(input: string): IntentUpdate {
+    return classifyIntent(input, this.toJSON());
+  }
+
+  assembleMessages(messages: Message[], options: PromptAssemblyOptions = {}): Message[] {
+    if (this.config.enabled === false) return messages;
+
+    const built = buildHarnessContext(this.toJSON(), this.modelId, this.config, options);
+    this.promptAssemblyStats = built.stats;
+    if (!built.text.trim()) return messages;
+
+    const cloned = messages.map(message => ({ ...message }));
+    const systemIndex = cloned.findIndex(message => message.role === 'system');
+    if (systemIndex >= 0) {
+      cloned[systemIndex] = {
+        ...cloned[systemIndex],
+        content: `${cloned[systemIndex].content}\n\n---\n${built.text}`,
+      };
+    } else {
+      cloned.unshift({ role: 'system', content: built.text });
+    }
+
+    return cloned;
   }
 
   recordAssistantResponse(response: LLMResponse): void {
@@ -125,6 +192,21 @@ export class ContextHarness {
     this.refreshCapsule();
   }
 
+  ingestTurn(params: Omit<CreateTurnSummaryInput, 'turn' | 'taskEpoch' | 'intent'> & { intent?: IntentUpdate }): TurnSummary | undefined {
+    if (this.config.enabled === false) return undefined;
+    const intent = params.intent ?? this.intentHistory[this.intentHistory.length - 1] ?? classifyIntent(params.userInput, this.toJSON());
+    const summary = createTurnSummary({
+      ...params,
+      turn: this.turnSummaries.length + 1,
+      taskEpoch: this.taskEpoch,
+      intent,
+    });
+    this.turnSummaries = [...this.turnSummaries, summary].slice(-80);
+    this.refreshEvidenceIndex();
+    this.refreshCapsule();
+    return summary;
+  }
+
   beforeComplete(): CompletionGateResult {
     const result = evaluateCompletionGate({
       contract: this.contract,
@@ -178,11 +260,25 @@ export class ContextHarness {
   }
 
   toJSON(): HarnessState {
+    this.refreshEvidenceIndex();
     return {
+      version: 2,
       contract: this.contract,
       ledger: this.ledger.toJSON(),
       capsule: this.capsule,
       completionBlockCount: this.completionBlockCount,
+      taskEpoch: this.taskEpoch,
+      rootObjective: this.rootObjective,
+      activeInstruction: this.activeInstruction,
+      intentHistory: this.intentHistory,
+      activeConstraints: this.activeConstraints,
+      nonGoals: this.nonGoals,
+      openQuestions: this.openQuestions,
+      evidenceIndex: this.evidenceIndex,
+      turnSummaries: this.turnSummaries,
+      promptAssemblyStats: this.promptAssemblyStats,
+      diagnostics: this.diagnostics,
+      reconciledAt: this.reconciledAt,
       updatedAt: Date.now(),
     };
   }
@@ -190,6 +286,19 @@ export class ContextHarness {
   private refreshCapsule(): void {
     if (!this.contract && this.ledger.getEntries().length === 0) return;
     this.capsule = createContextCapsule(this.contract, this.ledger.getEntries());
+    this.refreshEvidenceIndex();
+  }
+
+  private refreshEvidenceIndex(): void {
+    this.evidenceIndex = buildEvidenceIndex({
+      ledger: this.ledger.getEntries(),
+      turnSummaries: this.turnSummaries,
+      existing: this.evidenceIndex,
+    });
+  }
+
+  private mergeList(existing: string[], incoming: string[]): string[] {
+    return [...new Set([...existing, ...incoming].map(item => item.trim()).filter(Boolean))].slice(-30);
   }
 }
 

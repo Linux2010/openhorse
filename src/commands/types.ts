@@ -53,6 +53,7 @@ export interface CommandResult {
     showProject?: boolean;
     moreCount?: number;
     allProjects?: boolean;
+    maxVisibleItems?: number;
   };
 }
 

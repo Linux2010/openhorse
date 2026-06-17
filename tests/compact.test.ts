@@ -1,4 +1,6 @@
 import { getAutoCompact, resetAutoCompact, AutoCompact } from '../src/services/compact/auto-compact';
+import { compactMessages } from '../src/services/compact/compact';
+import { createContextHarness } from '../src/harness';
 import type { Message } from '../src/services/llm';
 
 function createMessages(count: number): Message[] {
@@ -130,5 +132,26 @@ describe('AutoCompact', () => {
       // 100k is 78% of gpt-4o's 128000
       expect(autoCompact.getCtxPercent(100000)).toBe(78);
     });
+  });
+
+  test('compactMessages preserves structured Harness State v2 before summary text', async () => {
+    const harness = createContextHarness({ cwd: '/repo', modelId: 'gpt-4o' });
+    harness.updateContractFromUserInput('实现 v0.1.23 harness，必须支持 resume 后继续');
+
+    const messages: Message[] = [
+      { role: 'system', content: 'base' },
+      ...createMessages(12),
+    ];
+
+    const result = await compactMessages(messages, {
+      maxMessages: 2,
+      harnessState: harness.toJSON(),
+      compactMode: 'manual',
+    });
+
+    const joined = result.messages.map(message => message.content).join('\n');
+    expect(joined).toContain('[OpenHorse Context State v2]');
+    expect(joined).toContain('rootObjective');
+    expect(joined.indexOf('[OpenHorse Context State v2]')).toBeLessThan(joined.indexOf('[Context Summary]'));
   });
 });
