@@ -62,17 +62,22 @@ ${TODO_PROMPT}`,
     properties: {
       todos: {
         type: 'string',
-        description: 'JSON array of todos: [{"content":"Task","status":"pending|in_progress|completed","activeForm":"Doing task"}]',
+        description: 'JSON array or array of todos: [{"content":"Task","status":"pending|in_progress|completed","activeForm":"Doing task"}]',
       },
     },
     required: ['todos'],
   },
   execute: async (args) => {
     let todos: TodoItem[];
-    try {
-      todos = JSON.parse(args.todos as string);
-    } catch {
-      return { success: false, output: '', error: 'todos must be valid JSON array' };
+    const rawTodos = args.todos;
+    if (Array.isArray(rawTodos)) {
+      todos = rawTodos as TodoItem[];
+    } else {
+      try {
+        todos = JSON.parse(rawTodos as string);
+      } catch {
+        return { success: false, output: '', error: 'todos must be a valid JSON array' };
+      }
     }
 
     if (!Array.isArray(todos)) {
@@ -129,7 +134,9 @@ ${TODO_PROMPT}`,
   },
   userFacingName: (args) => {
     try {
-      const todos = JSON.parse(args.todos as string) as TodoItem[];
+      const todos = Array.isArray(args.todos)
+        ? args.todos as TodoItem[]
+        : JSON.parse(args.todos as string) as TodoItem[];
       return `Update ${todos.length} todos`;
     } catch {
       return 'Update todos';

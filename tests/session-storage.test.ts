@@ -3,6 +3,7 @@ import {
   saveSessionMeta,
   loadSessionMeta,
   updateSessionStats,
+  updateSessionSkills,
   endSession,
   appendHistory,
   readHistory,
@@ -100,6 +101,18 @@ describe('session-storage', () => {
       const loaded = loadSessionMeta(session.id);
       expect(loaded?.tokenCount).toBe(800);
       expect(loaded?.cost).toBe(0.015);
+    });
+  });
+
+  describe('updateSessionSkills', () => {
+    test('merges applied skills into session metadata', () => {
+      const session = createSession('/tmp/project-skills', 'gpt-4o');
+
+      updateSessionSkills(session.id, ['code-review', 'security-check']);
+      updateSessionSkills(session.id, ['code-review']);
+
+      const loaded = loadSessionMeta(session.id);
+      expect(loaded?.skillsUsed).toEqual(['code-review', 'security-check']);
     });
   });
 
@@ -257,6 +270,7 @@ describe('session-storage', () => {
         role: 'user',
         content: 'Hello project session',
         timestamp: Date.now(),
+        appliedSkills: ['code-review'],
       });
 
       const loaded = loadSessionMeta(session.id);
@@ -264,6 +278,7 @@ describe('session-storage', () => {
       expect(loaded?.updatedAt).toBeGreaterThanOrEqual(session.startTime);
       expect(existsSync(getProjectSessionMessagesPath(session.projectPath, session.id))).toBe(true);
       expect(existsSync(join(testDir, 'sessions', `${session.id}.jsonl`))).toBe(false);
+      expect(readSessionMessages(session.id)[0].appliedSkills).toEqual(['code-review']);
     });
 
     test('readSessionMessages returns all messages', () => {

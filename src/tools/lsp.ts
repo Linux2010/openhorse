@@ -402,6 +402,24 @@ function formatHoverResult(hover: LspHover | null): string {
   return hover.contents.value;
 }
 
+function validateFilePath(filePath: unknown): string | null {
+  return typeof filePath === 'string' && filePath.length > 0
+    ? null
+    : 'file_path must be a non-empty string';
+}
+
+function validatePositionArgs(filePath: unknown, line: unknown, character: unknown): string | null {
+  const filePathError = validateFilePath(filePath);
+  if (filePathError) return filePathError;
+  if (typeof line !== 'number' || !Number.isFinite(line) || line < 1) {
+    return 'line must be a positive 1-based number';
+  }
+  if (typeof character !== 'number' || !Number.isFinite(character) || character < 1) {
+    return 'character must be a positive 1-based number';
+  }
+  return null;
+}
+
 // ============================================================================
 // 工具注册
 // ============================================================================
@@ -431,6 +449,11 @@ export const lspGetDefinitionTool: OpenHorseTool = buildTool({
     const file_path = args.file_path as string;
     const line = args.line as number;
     const character = args.character as number;
+
+    const validationError = validatePositionArgs(file_path, line, character);
+    if (validationError) {
+      return { success: false, output: '', error: validationError };
+    }
 
     const language = detectLanguage(file_path);
     const uri = pathToUri(file_path);
@@ -481,6 +504,11 @@ export const lspGetReferencesTool: OpenHorseTool = buildTool({
     const character = args.character as number;
     const include_declaration = args.include_declaration !== false;
 
+    const validationError = validatePositionArgs(file_path, line, character);
+    if (validationError) {
+      return { success: false, output: '', error: validationError };
+    }
+
     const language = detectLanguage(file_path);
     const uri = pathToUri(file_path);
     const position = {
@@ -525,6 +553,11 @@ export const lspGetHoverTool: OpenHorseTool = buildTool({
     const line = args.line as number;
     const character = args.character as number;
 
+    const validationError = validatePositionArgs(file_path, line, character);
+    if (validationError) {
+      return { success: false, output: '', error: validationError };
+    }
+
     const language = detectLanguage(file_path);
     const uri = pathToUri(file_path);
     const position = {
@@ -558,6 +591,11 @@ export const lspGetDiagnosticsTool: OpenHorseTool = buildTool({
   },
   execute: async (args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> => {
     const file_path = args.file_path as string;
+
+    const validationError = validateFilePath(file_path);
+    if (validationError) {
+      return { success: false, output: '', error: validationError };
+    }
 
     const language = detectLanguage(file_path);
     const uri = pathToUri(file_path);

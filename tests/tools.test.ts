@@ -124,6 +124,15 @@ describe('write_file tool', () => {
     const content = fs.readFileSync(testFile, 'utf-8');
     expect(content).toBe('new content');
   });
+
+  test('allows writing an empty file', async () => {
+    const testFile = path.join(testDir, 'test-empty.txt');
+
+    const result = await tool.execute({ path: testFile, content: '' }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(testFile, 'utf-8')).toBe('');
+  });
 });
 
 describe('list_files tool', () => {
@@ -310,6 +319,16 @@ describe('edit_file tool', () => {
     const content = fs.readFileSync(testFile, 'utf-8');
     expect(content).toBe('hi hi hi');
   });
+
+  test('allows replacing with an empty string', async () => {
+    const testFile = path.join(testDir, 'test-edit-delete.txt');
+    fs.writeFileSync(testFile, 'hello world', 'utf-8');
+
+    const result = await tool.execute({ path: testFile, old_string: 'hello ', new_string: '' }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(testFile, 'utf-8')).toBe('world');
+  });
 });
 
 describe('glob tool', () => {
@@ -339,6 +358,14 @@ describe('glob tool', () => {
 describe('grep tool', () => {
   const tool = TOOLS.find(t => t.name === 'grep')!;
 
+  beforeAll(() => {
+    setupTestDir();
+  });
+
+  afterAll(() => {
+    cleanupTestDir();
+  });
+
   test('isReadOnly returns true', () => {
     expect(tool.isReadOnly?.({})).toBe(true);
   });
@@ -357,5 +384,37 @@ describe('grep tool', () => {
     const result = await tool.execute({ pattern: 'notfoundpattern', path: 'src' }, ctx);
     expect(result.success).toBe(true);
     expect(result.output).toContain('No matches');
+  });
+
+  test('does not skip repeated matches and respects glob filter', async () => {
+    const grepDir = path.join(testDir, 'grep-fixture');
+    fs.mkdirSync(grepDir, { recursive: true });
+    fs.writeFileSync(path.join(grepDir, 'a.txt'), 'needle\nneedle\n', 'utf-8');
+    fs.writeFileSync(path.join(grepDir, 'b.md'), 'needle\n', 'utf-8');
+
+    const result = await tool.execute({ pattern: 'needle', path: grepDir, glob: '*.txt' }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.output.match(/a\.txt:/g)).toHaveLength(2);
+    expect(result.output).not.toContain('b.md');
+  });
+});
+
+describe('todo_write tool', () => {
+  const tool = TOOLS.find(t => t.name === 'todo_write')!;
+
+  test('accepts direct array arguments as well as JSON strings', async () => {
+    const result = await tool.execute({
+      todos: [
+        {
+          content: 'Run tests',
+          activeForm: 'Running tests',
+          status: 'in_progress',
+        },
+      ],
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('Run tests');
   });
 });

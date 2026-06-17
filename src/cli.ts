@@ -11,7 +11,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { init, OpenHorseRuntime } from './init';
 import { LLMService } from './services/llm';
-import { TOOLS } from './tools';
+import { getRuntimeTools } from './tools';
 import { mcpManager } from './tools/mcp';
 import { loadConfig, isConfigured, type UIRenderer } from './services/config';
 import { ensureConfigDir } from './services/config-dir';
@@ -19,7 +19,7 @@ import { recordFirstStartTime, incrementSessionCount, addToInputHistory, getInpu
 import { calculateCtxPercent, discoverModelContexts } from './services/model-context';
 import { createSession, type SessionMeta, readSessionMessages, updateSessionSummary, endSession } from './services/session-storage';
 import { loadAllMemories } from './memory/storage';
-import { getSkillsRegistry } from './skills';
+import { getSkillsRegistry, hasMatchingSkill } from './skills';
 import { Store, subscribeToolState, resetToolState } from './framework';
 import { findCommand, executeChat, getCommandNames } from './commands';
 import { parseInput, buildCommandSuggestions } from './commands/parser';
@@ -1031,18 +1031,21 @@ async function handleInput(input: string, abortSignal?: AbortSignal, options: Ha
       if (cmd) {
         const result = await cmd.execute(ctx, parsed.args);
         pendingSessionPicker = result.sessionPicker;
-        // executeChat 会被 cmd.execute 调用，如果需要
-        if (!result.continueAsChat) {
-          // 命令完成后的输出已经在 cmd.execute 中处理
+        if (result.continueAsChat) {
+          await executeChat(ctx, result.chatInput ?? parsed.args);
         }
       } else {
-        console.log();
-        console.log(ERROR(`Unknown command: /${parsed.name}`));
-        const suggestions = buildCommandSuggestions(parsed.name);
-        if (suggestions.length > 0) {
-          console.log(DIM(`Did you mean: ${suggestions.map(s => `/${s}`).join(', ')}?`));
+        if (hasMatchingSkill(text)) {
+          await executeChat(ctx, text);
+        } else {
+          console.log();
+          console.log(ERROR(`Unknown command: /${parsed.name}`));
+          const suggestions = buildCommandSuggestions(parsed.name);
+          if (suggestions.length > 0) {
+            console.log(DIM(`Did you mean: ${suggestions.map(s => `/${s}`).join(', ')}?`));
+          }
+          console.log();
         }
-        console.log();
       }
     } else {
       // 直接 chat - executeChat 有自己的 spinner 和流式输出
@@ -1152,7 +1155,7 @@ async function main(): Promise<void> {
 
   store = new Store({
     config: cliConfig,
-    tools: TOOLS,
+    tools: getRuntimeTools(),
     currentModel: cliConfig.model,
     memoryContent,
     skillsContent,
@@ -1202,9 +1205,13 @@ async function main(): Promise<void> {
   await runtime.start();
 
   // Auto-connect MCP servers from ~/.openhorse/mcp.json (non-blocking)
-  mcpManager.connectAll().catch(err => {
-    console.error(WARN(`⚠ MCP startup error: ${err.message}`));
-  });
+  mcpManager.connectAll()
+    .then(() => {
+      store.setState({ tools: getRuntimeTools() });
+    })
+    .catch(err => {
+      console.error(WARN(`⚠ MCP startup error: ${err.message}`));
+    });
 
   // Banner
   showBanner();

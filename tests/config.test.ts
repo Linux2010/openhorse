@@ -128,7 +128,7 @@ describe('loadConfig', () => {
         toolName: 'web_search',
       },
       ui: {
-        renderer: 'v2',
+        renderer: 'legacy',
         confirmations: 'interactive',
       },
       totalSessions: 10,
@@ -142,10 +142,27 @@ describe('loadConfig', () => {
     expect(config.model).toBe('glm-5');
     expect(config.fallbackModel).toBe('qwen-plus');
     expect(config.toolConfirmation).toBe('deny');
+    // openhorse.json no longer controls renderer; use --ui legacy for fallback.
     expect(config.ui).toEqual({ renderer: 'v2', confirmations: 'interactive' });
     expect(config.webSearch?.endpoint).toBe('https://dashscope.example/mcp');
     expect(config.webSearch?.apiKey).toBe('sk-websearch-global');
     expect(config.webSearch?.toolName).toBe('web_search');
+  });
+
+  test('cli renderer override can switch to legacy', () => {
+    jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
+      defaultModel: 'gpt-4o',
+      ui: {
+        renderer: 'v2',
+        confirmations: 'config',
+      },
+      totalSessions: 0,
+      totalTokens: 0,
+      totalCost: 0,
+    });
+
+    const config = loadConfig({ ui: { renderer: 'legacy' } });
+    expect(config.ui).toEqual({ renderer: 'legacy', confirmations: 'config' });
   });
 
   test('ignores invalid tool confirmation values', () => {

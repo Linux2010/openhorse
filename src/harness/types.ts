@@ -6,6 +6,7 @@ export type LedgerEntryType =
   | 'test_result'
   | 'risk'
   | 'todo'
+  | 'skill'
   | 'blocker'
   | 'verification';
 
@@ -96,4 +97,3 @@ export interface CompletionGateResult {
   missing: string[];
   evidence: string[];
 }
-

@@ -38,7 +38,7 @@ export type UIConfirmationMode = 'config' | 'interactive';
 
 /** Terminal UI configuration. */
 export interface UIConfig {
-  /** Renderer implementation. Use v2 for the new state-driven terminal UI. */
+  /** Runtime-only renderer override. This is ignored in openhorse.json. */
   renderer?: UIRenderer;
   /** Whether confirmations are handled by config fallback or interactive UI. */
   confirmations?: UIConfirmationMode;
@@ -106,14 +106,22 @@ export interface GlobalConfig {
 const DEFAULT_CONFIG: GlobalConfig = {
   defaultModel: 'gpt-4o',
   toolConfirmation: 'allow',
-  ui: {
-    renderer: 'v2',
-    confirmations: 'config',
-  },
   totalSessions: 0,
   totalTokens: 0,
   totalCost: 0,
 };
+
+function sanitizeGlobalConfig(config: GlobalConfig): GlobalConfig {
+  const { ui, ...rest } = config;
+  const sanitized: GlobalConfig = { ...rest };
+
+  // UI renderer is a runtime choice, not persisted global configuration.
+  if (ui?.confirmations && ui.confirmations !== 'config') {
+    sanitized.ui = { confirmations: ui.confirmations };
+  }
+
+  return sanitized;
+}
 
 // ============================================================================
 // 加载/保存
@@ -128,15 +136,15 @@ export function loadGlobalConfig(): GlobalConfig {
   const path = getGlobalConfigPath();
 
   if (!existsSync(path)) {
-    return { ...DEFAULT_CONFIG };
+    return sanitizeGlobalConfig({ ...DEFAULT_CONFIG });
   }
 
   try {
     const content = readFileSync(path, 'utf-8');
     const parsed = JSON.parse(content);
-    return { ...DEFAULT_CONFIG, ...parsed };
+    return sanitizeGlobalConfig({ ...DEFAULT_CONFIG, ...parsed });
   } catch {
-    return { ...DEFAULT_CONFIG };
+    return sanitizeGlobalConfig({ ...DEFAULT_CONFIG });
   }
 }
 
@@ -146,7 +154,7 @@ export function loadGlobalConfig(): GlobalConfig {
 export function saveGlobalConfig(config: GlobalConfig): void {
   ensureConfigDir();
   const path = getGlobalConfigPath();
-  writeFileSync(path, JSON.stringify(config, null, 2), { mode: 0o600 });
+  writeFileSync(path, JSON.stringify(sanitizeGlobalConfig(config), null, 2), { mode: 0o600 });
 }
 
 /**

@@ -19,7 +19,6 @@
 | `defaultModel` | string | `OPENHORSE_MODEL` | `gpt-4o` | 默认模型 |
 | `fallbackModel` | string | `OPENHORSE_FALLBACK_MODEL` | `(无)` | 备用模型（主模型过载时自动切换） |
 | `toolConfirmation` | `allow` \| `deny` \| `ask` | `OPENHORSE_TOOL_CONFIRMATION` | `allow` | 工具需要确认时的兜底策略；当前 CLI 无交互确认 UI，默认自动允许 `ask` 级工具 |
-| `ui.renderer` | `legacy` \| `v2` | `OPENHORSE_UI` / `OPENHORSE_UI_RENDERER` | `v2` | 终端 UI renderer。`v2` 是默认新 UI，`legacy` 用于回退 |
 | `ui.confirmations` | `config` \| `interactive` | `OPENHORSE_UI_CONFIRMATIONS` | `config` | 工具确认由配置兜底，还是交给交互式 UI |
 | `webSearch.provider` | string | `OPENHORSE_WEBSEARCH_PROVIDER` | `auto` | WebSearch 模式或 provider。`auto` 先 MCP 后 adapter；可设 `native`、`bailian`、`zhipu`、`tavily-mcp`、`tavily`、`brave`、`custom`、`ddg` |
 | `webSearch.apiKey` | string | `OPENHORSE_WEBSEARCH_API_KEY` / provider env | 主 `apiKey` | WebSearch MCP 或 adapter API Key；未设置时 MCP 复用 OpenHorse 主 API Key |
@@ -60,11 +59,7 @@
   "apiBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
   "defaultModel": "glm-5",
   "fallbackModel": "qwen-plus",
-  "toolConfirmation": "allow",
-  "ui": {
-    "renderer": "v2",
-    "confirmations": "config"
-  }
+  "toolConfirmation": "allow"
 }
 ```
 
@@ -100,10 +95,11 @@ Tools that return `deny` from safety checks are still blocked regardless of this
 
 ## UI
 
-v0.1.20 开始引入 `ui-v2`，先把 shell header、prompt、status line、command suggestion / picker / command palette 抽成状态驱动模块，再逐步迁移完整 PromptInput、permission dialog 和 transcript viewer。v0.1.21 起，`v2` 是默认 renderer。
+v0.1.20 开始引入 `ui-v2`，先把 shell header、prompt、status line、command suggestion / picker / command palette 抽成状态驱动模块，再逐步迁移完整 PromptInput、permission dialog 和 transcript viewer。v0.1.21 起，`v2` 是默认 renderer；v0.1.22 起，renderer 不再写入 `~/.openhorse/openhorse.json`。
 
-- `ui.renderer: "v2"`：默认模式，启动 header、prompt、status line、command palette 和 session picker 使用 v2 风格。
-- `ui.renderer: "legacy"`：回退到旧 CLI renderer。
+- 默认启动 `openhorse`：使用 v2 UI。
+- `openhorse --ui legacy`：本次启动回退到旧 CLI renderer。
+- `openhorse --ui v2`：显式使用 v2 UI。
 - `ui.confirmations: "config"`：工具确认沿用 `toolConfirmation` 兜底。
 - `ui.confirmations: "interactive"`：预留给后续 permission dialog。
 
@@ -121,6 +117,31 @@ v2 参考 Codex CLI 的 keyboard-first 交互，当前支持：
 ```bash
 OPENHORSE_UI=legacy npx openhorse
 ```
+
+## MCP Servers
+
+通用 MCP server 配置放在 `~/.openhorse/mcp.json`。当前版本支持 stdio transport，并把已连接 server 的工具暴露为普通 agent tool，命名格式为 `mcp__<server>__<tool>`。
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/hope/ai-project"],
+      "env": {
+        "EXAMPLE_TOKEN": "${EXAMPLE_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+- `type` 可省略，默认等同 `stdio`。
+- `command` / `args` / `env` / `cwd` 支持 `${ENV_NAME}` 环境变量展开。
+- `disabled: true` 可临时跳过某个 server。
+- 旧格式顶层 `servers` 仍兼容，但新配置建议使用 `mcpServers`。
+- `/mcp` 查看连接状态；`mcp_list` / `mcp_call` 仍保留用于显式调试。
 
 ## WebSearch
 
