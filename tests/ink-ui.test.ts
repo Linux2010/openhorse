@@ -4,8 +4,10 @@ import { tmpdir } from 'os';
 import { getCursorRestoreDelays, getPromptCursorPosition } from '../src/ink-ui/components/TerminalCursor';
 import { formatPromptLine } from '../src/ink-ui/components/PromptInput';
 import { markdownBlockTypes } from '../src/ink-ui/components/Markdown';
+import { createAssistantStreamPresenter, createToolEventPresenter } from '../src/ink-ui/controllers/chat-controller';
 import { getPromptVisualLines } from '../src/ink-ui/runtime/prompt-layout';
 import { getFileQuery, sessionItems, visibleCommandItems, visibleFileItems } from '../src/ink-ui/screens/ReplScreen';
+import type { TranscriptEntry, UiEventSink } from '../src/ink-ui/types';
 import type { SessionMeta } from '../src/services/session-storage';
 
 describe('Ink UI helpers', () => {
@@ -14,6 +16,16 @@ describe('Ink UI helpers', () => {
     expect(items.some(item => item.value === 'status')).toBe(true);
     expect(items.some(item => item.value === 'sessions')).toBe(true);
     expect(items.every(item => item.value.startsWith('s') || item.label.includes('(s'))).toBe(true);
+  });
+
+  it('shows coding-agent commands and hides legacy chat commands', () => {
+    const items = visibleCommandItems('/');
+    const values = items.map(item => item.value);
+
+    expect(values).toEqual(expect.arrayContaining(['review', 'security', 'test-gen', 'tools', 'mode']));
+    expect(values).not.toContain('chat');
+    expect(values).not.toContain('run');
+    expect(values).not.toContain('task');
   });
 
   it('extracts file completion query from the active @ token', () => {
@@ -102,5 +114,77 @@ describe('Ink UI helpers', () => {
     ].join('\n'));
 
     expect(blocks).toEqual(expect.arrayContaining(['heading', 'list', 'code', 'table']));
+  });
+
+  it('keeps tool events between assistant stream segments', () => {
+    const entries: TranscriptEntry[] = [];
+    const events: UiEventSink = {
+      append: entry => {
+        const id = `entry-${entries.length + 1}`;
+        entries.push({ id, ...entry });
+        return id;
+      },
+      update: (id, patch) => {
+        const index = entries.findIndex(entry => entry.id === id);
+        if (index >= 0) {
+          entries[index] = { ...entries[index], ...patch };
+        }
+      },
+      clearTranscript: jest.fn(),
+      setStatus: jest.fn(),
+      showSessionPicker: jest.fn(),
+      setProcessing: jest.fn(),
+    };
+
+    const presenter = createAssistantStreamPresenter(events);
+    presenter.appendChunk('先说明');
+    presenter.closeSegment();
+    events.append({ role: 'tool', content: 'Running read_file src/index.ts' });
+    presenter.appendChunk('再给结论');
+
+    expect(entries.map(entry => entry.role)).toEqual(['assistant', 'tool', 'assistant']);
+    expect(entries.map(entry => entry.content)).toEqual(['先说明', 'Running read_file src/index.ts', '再给结论']);
+  });
+
+  it('updates a running tool entry when the matching result arrives', () => {
+    const entries: TranscriptEntry[] = [];
+    const events: UiEventSink = {
+      append: entry => {
+        const id = `entry-${entries.length + 1}`;
+        entries.push({ id, ...entry });
+        return id;
+      },
+      update: (id, patch) => {
+        const index = entries.findIndex(entry => entry.id === id);
+        if (index >= 0) {
+          entries[index] = { ...entries[index], ...patch };
+        }
+      },
+      clearTranscript: jest.fn(),
+      setStatus: jest.fn(),
+      showSessionPicker: jest.fn(),
+      setProcessing: jest.fn(),
+    };
+
+    const presenter = createToolEventPresenter(events);
+    presenter.start({
+      type: 'tool_call',
+      name: 'read_file',
+      args: { path: 'src/index.ts' },
+      callId: 'call-1',
+    });
+    presenter.finish({
+      type: 'tool_result',
+      name: 'read_file',
+      args: { path: 'src/index.ts' },
+      callId: 'call-1',
+      result: '{"success":true}',
+      duration: 12,
+      success: true,
+    });
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0].role).toBe('tool');
+    expect(entries[0].content).toContain('✓ read_file src/index.ts (12ms)');
   });
 });

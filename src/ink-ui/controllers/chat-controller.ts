@@ -16,7 +16,7 @@ import {
   updateSessionSummary,
 } from '../../services/session-storage';
 import { isConfigured } from '../../services/config';
-import { query, getSystemPrompt, type PromptContext } from '../../framework';
+import { query, getSystemPrompt, type PromptContext, type QueryEvent } from '../../framework';
 import { createContextHarness } from '../../harness';
 import { executeTool, getRuntimeTools } from '../../tools';
 import { resolveSkillsForTurn, hasMatchingSkill } from '../../skills';
@@ -54,6 +54,95 @@ function toolSummary(name: string, args: Record<string, unknown>, success: boole
   const details = compactToolArgs(args);
   const suffix = details ? ` ${details}` : '';
   return `${success ? '✓' : '✗'} ${name}${suffix} (${duration}ms)`;
+}
+
+export interface AssistantStreamPresenter {
+  appendChunk(chunk: string): void;
+  closeSegment(): void;
+  ensureMessage(content: string): void;
+}
+
+export function createAssistantStreamPresenter(events: UiEventSink, abortSignal?: AbortSignal): AssistantStreamPresenter {
+  let activeEntryId: string | null = null;
+  let activeSegmentText = '';
+
+  return {
+    appendChunk(chunk: string): void {
+      if (abortSignal?.aborted || !chunk) return;
+      activeSegmentText += chunk;
+
+      if (!activeEntryId) {
+        activeEntryId = events.append({
+          role: 'assistant',
+          content: activeSegmentText,
+        });
+      } else {
+        events.update(activeEntryId, { content: activeSegmentText });
+      }
+    },
+
+    closeSegment(): void {
+      activeEntryId = null;
+      activeSegmentText = '';
+    },
+
+    ensureMessage(content: string): void {
+      if (abortSignal?.aborted || !content || activeSegmentText.length > 0) return;
+      activeSegmentText = content;
+      activeEntryId = events.append({
+        role: 'assistant',
+        content,
+      });
+    },
+  };
+}
+
+type ToolCallEvent = Extract<QueryEvent, { type: 'tool_call' }>;
+type ToolResultEvent = Extract<QueryEvent, { type: 'tool_result' }>;
+
+export interface ToolEventPresenter {
+  start(event: ToolCallEvent): void;
+  finish(event: ToolResultEvent): void;
+}
+
+export function createToolEventPresenter(events: UiEventSink): ToolEventPresenter {
+  const runningToolEntries = new Map<string, string>();
+
+  return {
+    start(event: ToolCallEvent): void {
+      const detail = compactToolArgs(event.args);
+      const entryId = events.append({
+        role: 'tool',
+        title: 'tool',
+        content: `Running ${event.name}${detail ? ` ${detail}` : ''}`,
+      });
+      runningToolEntries.set(event.callId, entryId);
+    },
+
+    finish(event: ToolResultEvent): void {
+      const content = [
+        toolSummary(event.name, event.args, event.success, event.duration),
+        event.error ? `Error: ${event.error}` : '',
+      ].filter(Boolean).join('\n');
+      const existingEntryId = runningToolEntries.get(event.callId);
+
+      if (existingEntryId) {
+        events.update(existingEntryId, {
+          role: event.success ? 'tool' : 'error',
+          title: 'tool',
+          content,
+        });
+        runningToolEntries.delete(event.callId);
+        return;
+      }
+
+      events.append({
+        role: event.success ? 'tool' : 'error',
+        title: 'tool',
+        content,
+      });
+    },
+  };
 }
 
 async function captureConsoleOutput(fn: () => Promise<CommandResult> | CommandResult): Promise<{ result: CommandResult; output: string }> {
@@ -251,27 +340,16 @@ export class InkChatController {
     const systemPrompt = getSystemPrompt(promptCtx);
     const messages: Message[] = [{ role: 'system', content: systemPrompt }, ...snapshot.conversationHistory];
 
-    let assistantEntryId: string | null = null;
-    let assistantText = '';
     let finalContent = '';
     let finalUsage: { promptTokens: number; completionTokens: number } | undefined;
     let finalModel = '';
     const sessionMessagesToRecord: SessionMessage[] = [];
-    let lastToolCallId = '';
-    let lastToolArgs: Record<string, unknown> = {};
+    const assistantStream = createAssistantStreamPresenter(this.events, abortSignal);
+    const toolEvents = createToolEventPresenter(this.events);
 
     const streamCallbacks: StreamCallbacks = {
       onChunk: chunk => {
-        if (abortSignal?.aborted) return;
-        assistantText += chunk;
-        if (!assistantEntryId) {
-          assistantEntryId = this.events.append({
-            role: 'assistant',
-            content: assistantText,
-          });
-        } else {
-          this.events.update(assistantEntryId, { content: assistantText });
-        }
+        assistantStream.appendChunk(chunk);
       },
     };
 
@@ -313,6 +391,8 @@ export class InkChatController {
             this.events.setStatus(`Turn ${event.turn}...`);
             break;
           case 'assistant_tool_calls':
+            assistantStream.ensureMessage(event.content || '');
+            assistantStream.closeSegment();
             sessionMessagesToRecord.push({
               role: 'assistant',
               content: event.content || '',
@@ -321,39 +401,16 @@ export class InkChatController {
             });
             break;
           case 'tool_call':
-            lastToolCallId = event.callId;
-            lastToolArgs = event.args;
-            this.events.append({
-              role: 'tool',
-              title: 'tool',
-              content: `Running ${event.name}${compactToolArgs(event.args) ? ` ${compactToolArgs(event.args)}` : ''}`,
-            });
+            assistantStream.closeSegment();
+            toolEvents.start(event);
             break;
           case 'tool_result': {
-            let toolSuccess = event.success;
-            let toolError = event.error;
-            try {
-              const parsed = JSON.parse(event.result);
-              toolSuccess = parsed.success !== false;
-              toolError = parsed.error;
-            } catch {
-              toolSuccess = false;
-              toolError = 'Invalid JSON result';
-            }
-
-            this.events.append({
-              role: toolSuccess ? 'tool' : 'error',
-              title: 'tool',
-              content: [
-                toolSummary(event.name, lastToolArgs, toolSuccess, event.duration),
-                toolError ? `Error: ${toolError}` : '',
-              ].filter(Boolean).join('\n'),
-            });
+            toolEvents.finish(event);
             sessionMessagesToRecord.push({
               role: 'tool',
               content: event.result,
               timestamp: Date.now(),
-              toolCallId: lastToolCallId,
+              toolCallId: event.callId,
             });
             break;
           }
@@ -362,13 +419,7 @@ export class InkChatController {
             break;
           case 'message':
             finalContent = event.content;
-            if (event.content && assistantText.length === 0) {
-              assistantText = event.content;
-              assistantEntryId = this.events.append({
-                role: 'assistant',
-                content: event.content,
-              });
-            }
+            assistantStream.ensureMessage(event.content);
             if (event.content) {
               sessionMessagesToRecord.push({
                 role: 'assistant',

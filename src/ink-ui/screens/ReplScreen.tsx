@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import { existsSync, readdirSync, statSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
-import { getCommands } from '../../commands';
+import { getCommandCategoryLabel, getCommands, getVisibleCommands } from '../../commands';
 import { parseInput } from '../../commands/parser';
 import { getModeDisplayText } from '../../commands/types';
 import { TurnController } from '../../runtime/turn-controller';
@@ -33,17 +33,28 @@ function createId(): string {
 
 export function visibleCommandItems(input: string): SelectListItem[] {
   const query = input.startsWith('/') ? input.slice(1).toLowerCase() : '';
-  return getCommands()
-    .filter(command => !command.isHidden)
+  return getVisibleCommands()
     .filter(command => {
       if (!query) return true;
       return command.name.startsWith(query) || command.aliases?.some(alias => alias.startsWith(query));
     })
+    .sort((a, b) => commandMatchRank(a, query) - commandMatchRank(b, query))
     .map(command => ({
       value: command.name,
-      label: `/${command.name}${command.aliases?.length ? ` (${command.aliases.join(', ')})` : ''}`,
-      description: command.description,
+      label: `/${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ''}${command.aliases?.length ? ` (${command.aliases.join(', ')})` : ''}`,
+      description: `${getCommandCategoryLabel(command.category)}  ${command.description}`,
     }));
+}
+
+function commandMatchRank(command: { name: string; aliases?: string[] }, query: string): number {
+  if (!query) return 0;
+  const name = command.name.toLowerCase();
+  const aliases = command.aliases?.map(alias => alias.toLowerCase()) ?? [];
+  if (name === query) return 0;
+  if (aliases.some(alias => alias === query)) return 1;
+  if (name.startsWith(query)) return 2;
+  if (aliases.some(alias => alias.startsWith(query))) return 3;
+  return 4;
 }
 
 export function getFileQuery(input: string): { base: string; query: string } | null {

@@ -34,7 +34,9 @@ export function buildCommandSuggestions(
 
   const visibleCommands = commands.filter(cmd => !cmd.isHidden);
   const matches = normalizedQuery
-    ? visibleCommands.filter(cmd => commandMatches(cmd, normalizedQuery))
+    ? visibleCommands
+      .filter(cmd => commandMatches(cmd, normalizedQuery))
+      .sort((a, b) => commandMatchRank(a, normalizedQuery) - commandMatchRank(b, normalizedQuery))
     : visibleCommands;
   const limitedCommands = matches.slice(0, limit);
 
@@ -69,6 +71,17 @@ function commandMatches(command: SlashCommand, query: string): boolean {
   const name = command.name.toLowerCase();
   if (name.startsWith(query)) return true;
   return command.aliases?.some(alias => alias.toLowerCase().startsWith(query)) ?? false;
+}
+
+function commandMatchRank(command: SlashCommand, query: string): number {
+  const name = command.name.toLowerCase();
+  const aliases = command.aliases?.map(alias => alias.toLowerCase()) ?? [];
+
+  if (name === query) return 0;
+  if (aliases.some(alias => alias === query)) return 1;
+  if (name.startsWith(query)) return 2;
+  if (aliases.some(alias => alias.startsWith(query))) return 3;
+  return 4;
 }
 
 function normalizeQuery(query: string): string {

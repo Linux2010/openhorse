@@ -5,7 +5,16 @@
  */
 
 import chalk from 'chalk';
-import type { SlashCommand, CommandContext, CommandResult } from './types';
+import {
+  PERMISSION_MODES,
+  getModeDisplayText,
+  getNextPermissionMode,
+  type SlashCommand,
+  type CommandCategory,
+  type CommandContext,
+  type CommandResult,
+  type PermissionMode,
+} from './types';
 import type { Task } from '../core/agent';
 import { TaskManager, CreateTaskOptions } from '../services/task-manager';
 import { AgentRunner } from '../services/agent-runner';
@@ -55,6 +64,46 @@ const WARN = chalk.yellow;
 const SUCCESS = chalk.green;
 const HEADER = chalk.cyan.bold;
 
+const CATEGORY_ORDER: CommandCategory[] = [
+  'workflow',
+  'session',
+  'context',
+  'tools',
+  'model',
+  'system',
+  'diagnostics',
+  'legacy',
+];
+
+const CATEGORY_LABELS: Record<CommandCategory, string> = {
+  workflow: 'Workflow',
+  session: 'Session',
+  context: 'Context',
+  tools: 'Tools',
+  model: 'Model',
+  system: 'System',
+  diagnostics: 'Diagnostics',
+  legacy: 'Legacy',
+};
+
+function commandCategory(command: SlashCommand): CommandCategory {
+  return command.category ?? 'system';
+}
+
+export function getCommandCategoryLabel(category: CommandCategory | undefined): string {
+  return CATEGORY_LABELS[category ?? 'system'];
+}
+
+export function sortCommands(commands: SlashCommand[]): SlashCommand[] {
+  return [...commands].sort((a, b) => {
+    const categoryDelta = CATEGORY_ORDER.indexOf(commandCategory(a)) - CATEGORY_ORDER.indexOf(commandCategory(b));
+    if (categoryDelta !== 0) return categoryDelta;
+    const priorityDelta = (a.priority ?? 100) - (b.priority ?? 100);
+    if (priorityDelta !== 0) return priorityDelta;
+    return a.name.localeCompare(b.name);
+  });
+}
+
 function isAbortError(error: unknown, abortSignal?: AbortSignal): boolean {
   if (abortSignal?.aborted) return true;
   if (error instanceof Error) {
@@ -95,13 +144,22 @@ function showHelp(): CommandResult {
   console.log();
   console.log(HEADER('Commands:'));
   console.log();
-  for (const cmd of COMMANDS) {
-    const aliases = cmd.aliases ? ` (${cmd.aliases.join(', ')})` : '';
-    const params = cmd.params?.map(p => `<${p.name}>`).join(' ') || '';
-    console.log(`  ${ACCENT(`/${cmd.name}`)}${aliases} ${DIM(params)}`);
-    console.log(`    ${DIM(cmd.description)}`);
+
+  const visible = getVisibleCommands();
+  for (const category of CATEGORY_ORDER) {
+    const items = visible.filter(cmd => commandCategory(cmd) === category);
+    if (items.length === 0) continue;
+
+    console.log(DIM(getCommandCategoryLabel(category)));
+    for (const cmd of items) {
+      const aliases = cmd.aliases ? ` (${cmd.aliases.join(', ')})` : '';
+      const params = cmd.argumentHint || cmd.params?.map(p => `<${p.name}>`).join(' ') || '';
+      console.log(`  ${ACCENT(`/${cmd.name}`)}${aliases} ${DIM(params)}`);
+      console.log(`    ${DIM(cmd.description)}`);
+    }
+    console.log();
   }
-  console.log();
+
   console.log(DIM('Type any text without / prefix to chat with the LLM.'));
   console.log();
   return { success: true };
@@ -479,6 +537,56 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
   return { success: true };
 }
 
+function normalizePermissionMode(raw: string): PermissionMode | null {
+  const value = raw.trim().toLowerCase();
+  if (!value) return null;
+  if (value === 'accept' || value === 'acceptedits' || value === 'accept-edits' || value === 'edit') {
+    return 'acceptEdits';
+  }
+  if (value === 'default' || value === 'ask') return 'default';
+  if (value === 'plan' || value === 'readonly' || value === 'read-only') return 'plan';
+  if (value === 'auto' || value === 'full-auto') return 'auto';
+  return null;
+}
+
+function handleMode(ctx: CommandContext, args: string): CommandResult {
+  const current = ctx.store.getSnapshot().permissionMode;
+  const trimmed = args.trim();
+
+  if (!trimmed || trimmed === '?' || trimmed === 'help') {
+    console.log();
+    console.log(HEADER('Permission Mode'));
+    console.log(DIM('─'.repeat(40)));
+    console.log(`  Current  ${ACCENT(current)} ${DIM(getModeDisplayText(current) || 'ask before sensitive actions')}`);
+    console.log();
+    console.log(`  ${ACCENT('/mode next')}           Cycle to the next mode`);
+    console.log(`  ${ACCENT('/mode default')}        Ask before sensitive actions`);
+    console.log(`  ${ACCENT('/mode accept-edits')}   Auto-accept file edits`);
+    console.log(`  ${ACCENT('/mode plan')}           Plan first, avoid executing edits`);
+    console.log(`  ${ACCENT('/mode auto')}           Auto-run allowed actions`);
+    console.log();
+    return { success: true };
+  }
+
+  const next = trimmed === 'next'
+    ? getNextPermissionMode(current)
+    : normalizePermissionMode(trimmed);
+
+  if (!next || !PERMISSION_MODES.includes(next)) {
+    return {
+      success: false,
+      error: `Unknown mode: ${trimmed}. Use one of: default, accept-edits, plan, auto, next.`,
+    };
+  }
+
+  ctx.store.setPermissionMode(next);
+  const display = getModeDisplayText(next);
+  return {
+    success: true,
+    output: `Mode changed to ${next}${display ? ` (${display})` : ''}.`,
+  };
+}
+
 function handleTask(ctx: CommandContext, args: string): CommandResult {
   const [sub, ...rest] = args.trim().split(/\s+/);
 
@@ -677,8 +785,6 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
   let finalUsage: { promptTokens: number; completionTokens: number } | undefined;
   let responseStarted = false;
   const sessionMessagesToRecord: SessionMessage[] = [];
-  let lastToolCallId = '';
-  let lastToolArgs: Record<string, unknown> = {};
 
   // Issue #22: 批量工具调用进度显示
   let toolCallCount = 0;
@@ -780,24 +886,19 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
             showToolProgress(toolCallCount, event.name);
             lastProgressUpdate = Date.now();
           }
-          // 收集完整的 tool_call 信息
-          lastToolCallId = event.callId;
-          lastToolArgs = event.args;
           break;
 
         case 'tool_result':
           // Issue #22: 隐藏进度指示
           hideProgress();
           // 显示工具结果后，准备下一轮（不启动 spinner）
-          const parsedResult = JSON.parse(event.result);
-          const toolSuccess = parsedResult.success !== false;
-          writeLine(toolLine(event.name, lastToolArgs, toolSuccess, event.duration));
+          writeLine(toolLine(event.name, event.args, event.success, event.duration));
           // 显示错误详情
-          if (!toolSuccess && parsedResult.error) {
-            writeLine(ERROR(`    Error: ${parsedResult.error}`));
+          if (!event.success && event.error) {
+            writeLine(ERROR(`    Error: ${event.error}`));
           }
           // Debug: 显示接收到的参数
-          if (!toolSuccess && Object.keys(lastToolArgs).length === 0) {
+          if (!event.success && Object.keys(event.args).length === 0) {
             writeLine(WARN(`    ⚠ Tool received empty arguments - LLM may not be providing parameters correctly`));
             writeLine(DIM(`    Try using /model qwen or /model gpt4o for better tool calling support`));
           }
@@ -806,7 +907,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
             role: 'tool',
             content: event.result,
             timestamp: Date.now(),
-            toolCallId: lastToolCallId,
+            toolCallId: event.callId,
           });
           break;
 
@@ -1032,6 +1133,60 @@ function handleMcp(ctx: CommandContext): CommandResult {
         ? SUCCESS('connected')
         : WARN('disconnected');
     console.log(`  ${ACCENT(s.name.padEnd(20))} ${stateLabel}  ${DIM(`${s.toolCount} tools`)}`);
+  }
+  console.log();
+  return { success: true };
+}
+
+function handleTools(ctx: CommandContext): CommandResult {
+  const tools = ctx.store.getSnapshot().tools.length > 0
+    ? ctx.store.getSnapshot().tools
+    : getRuntimeTools();
+  const staticTools = tools.filter(tool => !tool.name.startsWith('mcp__'));
+  const mcpTools = tools.filter(tool => tool.name.startsWith('mcp__'));
+
+  console.log();
+  console.log(HEADER('Available Tools'));
+  console.log(DIM('─'.repeat(40)));
+  console.log(`  Static tools  ${ACCENT(String(staticTools.length))}`);
+  console.log(`  MCP tools     ${ACCENT(String(mcpTools.length))}`);
+  console.log();
+
+  const visible = [...staticTools, ...mcpTools].slice(0, 28);
+  for (const tool of visible) {
+    const label = tool.name.startsWith('mcp__') ? 'mcp' : 'tool';
+    console.log(`  ${ACCENT(tool.name)} ${DIM(`[${label}]`)}`);
+    console.log(`    ${DIM(tool.description.slice(0, 96))}`);
+  }
+
+  if (tools.length > visible.length) {
+    console.log();
+    console.log(DIM(`  ... ${tools.length - visible.length} more tools hidden`));
+  }
+  console.log();
+  return { success: true };
+}
+
+function handleTodos(ctx: CommandContext): CommandResult {
+  const todos = ctx.store.getSnapshot().todos;
+  console.log();
+  console.log(HEADER('Todos'));
+  console.log(DIM('─'.repeat(40)));
+
+  if (todos.length === 0) {
+    console.log(DIM('  No active todos yet.'));
+    console.log();
+    return { success: true };
+  }
+
+  for (const todo of todos) {
+    const marker = todo.status === 'completed' ? SUCCESS('✓')
+      : todo.status === 'in_progress' ? WARN('›')
+      : DIM('○');
+    console.log(`  ${marker} ${todo.content}`);
+    if (todo.activeForm && todo.activeForm !== todo.content) {
+      console.log(`    ${DIM(todo.activeForm)}`);
+    }
   }
   console.log();
   return { success: true };
@@ -1477,16 +1632,198 @@ function generateHistorySummary(messages: Message[]): string {
   return parts.join('. ');
 }
 
+function continueAsSlashChat(name: string, args: string): CommandResult {
+  const trimmed = args.trim();
+  return {
+    success: true,
+    continueAsChat: true,
+    chatInput: `/${name}${trimmed ? ` ${trimmed}` : ''}`,
+  };
+}
+
 // ============================================================================
 // 命令注册表
 // ============================================================================
 
 const COMMANDS: SlashCommand[] = [
-  // 系统命令
+  // Coding workflows
+  {
+    name: 'review',
+    description: 'Review the current change or requested files',
+    argumentHint: '[scope]',
+    category: 'workflow',
+    priority: 10,
+    type: 'chat',
+    execute: (_ctx, args) => continueAsSlashChat('review', args),
+  },
+  {
+    name: 'security',
+    aliases: ['audit'],
+    description: 'Review code or dependencies for security risks',
+    argumentHint: '[scope]',
+    category: 'workflow',
+    priority: 20,
+    type: 'chat',
+    execute: (_ctx, args) => continueAsSlashChat('security', args),
+  },
+  {
+    name: 'test-gen',
+    aliases: ['tests'],
+    description: 'Generate or improve tests for a target area',
+    argumentHint: '[scope]',
+    category: 'workflow',
+    priority: 30,
+    type: 'chat',
+    execute: (_ctx, args) => continueAsSlashChat('test-gen', args),
+  },
+  {
+    name: 'todos',
+    aliases: ['todo'],
+    description: 'Show current agent todo state',
+    category: 'workflow',
+    priority: 40,
+    type: 'builtin',
+    execute: (ctx) => handleTodos(ctx),
+  },
+
+  // Sessions and context lifecycle
+  {
+    name: 'resume',
+    description: 'Resume a previous session',
+    argumentHint: '[number|session-id|name]',
+    category: 'session',
+    priority: 10,
+    type: 'builtin',
+    execute: (ctx, args) => handleResume(ctx, args),
+  },
+  {
+    name: 'sessions',
+    description: 'List recent sessions',
+    category: 'session',
+    priority: 20,
+    type: 'builtin',
+    execute: (ctx, args) => handleSessions(ctx, args),
+  },
+  {
+    name: 'session-rename',
+    aliases: ['rename-session'],
+    description: 'Rename a saved session',
+    argumentHint: '<number|session-id|name> <new name>',
+    category: 'session',
+    priority: 30,
+    type: 'builtin',
+    execute: (ctx, args) => handleSessionRename(ctx, args),
+  },
+  {
+    name: 'compact',
+    description: 'Compact conversation history to reduce context size',
+    argumentHint: '[threshold]',
+    category: 'session',
+    priority: 40,
+    type: 'builtin',
+    execute: (ctx, args) => handleCompact(ctx, args),
+  },
+  {
+    name: 'clear-history',
+    aliases: ['reset'],
+    description: 'Clear conversation history (keep config)',
+    category: 'session',
+    priority: 50,
+    type: 'builtin',
+    execute: (ctx) => handleClearHistory(ctx),
+  },
+
+  // Harness, memory, and skills
+  {
+    name: 'harness',
+    description: 'Show Context Harness state, or `/harness explain` for prompt assembly details',
+    argumentHint: '[explain]',
+    category: 'context',
+    priority: 10,
+    type: 'builtin',
+    execute: (ctx, args) => showHarness(ctx, args),
+  },
+  {
+    name: 'skills',
+    description: 'List loaded skills (built-in / user / project)',
+    category: 'context',
+    priority: 20,
+    type: 'builtin',
+    execute: (ctx) => handleSkills(ctx),
+  },
+  {
+    name: 'memory',
+    description: 'Show memory status, or `/memory reindex` to rebuild semantic index',
+    argumentHint: '[reindex]',
+    category: 'context',
+    priority: 30,
+    type: 'builtin',
+    execute: (ctx, args) => handleMemory(ctx, args),
+  },
+
+  // Tools and safety
+  {
+    name: 'tools',
+    aliases: ['tool'],
+    description: 'List available built-in and MCP tools',
+    category: 'tools',
+    priority: 10,
+    type: 'builtin',
+    execute: (ctx) => handleTools(ctx),
+  },
+  {
+    name: 'mcp',
+    description: 'Show connected MCP servers and their status',
+    category: 'tools',
+    priority: 20,
+    type: 'builtin',
+    execute: (ctx) => handleMcp(ctx),
+  },
+  {
+    name: 'safety',
+    description: 'Show safety checker status and audit summary',
+    category: 'tools',
+    priority: 30,
+    type: 'builtin',
+    execute: (ctx) => showSafety(ctx),
+  },
+
+  // Model and runtime configuration
+  {
+    name: 'model',
+    description: 'Show or change the current model',
+    argumentHint: '[model|list|help]',
+    category: 'model',
+    priority: 10,
+    type: 'builtin',
+    execute: (ctx, args) => handleModel(ctx, args),
+  },
+  {
+    name: 'mode',
+    aliases: ['permissions', 'perm'],
+    description: 'Show or change tool permission mode',
+    argumentHint: '[default|accept-edits|plan|auto|next]',
+    category: 'model',
+    priority: 20,
+    type: 'builtin',
+    execute: (ctx, args) => handleMode(ctx, args),
+  },
+  {
+    name: 'config',
+    description: 'Show current configuration',
+    category: 'model',
+    priority: 30,
+    type: 'builtin',
+    execute: (ctx) => showConfig(ctx),
+  },
+
+  // System commands
   {
     name: 'help',
     aliases: ['h'],
     description: 'Show available commands',
+    category: 'system',
+    priority: 10,
     type: 'builtin',
     execute: () => showHelp(),
   },
@@ -1494,12 +1831,16 @@ const COMMANDS: SlashCommand[] = [
     name: 'status',
     aliases: ['s'],
     description: 'Show system status overview',
+    category: 'system',
+    priority: 20,
     type: 'builtin',
     execute: (ctx) => showStatus(ctx),
   },
   {
     name: 'clear',
     description: 'Clear the terminal screen',
+    category: 'system',
+    priority: 30,
     type: 'builtin',
     execute: () => {
       process.stdout.write('\x1Bc');
@@ -1507,146 +1848,68 @@ const COMMANDS: SlashCommand[] = [
     },
   },
   {
-    name: 'clear-history',
-    aliases: ['reset'],
-    description: 'Clear conversation history (keep config)',
-    type: 'builtin',
-    execute: (ctx) => handleClearHistory(ctx),
-  },
-  {
-    name: 'compact',
-    description: 'Compact conversation history to reduce context size',
-    argumentHint: '[threshold]',
-    type: 'builtin',
-    execute: (ctx, args) => handleCompact(ctx, args),
-  },
-  {
     name: 'exit',
     aliases: ['quit', 'q'],
     description: 'Shutdown and exit',
+    category: 'system',
+    priority: 40,
     type: 'builtin',
     execute: (ctx) => handleExit(ctx),
   },
 
-  // 成本/用量命令
-  {
-    name: 'cost',
-    description: 'Show session token usage',
-    type: 'builtin',
-    execute: (ctx) => handleCost(ctx),
-  },
+  // Diagnostics
   {
     name: 'usage',
     aliases: ['stats'],
     description: 'Show detailed usage statistics',
+    category: 'diagnostics',
+    priority: 10,
     type: 'builtin',
     execute: (ctx) => handleUsage(ctx),
   },
-
-  // 配置命令
   {
-    name: 'model',
-    description: 'Show or change the current model',
-    argumentHint: '[model|list|help]',
+    name: 'cost',
+    description: 'Show session token usage',
+    category: 'diagnostics',
+    priority: 20,
     type: 'builtin',
-    execute: (ctx, args) => handleModel(ctx, args),
+    execute: (ctx) => handleCost(ctx),
   },
-  {
-    name: 'config',
-    description: 'Show current configuration',
-    type: 'builtin',
-    execute: (ctx) => showConfig(ctx),
-  },
-
-  // Agent/Harness 命令
   {
     name: 'agents',
     description: 'List registered agents and their status',
+    category: 'diagnostics',
+    priority: 30,
     type: 'builtin',
     execute: (ctx) => showAgents(ctx),
   },
-  {
-    name: 'memory',
-    description: 'Show memory status, or `/memory reindex` to rebuild semantic index',
-    argumentHint: '[reindex]',
-    type: 'builtin',
-    execute: (ctx, args) => handleMemory(ctx, args),
-  },
-  {
-    name: 'safety',
-    description: 'Show safety checker status and audit summary',
-    type: 'builtin',
-    execute: (ctx) => showSafety(ctx),
-  },
-  {
-    name: 'harness',
-    description: 'Show Context Harness state, or `/harness explain` for prompt assembly details',
-    argumentHint: '[explain]',
-    type: 'builtin',
-    execute: (ctx, args) => showHarness(ctx, args),
-  },
 
-  // Task 命令
+  // Legacy commands kept executable for compatibility, but not shown in Ink help/palette.
   {
     name: 'task',
     description: 'Submit or list tasks',
     params: [{ name: 'action', description: 'list | <task-name>', required: false }],
+    category: 'legacy',
     type: 'builtin',
+    isHidden: true,
     execute: (ctx, args) => handleTask(ctx, args),
   },
   {
     name: 'run',
     description: 'Create and run a task through Agent + LLM',
     params: [{ name: 'description', description: 'Task description', required: true }],
+    category: 'legacy',
     type: 'builtin',
+    isHidden: true,
     execute: (ctx, args) => handleRun(ctx, args),
   },
-
-  // Session 命令
-  {
-    name: 'sessions',
-    description: 'List recent sessions',
-    type: 'builtin',
-    execute: (ctx, args) => handleSessions(ctx, args),
-  },
-  {
-    name: 'resume',
-    description: 'Resume a previous session',
-    argumentHint: '[number|session-id|name]',
-    type: 'builtin',
-    execute: (ctx, args) => handleResume(ctx, args),
-  },
-  {
-    name: 'session-rename',
-    aliases: ['rename-session'],
-    description: 'Rename a saved session',
-    argumentHint: '<number|session-id|name> <new name>',
-    type: 'builtin',
-    execute: (ctx, args) => handleSessionRename(ctx, args),
-  },
-
-  // MCP
-  {
-    name: 'mcp',
-    description: 'Show connected MCP servers and their status',
-    type: 'builtin',
-    execute: (ctx) => handleMcp(ctx),
-  },
-
-  // Skills
-  {
-    name: 'skills',
-    description: 'List loaded skills (built-in / user / project)',
-    type: 'builtin',
-    execute: (ctx) => handleSkills(ctx),
-  },
-
-  // Chat 命令
   {
     name: 'chat',
     description: 'Send a message to the LLM',
     params: [{ name: 'message', description: 'Message to send', required: true }],
+    category: 'legacy',
     type: 'chat',
+    isHidden: true,
     execute: (ctx, args) => ({ success: true, continueAsChat: true, chatInput: args }),
   },
 ];
@@ -1656,7 +1919,11 @@ const COMMANDS: SlashCommand[] = [
 // ============================================================================
 
 export function getCommands(): SlashCommand[] {
-  return COMMANDS;
+  return sortCommands(COMMANDS);
+}
+
+export function getVisibleCommands(): SlashCommand[] {
+  return sortCommands(COMMANDS.filter(command => !command.isHidden));
 }
 
 export function findCommand(name: string): SlashCommand | undefined {
@@ -1664,7 +1931,7 @@ export function findCommand(name: string): SlashCommand | undefined {
 }
 
 export function getCommandNames(): string[] {
-  return COMMANDS.map(c => c.name);
+  return getVisibleCommands().map(c => c.name);
 }
 
 export { handleChat as executeChat };
