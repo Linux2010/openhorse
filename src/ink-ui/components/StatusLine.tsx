@@ -4,6 +4,7 @@ import stringWidth from 'string-width';
 import { calculateCtxPercent } from '../../services/model-context';
 import { mcpManager } from '../../tools/mcp';
 import type { OpenHorseInkRuntime } from '../types';
+import { RunningHorseIndicator, runningHorseLabel } from './RunningHorseIndicator';
 
 export interface StatusLineProps {
   runtime: OpenHorseInkRuntime;
@@ -39,16 +40,18 @@ export function StatusLine({ runtime, running, statusMessage, width = 80 }: Stat
     `ctx=${ctxPercent}%`,
     mcpStatus.length > 0 ? `mcp=${connectedMcp}/${mcpStatus.length}` : '',
   ].filter(Boolean).join('  ');
-  const leftText = truncateVisual(
-    statusMessage || (running ? 'running' : 'ready'),
-    Math.max(10, width - stringWidth(rightText) - 2)
-  );
+  const leftMaxWidth = Math.max(10, width - stringWidth(rightText) - 2);
+  const leftText = truncateVisual(statusMessage || 'ready', leftMaxWidth);
 
   return (
     <Box justifyContent="space-between">
-      <Text color={running ? 'yellow' : 'gray'}>
-        {leftText}
-      </Text>
+      {running ? (
+        <RunningHorseIndicator label={runningHorseLabel(statusMessage)} maxWidth={leftMaxWidth} />
+      ) : (
+        <Text color="gray">
+          {leftText}
+        </Text>
+      )}
       <Text color="gray">
         model=<Text color="cyan">{snapshot.currentModel}</Text>
         {'  '}session=<Text color="cyan">{session?.id.slice(0, 8) ?? 'none'}</Text>

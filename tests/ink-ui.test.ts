@@ -1,9 +1,11 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import stringWidth from 'string-width';
 import { getCursorRestoreDelays, getPromptCursorPosition } from '../src/ink-ui/components/TerminalCursor';
 import { formatPromptLine } from '../src/ink-ui/components/PromptInput';
-import { markdownBlockTypes } from '../src/ink-ui/components/Markdown';
+import { decodeHtmlEntities, markdownBlockTypes } from '../src/ink-ui/components/Markdown';
+import { getRunningHorseFrame, runningHorseLabel } from '../src/ink-ui/components/RunningHorseIndicator';
 import { createAssistantStreamPresenter, createToolEventPresenter } from '../src/ink-ui/controllers/chat-controller';
 import { getPromptVisualLines } from '../src/ink-ui/runtime/prompt-layout';
 import { getFileQuery, sessionItems, visibleCommandItems, visibleFileItems } from '../src/ink-ui/screens/ReplScreen';
@@ -98,6 +100,19 @@ describe('Ink UI helpers', () => {
     expect(cursor.column).toBeGreaterThan(4);
   });
 
+  it('normalizes running status into a horse animation label', () => {
+    expect(runningHorseLabel('Turn 2...')).toBe('working');
+    expect(runningHorseLabel('Revision received. Interrupting current response...')).toBe('Revision received. Interrupting current response...');
+  });
+
+  it('uses stable-width running horse frames with moving dust', () => {
+    const frames = [0, 1, 2, 3].map(getRunningHorseFrame);
+    const widths = new Set(frames.map(frame => stringWidth(`${frame.horse} ${frame.dust}`)));
+
+    expect(widths.size).toBe(1);
+    expect(new Set(frames.map(frame => frame.dust)).size).toBeGreaterThan(1);
+  });
+
   it('recognizes rich markdown blocks for Ink transcript rendering', () => {
     const blocks = markdownBlockTypes([
       '# Title',
@@ -114,6 +129,11 @@ describe('Ink UI helpers', () => {
     ].join('\n'));
 
     expect(blocks).toEqual(expect.arrayContaining(['heading', 'list', 'code', 'table']));
+  });
+
+  it('decodes html entities in assistant markdown text', () => {
+    expect(decodeHtmlEntities('I see you&#39;ve entered &quot;111&quot; &amp; more.')).toBe('I see you\'ve entered "111" & more.');
+    expect(decodeHtmlEntities('numeric: &#8226; &#x2022;')).toBe('numeric: • •');
   });
 
   it('keeps tool events between assistant stream segments', () => {

@@ -18,6 +18,29 @@ interface MarkdownProps {
 
 type AnyToken = Token & Record<string, any>;
 
+const HTML_ENTITIES: Record<string, string> = {
+  amp: '&',
+  apos: "'",
+  gt: '>',
+  lt: '<',
+  nbsp: ' ',
+  quot: '"',
+};
+
+export function decodeHtmlEntities(text: string): string {
+  return text.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]+);/g, (match, entity: string) => {
+    if (entity.startsWith('#x') || entity.startsWith('#X')) {
+      const codePoint = Number.parseInt(entity.slice(2), 16);
+      return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : match;
+    }
+    if (entity.startsWith('#')) {
+      const codePoint = Number.parseInt(entity.slice(1), 10);
+      return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : match;
+    }
+    return HTML_ENTITIES[entity] ?? match;
+  });
+}
+
 function padVisual(text: string, width: number): string {
   return text + ' '.repeat(Math.max(0, width - stringWidth(text)));
 }
@@ -33,8 +56,8 @@ function truncateVisual(text: string, width: number): string {
 }
 
 function tokenText(token: AnyToken): string {
-  if (typeof token.text === 'string') return token.text;
-  if (typeof token.raw === 'string') return token.raw;
+  if (typeof token.text === 'string') return decodeHtmlEntities(token.text);
+  if (typeof token.raw === 'string') return decodeHtmlEntities(token.raw);
   return '';
 }
 
@@ -65,7 +88,7 @@ function inlineChildren(tokens: AnyToken[] | undefined, fallback: string, keyPre
         return (
           <Text key={key}>
             <Text color={ACCENT} underline>{label}</Text>
-            {token.href ? <Text color={DIM}> ({token.href})</Text> : null}
+            {token.href ? <Text color={DIM}> ({decodeHtmlEntities(token.href)})</Text> : null}
           </Text>
         );
       }
