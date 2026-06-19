@@ -41,6 +41,8 @@ export interface OpenHorseInkRuntime extends RuntimeSessionAccessors {
 export interface UiEventSink {
   append: (entry: Omit<TranscriptEntry, 'id'>) => string;
   update: (id: string, patch: Partial<Omit<TranscriptEntry, 'id'>>) => void;
+  finalize: (id: string, patch?: Partial<Omit<TranscriptEntry, 'id'>>) => void;
+  replaceTranscript: (entries: TranscriptEntry[]) => void;
   clearTranscript: () => void;
   setStatus: (message: string) => void;
   showSessionPicker: (request: SessionPickerRequest) => void;

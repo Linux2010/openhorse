@@ -34,6 +34,7 @@ import {
   lookupSessionRef,
   loadSessionHistory,
   loadSessionMeta,
+  markSessionTranscriptDisplayStart,
   appendSessionMessage,
   appendSessionMessages,
   endSession,
@@ -1250,6 +1251,10 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
 
     const reduction = history.length - compacted.length;
     const percent = Math.round((reduction / history.length) * 100);
+    const sessionId = ctx.getSession?.()?.id ?? ctx.sessionId;
+    if (sessionId) {
+      markSessionTranscriptDisplayStart(sessionId);
+    }
 
     console.log(SUCCESS(`✔ Compacted ${history.length} → ${compacted.length} messages`));
     console.log(DIM(`  Reduced by ${reduction} messages (${percent}%)`));

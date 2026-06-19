@@ -20,7 +20,7 @@ import { query, getSystemPrompt, type PromptContext, type QueryEvent } from '../
 import { createContextHarness } from '../../harness';
 import { executeTool, getRuntimeTools } from '../../tools';
 import { resolveSkillsForTurn, hasMatchingSkill } from '../../skills';
-import type { OpenHorseInkRuntime, UiEventSink } from '../types';
+import type { OpenHorseInkRuntime, TranscriptEntry, UiEventSink } from '../types';
 
 const ANSI_PATTERN = /\x1b\[[0-9;?]*[A-Za-z]/g;
 
@@ -56,43 +56,108 @@ function toolSummary(name: string, args: Record<string, unknown>, success: boole
   return `${success ? '✓' : '✗'} ${name}${suffix} (${duration}ms)`;
 }
 
+function isSyntheticCompactContext(content: string): boolean {
+  return content.startsWith('[OpenHorse Context State v2]')
+    || content.startsWith('[Context Summary]')
+    || content.startsWith('I will continue from this OpenHorse Context State')
+    || content.startsWith('I understand the context. I will continue the conversation with this background information.');
+}
+
+function sessionToolCallSummary(message: SessionMessage): string[] {
+  return (message.tool_calls ?? []).map(call => {
+    const rawArgs = call.function.arguments;
+    let args: Record<string, unknown> = {};
+    try {
+      args = rawArgs ? JSON.parse(rawArgs) as Record<string, unknown> : {};
+    } catch {
+      args = rawArgs ? { arguments: rawArgs } : {};
+    }
+    const detail = compactToolArgs(args);
+    return `Requested ${call.function.name}${detail ? ` ${detail}` : ''}`;
+  });
+}
+
+export function sessionMessagesToTranscriptEntries(sessionId: string): TranscriptEntry[] {
+  const session = loadSessionMeta(sessionId);
+  const displayStartTime = session?.transcriptDisplayStartTime;
+  const messages = readSessionMessages(sessionId).filter(message =>
+    typeof displayStartTime !== 'number' || (message.timestamp ?? 0) >= displayStartTime
+  );
+  const entries: TranscriptEntry[] = [];
+
+  messages.forEach((message, index) => {
+    if (isSyntheticCompactContext(message.content)) return;
+
+    const idBase = `session-${sessionId.slice(0, 8)}-${index}`;
+    if (message.role === 'user') {
+      entries.push({ id: `${idBase}-user`, role: 'user', content: message.content });
+      return;
+    }
+
+    if (message.role === 'assistant') {
+      if (message.content.trim()) {
+        entries.push({ id: `${idBase}-assistant`, role: 'assistant', content: message.content });
+      }
+      for (const summary of sessionToolCallSummary(message)) {
+        entries.push({ id: `${idBase}-tool-call-${entries.length}`, role: 'tool', content: summary });
+      }
+      return;
+    }
+
+    if (message.role === 'tool') {
+      entries.push({
+        id: `${idBase}-tool`,
+        role: 'tool',
+        content: message.toolCallId ? `Tool result ${message.toolCallId}\n${message.content}` : message.content,
+      });
+      return;
+    }
+
+    if (message.role === 'system') {
+      entries.push({ id: `${idBase}-system`, role: 'system', content: message.content });
+    }
+  });
+
+  return entries;
+}
+
 export interface AssistantStreamPresenter {
   appendChunk(chunk: string): void;
   closeSegment(): void;
+  discardSegment(): void;
   ensureMessage(content: string): void;
 }
 
 export function createAssistantStreamPresenter(events: UiEventSink, abortSignal?: AbortSignal): AssistantStreamPresenter {
-  let activeEntryId: string | null = null;
   let activeSegmentText = '';
+
+  const flushSegment = (): void => {
+    if (abortSignal?.aborted || !activeSegmentText) return;
+    const entryId = events.append({
+      role: 'assistant',
+      content: activeSegmentText,
+    });
+    events.finalize(entryId);
+    activeSegmentText = '';
+  };
 
   return {
     appendChunk(chunk: string): void {
       if (abortSignal?.aborted || !chunk) return;
       activeSegmentText += chunk;
-
-      if (!activeEntryId) {
-        activeEntryId = events.append({
-          role: 'assistant',
-          content: activeSegmentText,
-        });
-      } else {
-        events.update(activeEntryId, { content: activeSegmentText });
-      }
     },
 
     closeSegment(): void {
-      activeEntryId = null;
+      flushSegment();
+    },
+
+    discardSegment(): void {
       activeSegmentText = '';
     },
 
     ensureMessage(content: string): void {
       if (abortSignal?.aborted || !content || activeSegmentText.length > 0) return;
       activeSegmentText = content;
-      activeEntryId = events.append({
-        role: 'assistant',
-        content,
-      });
     },
   };
 }
@@ -127,7 +192,7 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
       const existingEntryId = runningToolEntries.get(event.callId);
 
       if (existingEntryId) {
-        events.update(existingEntryId, {
+        events.finalize(existingEntryId, {
           role: event.success ? 'tool' : 'error',
           title: 'tool',
           content,
@@ -136,11 +201,12 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
         return;
       }
 
-      events.append({
+      const entryId = events.append({
         role: event.success ? 'tool' : 'error',
         title: 'tool',
         content,
       });
+      events.finalize(entryId);
     },
   };
 }
@@ -262,7 +328,10 @@ export class InkChatController {
       runtime: this.runtime.runtime,
       sessionId: this.runtime.getSession()?.id,
       ensureSession: this.runtime.ensureSession,
-      setSession: session => this.runtime.setSession(session),
+      setSession: session => {
+        this.runtime.setSession(session);
+        this.events.replaceTranscript(sessionMessagesToTranscriptEntries(session.id));
+      },
       getSession: this.runtime.getSession,
       abortSignal,
       writeOutput: text => {
@@ -388,6 +457,7 @@ export class InkChatController {
       })) {
         switch (event.type) {
           case 'request_start':
+            assistantStream.discardSegment();
             this.events.setStatus(`Turn ${event.turn}...`);
             break;
           case 'assistant_tool_calls':
@@ -441,6 +511,8 @@ export class InkChatController {
         this.events.setStatus('Interrupted.');
         return;
       }
+
+      assistantStream.closeSegment();
 
       if (finalContent) {
         this.runtime.store.addMessage({ role: 'assistant', content: finalContent });

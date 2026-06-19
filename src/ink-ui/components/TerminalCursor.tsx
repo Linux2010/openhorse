@@ -1,19 +1,19 @@
-import { useEffect, useRef } from 'react';
-import { useStdout } from 'ink';
+import { useLayoutEffect } from 'react';
 import stringWidth from 'string-width';
-import { promptTextWidth, splitByVisualWidth } from '../runtime/prompt-layout';
+import { getPromptInputViewport, promptTextWidth, splitByVisualWidth } from '../runtime/prompt-layout';
+import { disablePromptCursor, schedulePromptCursorRestore, setPromptCursorState } from '../runtime/stdout';
 
 export interface TerminalCursorProps {
   value: string;
   terminalHeight: number;
   terminalWidth: number;
+  cursor?: number;
+  maxRows?: number;
   sticky?: boolean;
 }
 
-const NORMAL_RESTORE_DELAYS_MS = [0, 16];
-const STICKY_RESTORE_DELAYS_MS = [0, 16, 64];
-const STICKY_RESTORE_INTERVAL_MS = 120;
-
+const NORMAL_RESTORE_DELAYS_MS = [0];
+const STICKY_RESTORE_DELAYS_MS = [0];
 export function getPromptCursorPosition(
   value: string,
   terminalHeight: number,
@@ -36,58 +36,24 @@ export function getPromptCursorPosition(
   };
 }
 
-function writePromptCursor(
-  stream: NodeJS.WriteStream,
-  value: string,
-  terminalHeight: number,
-  terminalWidth: number
-): void {
-  const position = getPromptCursorPosition(value, terminalHeight, terminalWidth);
-  stream.write(`\x1b[?25h\x1b[${position.row};${position.column}H`);
+export function getCursorRestoreDelays(_sticky = false): number[] {
+  return NORMAL_RESTORE_DELAYS_MS;
 }
 
-export function getCursorRestoreDelays(sticky = false): number[] {
-  return sticky ? STICKY_RESTORE_DELAYS_MS : NORMAL_RESTORE_DELAYS_MS;
-}
+export function TerminalCursor({ value, terminalWidth, cursor = value.length, maxRows = 6, sticky = false }: TerminalCursorProps): null {
+  useLayoutEffect(() => {
+    const viewport = getPromptInputViewport(value, terminalWidth, maxRows, cursor);
+    setPromptCursorState({
+      enabled: true,
+      column: viewport.cursorColumn,
+      rowsUp: viewport.rowsUpFromPromptBottom,
+    });
+    schedulePromptCursorRestore();
 
-export function TerminalCursor({ value, terminalHeight, terminalWidth, sticky = false }: TerminalCursorProps): null {
-  const { stdout } = useStdout();
-  const latestRef = useRef({
-    stream: stdout ?? process.stdout,
-    value,
-    terminalHeight,
-    terminalWidth,
-  });
-
-  latestRef.current = {
-    stream: stdout ?? process.stdout,
-    value,
-    terminalHeight,
-    terminalWidth,
-  };
-
-  // Ink leaves the terminal cursor after the last rendered text. During streaming
-  // the footer can flush after the input box, so restore the cursor in a few
-  // closely-spaced passes rather than racing Ink with a single setTimeout(0).
-  useEffect(() => {
-    const timers = getCursorRestoreDelays(sticky).map(delay => setTimeout(() => {
-      const latest = latestRef.current;
-      writePromptCursor(latest.stream, latest.value, latest.terminalHeight, latest.terminalWidth);
-    }, delay));
-
-    return () => timers.forEach(timer => clearTimeout(timer));
-  });
-
-  useEffect(() => {
-    if (!sticky) return undefined;
-
-    const interval = setInterval(() => {
-      const latest = latestRef.current;
-      writePromptCursor(latest.stream, latest.value, latest.terminalHeight, latest.terminalWidth);
-    }, STICKY_RESTORE_INTERVAL_MS);
-
-    return () => clearInterval(interval);
-  }, [sticky]);
+    return () => {
+      disablePromptCursor();
+    };
+  }, [sticky, value, terminalWidth, cursor, maxRows]);
 
   return null;
 }

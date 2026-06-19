@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { Box, Text } from 'ink';
 import stringWidth from 'string-width';
 
@@ -45,17 +45,11 @@ export function runningHorseLabel(statusMessage?: string): string {
 export function RunningHorseIndicator({
   label = 'working',
   maxWidth = 32,
-  intervalMs = 120,
+  intervalMs: _intervalMs = 120,
 }: RunningHorseIndicatorProps): JSX.Element {
-  const [tick, setTick] = useState(0);
-  const frame = getRunningHorseFrame(tick);
+  const frame = getRunningHorseFrame(0);
   const fixedWidth = stringWidth(`${frame.horse} ${frame.dust} `);
   const text = truncateVisual(label, Math.max(0, maxWidth - fixedWidth));
-
-  useEffect(() => {
-    const timer = setInterval(() => setTick(current => current + 1), intervalMs);
-    return () => clearInterval(timer);
-  }, [intervalMs]);
 
   return (
     <Box>

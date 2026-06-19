@@ -4,7 +4,25 @@ export interface PromptVisualLine {
   logicalIndex: number;
   wrapIndex: number;
   content: string;
+  start: number;
+  end: number;
 }
+
+interface PromptVisualLineChunk extends PromptVisualLine {
+  chunkStart: number;
+  chunkEnd: number;
+}
+
+export interface PromptInputViewport {
+  lines: PromptVisualLine[];
+  hiddenRows: number;
+  showHiddenIndicator: boolean;
+  cursorLineIndex: number;
+  cursorColumn: number;
+  rowsUpFromPromptBottom: number;
+}
+
+export const PROMPT_CURSOR_GLYPH = '▌';
 
 export function promptContentWidth(width: number): number {
   return Math.max(1, width - 4);
@@ -34,22 +52,143 @@ export function splitByVisualWidth(text: string, maxWidth: number): string[] {
   return chunks;
 }
 
-export function getPromptVisualLines(value: string, width: number): PromptVisualLine[] {
-  const lines = value.length > 0 ? value.split('\n') : [''];
-  const maxTextWidth = promptTextWidth(width);
+function splitByVisualWidthWithOffsets(text: string, maxWidth: number): Array<{ content: string; start: number; end: number }> {
+  if (text.length === 0) return [{ content: '', start: 0, end: 0 }];
 
-  return lines.flatMap((line, logicalIndex) =>
-    splitByVisualWidth(line, maxTextWidth).map((content, wrapIndex) => ({
-      logicalIndex,
-      wrapIndex,
-      content,
-    }))
-  );
+  const chunks: Array<{ content: string; start: number; end: number }> = [];
+  let current = '';
+  let currentStart = 0;
+  let offset = 0;
+
+  for (const char of text) {
+    const next = `${current}${char}`;
+    const nextOffset = offset + char.length;
+    if (current && stringWidth(next) > maxWidth) {
+      chunks.push({ content: current, start: currentStart, end: offset });
+      current = char;
+      currentStart = offset;
+    } else {
+      current = next;
+    }
+    offset = nextOffset;
+  }
+
+  chunks.push({ content: current, start: currentStart, end: offset });
+  return chunks;
 }
 
-export function formatPromptVisualLine(visualLine: PromptVisualLine, width: number): string {
+export function getPromptVisualLines(value: string, width: number): PromptVisualLine[] {
+  return buildPromptVisualLines(value, width).lines;
+}
+
+export function getVisiblePromptVisualLines(
+  value: string,
+  width: number,
+  maxRows: number
+): { lines: PromptVisualLine[]; hiddenRows: number } {
+  const lines = getPromptVisualLines(value, width);
+  const rowLimit = Math.max(1, maxRows);
+
+  if (lines.length <= rowLimit) {
+    return { lines, hiddenRows: 0 };
+  }
+
+  return {
+    lines: lines.slice(-rowLimit),
+    hiddenRows: lines.length - rowLimit,
+  };
+}
+
+export function getPromptInputViewport(
+  value: string,
+  width: number,
+  maxRows: number,
+  cursor: number = value.length
+): PromptInputViewport {
+  const layout = buildPromptVisualLines(value, width, cursor);
+  const allLines = layout.lines;
+  const rowLimit = Math.max(1, maxRows);
+  const showHiddenIndicator = allLines.length > rowLimit && rowLimit > 1;
+  const visibleInputRows = showHiddenIndicator ? rowLimit - 1 : rowLimit;
+  const start = allLines.length <= visibleInputRows
+    ? 0
+    : Math.min(
+      Math.max(0, layout.cursorLineIndex - visibleInputRows + 1),
+      allLines.length - visibleInputRows
+    );
+  const lines = allLines.slice(start, start + visibleInputRows);
+  const indicatorRows = showHiddenIndicator ? 1 : 0;
+  const cursorLineIndex = indicatorRows + Math.max(0, layout.cursorLineIndex - start);
+  const contentRows = indicatorRows + lines.length;
+
+  return {
+    lines,
+    hiddenRows: allLines.length - lines.length,
+    showHiddenIndicator,
+    cursorLineIndex,
+    cursorColumn: layout.cursorColumn,
+    rowsUpFromPromptBottom: Math.max(2, contentRows + 1 - cursorLineIndex),
+  };
+}
+
+function buildPromptVisualLines(
+  value: string,
+  width: number,
+  cursor: number = value.length
+): { lines: PromptVisualLineChunk[]; cursorLineIndex: number; cursorColumn: number } {
+  const logicalLines = value.length > 0 ? value.split('\n') : [''];
+  const maxTextWidth = promptTextWidth(width);
+  const clampedCursor = Math.min(Math.max(0, cursor), value.length);
+  const visualLines: PromptVisualLineChunk[] = [];
+  let cursorLineIndex = 0;
+  let cursorColumn = 5;
+  let lineStart = 0;
+
+  logicalLines.forEach((line, logicalIndex) => {
+    const chunks = splitByVisualWidthWithOffsets(line, maxTextWidth);
+    const lineEnd = lineStart + line.length;
+    const cursorInThisLine = clampedCursor >= lineStart && clampedCursor <= lineEnd;
+
+    chunks.forEach((chunk, wrapIndex) => {
+      const visualLine: PromptVisualLineChunk = {
+        logicalIndex,
+        wrapIndex,
+        content: chunk.content,
+        start: lineStart + chunk.start,
+        end: lineStart + chunk.end,
+        chunkStart: chunk.start,
+        chunkEnd: chunk.end,
+      };
+
+      if (cursorInThisLine && clampedCursor - lineStart >= chunk.start && clampedCursor - lineStart <= chunk.end) {
+        cursorLineIndex = visualLines.length;
+        const cursorInChunk = Math.max(0, clampedCursor - lineStart - chunk.start);
+        cursorColumn = 5 + stringWidth(chunk.content.slice(0, cursorInChunk));
+      }
+
+      visualLines.push(visualLine);
+    });
+
+    lineStart = lineEnd + 1;
+  });
+
+  return {
+    lines: visualLines,
+    cursorLineIndex,
+    cursorColumn,
+  };
+}
+
+export function formatPromptVisualLine(
+  visualLine: PromptVisualLine,
+  width: number,
+  options: { showCursor?: boolean } = {}
+): string {
   const prefix = visualLine.logicalIndex === 0 && visualLine.wrapIndex === 0 ? '› ' : '  ';
-  const raw = `${prefix}${visualLine.content}`;
+  const base = `${prefix}${visualLine.content}`;
+  const raw = options.showCursor && stringWidth(base) < promptContentWidth(width)
+    ? `${base}${PROMPT_CURSOR_GLYPH}`
+    : base;
   const padding = Math.max(0, promptContentWidth(width) - stringWidth(raw));
   return raw + ' '.repeat(padding);
 }

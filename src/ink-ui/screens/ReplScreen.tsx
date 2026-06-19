@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Box, Text, useApp, useInput, useStdout } from 'ink';
+import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { Box, Static, Text, useApp, useInput, useStdout } from 'ink';
 import { existsSync, readdirSync, statSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 import { getCommandCategoryLabel, getCommands, getVisibleCommands } from '../../commands';
@@ -14,8 +14,9 @@ import { PixelHorseBanner } from '../components/PixelHorseBanner';
 import { SelectList, type SelectListItem } from '../components/SelectList';
 import { StatusLine } from '../components/StatusLine';
 import { TerminalCursor } from '../components/TerminalCursor';
-import { Transcript } from '../components/Transcript';
+import { Transcript, TranscriptEntryBlock } from '../components/Transcript';
 import { InkChatController } from '../controllers/chat-controller';
+import { initialInputBuffer, reduceInputBuffer, type InputBuffer } from '../runtime/input-buffer';
 import type { OpenHorseInkRuntime, SessionPickerRequest, TranscriptEntry, UiEventSink } from '../types';
 
 type Overlay =
@@ -29,6 +30,57 @@ let nextTranscriptId = 1;
 
 function createId(): string {
   return `ui-${nextTranscriptId++}`;
+}
+
+function isLiveTranscriptEntry(entry: Omit<TranscriptEntry, 'id'>): boolean {
+  return entry.role === 'tool';
+}
+
+type StaticTranscriptItem =
+  | { id: string; type: 'banner' }
+  | (TranscriptEntry & { type: 'entry' });
+
+interface TranscriptState {
+  archived: TranscriptEntry[];
+  live: TranscriptEntry[];
+  generation: number;
+}
+
+type TranscriptAction =
+  | { type: 'append'; entry: TranscriptEntry }
+  | { type: 'update'; id: string; patch: Partial<Omit<TranscriptEntry, 'id'>> }
+  | { type: 'finalize'; id: string; patch?: Partial<Omit<TranscriptEntry, 'id'>> }
+  | { type: 'replace'; entries: TranscriptEntry[] }
+  | { type: 'clear' };
+
+function transcriptReducer(state: TranscriptState, action: TranscriptAction): TranscriptState {
+  switch (action.type) {
+    case 'append':
+      if (isLiveTranscriptEntry(action.entry)) {
+        return { ...state, live: [...state.live, action.entry] };
+      }
+      return { ...state, archived: [...state.archived, action.entry] };
+    case 'update':
+      return {
+        ...state,
+        live: state.live.map(entry => entry.id === action.id ? { ...entry, ...action.patch } : entry),
+      };
+    case 'finalize': {
+      let finalized: TranscriptEntry | null = null;
+      const live = state.live.filter(entry => {
+        if (entry.id !== action.id) return true;
+        finalized = action.patch ? { ...entry, ...action.patch } : entry;
+        return false;
+      });
+      return finalized
+        ? { ...state, archived: [...state.archived, finalized], live }
+        : state;
+    }
+    case 'replace':
+      return { archived: action.entries, live: [], generation: state.generation + 1 };
+    case 'clear':
+      return { archived: [], live: [], generation: state.generation + 1 };
+  }
 }
 
 export function visibleCommandItems(input: string): SelectListItem[] {
@@ -120,6 +172,24 @@ function isExitCommand(input: string): boolean {
   return parsed.isCommand && ['exit', 'quit', 'q'].includes(parsed.name);
 }
 
+export function normalizePastedInput(value: string): string {
+  return value
+    .replace(/\x1b\[200~/g, '')
+    .replace(/\x1b\[201~/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n');
+}
+
+export function isMultilinePasteValue(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = normalizePastedInput(value);
+  return normalized.length > 1 && normalized.includes('\n');
+}
+
+function fitCount(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
 export interface ReplScreenProps {
   runtime: OpenHorseInkRuntime;
 }
@@ -127,8 +197,16 @@ export interface ReplScreenProps {
 export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
   const app = useApp();
   const { stdout } = useStdout();
-  const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
-  const [input, setInput] = useState('');
+  const terminalHeight = process.stdout.rows || 24;
+  const terminalWidth = stdout?.columns || process.stdout.columns || 80;
+  const layoutWidth = Math.max(20, terminalWidth - 1);
+  const maxLiveTranscriptItems = fitCount(terminalHeight - 10, 1, 8);
+  const maxOverlayItems = fitCount(terminalHeight - 9, 3, 10);
+  const maxPromptRows = fitCount(Math.floor(terminalHeight / 4), 1, 6);
+  const [transcriptState, dispatchTranscript] = useReducer(transcriptReducer, { archived: [], live: [], generation: 0 });
+  const [inputBuffer, dispatchInput] = useReducer(reduceInputBuffer, initialInputBuffer);
+  const input = inputBuffer.value;
+  const inputCursor = inputBuffer.cursor;
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [processing, setProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
@@ -137,32 +215,44 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
   const [, setStoreVersion] = useState(0);
   const turnControllerRef = useRef(new TurnController({ exitConfirmWindowMs: 5000 }));
   const runningRef = useRef(false);
-  const inputRef = useRef('');
+  const inputRef = useRef<InputBuffer>(initialInputBuffer);
 
   useEffect(() => {
-    inputRef.current = input;
-  }, [input]);
+    inputRef.current = inputBuffer;
+  }, [inputBuffer]);
 
   useEffect(() => runtime.store.subscribe(() => setStoreVersion(version => version + 1)), [runtime.store]);
 
   const append = useCallback((entry: Omit<TranscriptEntry, 'id'>): string => {
     const id = createId();
-    setTranscript(current => [...current, { id, ...entry }]);
+    const next = { id, ...entry };
+    dispatchTranscript({ type: 'append', entry: next });
     return id;
   }, []);
 
   const update = useCallback((id: string, patch: Partial<Omit<TranscriptEntry, 'id'>>) => {
-    setTranscript(current => current.map(entry => entry.id === id ? { ...entry, ...patch } : entry));
+    dispatchTranscript({ type: 'update', id, patch });
+  }, []);
+
+  const finalize = useCallback((id: string, patch?: Partial<Omit<TranscriptEntry, 'id'>>) => {
+    dispatchTranscript({ type: 'finalize', id, patch });
   }, []);
 
   const events: UiEventSink = useMemo(() => ({
     append,
     update,
-    clearTranscript: () => setTranscript([]),
+    finalize,
+    replaceTranscript: entries => {
+      dispatchTranscript({ type: 'replace', entries });
+    },
+    clearTranscript: () => {
+      stdout?.write('\x1b[2J\x1b[3J\x1b[H');
+      dispatchTranscript({ type: 'clear' });
+    },
     setStatus: setStatusMessage,
     showSessionPicker: request => setOverlay({ type: 'sessions', selectedIndex: 0, request }),
     setProcessing,
-  }), [append, update]);
+  }), [append, finalize, stdout, update]);
 
   const controller = useMemo(() => new InkChatController(runtime, events), [runtime, events]);
 
@@ -212,7 +302,7 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
   const submit = useCallback((value: string) => {
     const submitted = value.trim();
     if (!submitted) return;
-    setInput('');
+    dispatchInput({ type: 'clear' });
     setOverlay(null);
     addToInputHistory(submitted);
     setHistory(getInputHistory());
@@ -306,14 +396,14 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
     if (submitImmediately && value.trim() === `/${item.value}`) {
       submit(value);
     } else {
-      setInput(value);
+      dispatchInput({ type: 'set', value });
     }
   }, [submit]);
 
   const completeFile = useCallback((item: SelectListItem) => {
-    const fileQuery = getFileQuery(inputRef.current);
+    const fileQuery = getFileQuery(inputRef.current.value);
     if (!fileQuery) return;
-    setInput(`${fileQuery.base}@${item.value}`);
+    dispatchInput({ type: 'set', value: `${fileQuery.base}@${item.value}` });
     setOverlay(null);
   }, []);
 
@@ -331,9 +421,9 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
       return;
     }
 
-    if (!key?.ctrl && value && /[\r\n]/.test(value) && value !== '\r' && value !== '\n') {
-      const beforeReturn = value.split(/[\r\n]/)[0] ?? '';
-      submit(`${inputRef.current}${beforeReturn}`);
+    if (!key?.ctrl && isMultilinePasteValue(value)) {
+      dispatchInput({ type: 'insert', text: normalizePastedInput(value) });
+      setOverlay(null);
       return;
     }
 
@@ -415,84 +505,125 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
     }
 
     if (isReturn && key?.meta) {
-      setInput(current => `${current}\n`);
+      dispatchInput({ type: 'insert', text: '\n' });
+      return;
+    }
+
+    if (key?.leftArrow) {
+      dispatchInput({ type: 'move', direction: 'left' });
+      return;
+    }
+
+    if (key?.rightArrow) {
+      dispatchInput({ type: 'move', direction: 'right' });
+      return;
+    }
+
+    if (key?.ctrl && value === 'a') {
+      dispatchInput({ type: 'move', direction: 'home' });
+      return;
+    }
+
+    if (key?.ctrl && value === 'e') {
+      dispatchInput({ type: 'move', direction: 'end' });
       return;
     }
 
     if (isReturn) {
-      submit(inputRef.current);
+      submit(inputRef.current.value);
       return;
     }
 
-    if (key?.backspace || key?.delete) {
-      setInput(current => current.slice(0, -1));
+    if (key?.backspace) {
+      dispatchInput({ type: 'backspace' });
       return;
     }
 
-    if (key?.upArrow && inputRef.current === '' && history.length > 0) {
+    if (key?.delete) {
+      dispatchInput({ type: 'delete' });
+      return;
+    }
+
+    if (key?.upArrow && inputRef.current.value === '' && history.length > 0) {
       const nextIndex = Math.min(history.length - 1, historyIndex + 1);
       setHistoryIndex(nextIndex);
-      setInput(history[nextIndex]?.content ?? '');
+      dispatchInput({ type: 'set', value: history[nextIndex]?.content ?? '' });
       return;
     }
 
     if (key?.downArrow && historyIndex >= 0) {
       const nextIndex = historyIndex - 1;
       setHistoryIndex(nextIndex);
-      setInput(nextIndex >= 0 ? history[nextIndex]?.content ?? '' : '');
+      dispatchInput({ type: 'set', value: nextIndex >= 0 ? history[nextIndex]?.content ?? '' : '' });
       return;
     }
 
     if (key?.tab) {
-      if (inputRef.current.startsWith('/')) {
+      if (inputRef.current.value.startsWith('/')) {
         setOverlay({ type: 'commands', selectedIndex: 0 });
-      } else if (getFileQuery(inputRef.current)) {
+      } else if (getFileQuery(inputRef.current.value)) {
         setOverlay({ type: 'files', selectedIndex: 0 });
       }
       return;
     }
 
-    if (value === '/' && inputRef.current === '' && !turnControllerRef.current.hasActiveTurn()) {
-      setInput('/');
+    if (value === '/' && inputRef.current.value === '' && !turnControllerRef.current.hasActiveTurn()) {
+      dispatchInput({ type: 'set', value: '/' });
       setOverlay({ type: 'commands', selectedIndex: 0 });
       return;
     }
 
     if (value === '@' && !turnControllerRef.current.hasActiveTurn()) {
-      setInput(current => `${current}@`);
+      dispatchInput({ type: 'insert', text: '@' });
       setOverlay({ type: 'files', selectedIndex: 0 });
       return;
     }
 
-    if (value === '?' && inputRef.current === '') {
+    if (value === '?' && inputRef.current.value === '') {
       setOverlay({ type: 'shortcuts' });
       return;
     }
 
     if (value && !key?.ctrl) {
-      setInput(current => `${current}${value}`);
+      dispatchInput({ type: 'inputChunk', text: value });
     }
   });
 
-  const terminalHeight = stdout?.rows || process.stdout.rows || 24;
-  const terminalWidth = stdout?.columns || process.stdout.columns || 80;
-  const transcriptItems = Math.max(6, terminalHeight - 10);
   const modeText = getModeDisplayText(runtime.store.getSnapshot().permissionMode);
 
-  return (
-    <Box flexDirection="column" minHeight={terminalHeight}>
-      <Box flexDirection="column" marginBottom={1}>
-        <PixelHorseBanner runtime={runtime} width={terminalWidth} />
-      </Box>
+  const staticItems = useMemo<StaticTranscriptItem[]>(
+    () => [
+      { id: 'openhorse-banner', type: 'banner' },
+      ...transcriptState.archived.map(entry => ({ ...entry, type: 'entry' as const })),
+    ],
+    [transcriptState.archived]
+  );
 
-      <Transcript entries={transcript} maxItems={transcriptItems} width={terminalWidth} />
+  return (
+    <Box flexDirection="column">
+      <Static key={transcriptState.generation} items={staticItems}>
+        {item => item.type === 'banner' ? (
+          <Box key={item.id} flexDirection="column" marginBottom={1}>
+            <PixelHorseBanner runtime={runtime} width={layoutWidth} />
+          </Box>
+        ) : (
+          <TranscriptEntryBlock key={item.id} entry={item} width={layoutWidth} />
+        )}
+      </Static>
+
+      <Transcript
+        entries={transcriptState.live}
+        maxItems={maxLiveTranscriptItems}
+        width={layoutWidth}
+        emptyMessage={null}
+      />
 
       {overlay?.type === 'commands' ? (
         <SelectList
           title={`Commands ${input.slice(1) ? `"${input.slice(1)}"` : ''}`}
           items={commandItems}
           selectedIndex={overlay.selectedIndex}
-          maxVisibleItems={10}
+          maxVisibleItems={maxOverlayItems}
           footer="↑↓ navigate  Tab complete  Enter select  Esc cancel"
         />
       ) : null}
@@ -502,7 +633,7 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
           title="Files"
           items={fileItems}
           selectedIndex={overlay.selectedIndex}
-          maxVisibleItems={10}
+          maxVisibleItems={maxOverlayItems}
           footer="↑↓ navigate  Tab/Enter complete  Esc cancel"
         />
       ) : null}
@@ -512,7 +643,7 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
           title={overlay.request.title}
           items={sessionItems(overlay.request)}
           selectedIndex={overlay.selectedIndex}
-          maxVisibleItems={overlay.request.maxVisibleItems ?? 10}
+          maxVisibleItems={Math.min(overlay.request.maxVisibleItems ?? maxOverlayItems, maxOverlayItems)}
           footer="↑↓ scroll  PgUp/PgDn  Enter resume  Esc cancel"
         />
       ) : null}
@@ -526,9 +657,9 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
         </Box>
       ) : null}
 
-      <StatusLine runtime={runtime} running={processing} statusMessage={statusMessage} width={terminalWidth} />
-      <PromptInput value={input} running={processing} modeText={modeText} width={terminalWidth} />
-      <TerminalCursor value={input} terminalHeight={terminalHeight} terminalWidth={terminalWidth} sticky={processing} />
+      <StatusLine runtime={runtime} running={processing} statusMessage={statusMessage} width={layoutWidth} />
+      <PromptInput value={input} cursor={inputCursor} running={processing} modeText={modeText} width={layoutWidth} maxRows={maxPromptRows} />
+      <TerminalCursor value={input} cursor={inputCursor} maxRows={maxPromptRows} terminalHeight={terminalHeight} terminalWidth={layoutWidth} sticky={processing} />
     </Box>
   );
 }

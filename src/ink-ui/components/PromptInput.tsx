@@ -1,22 +1,24 @@
 import React from 'react';
 import { Box, Text } from 'ink';
-import { formatPromptVisualLine, getPromptVisualLines, type PromptVisualLine } from '../runtime/prompt-layout';
+import { formatPromptVisualLine, getPromptInputViewport, type PromptVisualLine } from '../runtime/prompt-layout';
 
 export interface PromptInputProps {
   value: string;
   running: boolean;
   modeText?: string;
   width?: number;
+  maxRows?: number;
+  cursor?: number;
 }
 
 const INPUT_BACKGROUND = '#50545c';
 
 export function formatPromptLine(line: string, index: number, width: number): string {
-  return formatPromptVisualLine({ logicalIndex: index, wrapIndex: 0, content: line }, width);
+  return formatPromptVisualLine({ logicalIndex: index, wrapIndex: 0, content: line, start: 0, end: line.length }, width);
 }
 
-export function PromptInput({ value, running, modeText, width = 80 }: PromptInputProps): JSX.Element {
-  const lines = getPromptVisualLines(value, width);
+export function PromptInput({ value, running, modeText, width = 80, maxRows = 6, cursor = value.length }: PromptInputProps): JSX.Element {
+  const { lines, hiddenRows, showHiddenIndicator } = getPromptInputViewport(value, width, maxRows, cursor);
 
   return (
     <Box flexDirection="column">
@@ -25,6 +27,11 @@ export function PromptInput({ value, running, modeText, width = 80 }: PromptInpu
         {modeText ? `   ${modeText}` : ''}
       </Text>
       <Box width={width} borderStyle="single" borderColor={running ? 'yellow' : 'gray'} paddingX={1} flexDirection="column">
+        {showHiddenIndicator && hiddenRows > 0 ? (
+          <Text color="gray" wrap="truncate">
+            {`  ... ${hiddenRows} hidden input line${hiddenRows === 1 ? '' : 's'}`}
+          </Text>
+        ) : null}
         {lines.map((line: PromptVisualLine, index) => (
           <Text key={`${line.logicalIndex}:${line.wrapIndex}:${index}`} backgroundColor={INPUT_BACKGROUND} color="white" wrap="truncate">
             {formatPromptVisualLine(line, width)}

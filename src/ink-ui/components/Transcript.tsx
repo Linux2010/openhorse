@@ -9,9 +9,15 @@ export interface TranscriptProps {
   entries: TranscriptEntry[];
   maxItems?: number;
   width?: number;
+  emptyMessage?: string | null;
 }
 
 const USER_BACKGROUND = '#50545c';
+const ANSI_RESET_BG = '\x1b[49m';
+const ANSI_RESET_FG = '\x1b[39m';
+const ANSI_USER_BG = '\x1b[48;5;102m';
+const ANSI_GRAY = '\x1b[90m';
+const ANSI_RED = '\x1b[31m';
 
 function padLine(line: string, width: number): string {
   const padding = Math.max(0, width - stringWidth(line));
@@ -29,32 +35,64 @@ function transcriptLines(entry: TranscriptEntry, width: number): string[] {
   );
 }
 
-export function Transcript({ entries, maxItems = 20, width = 80 }: TranscriptProps): JSX.Element {
-  const visible = entries.slice(Math.max(0, entries.length - maxItems));
+function colorTranscriptLine(entry: TranscriptEntry, line: string): string {
+  if (entry.role === 'user' || entry.role === 'command') {
+    return `${ANSI_USER_BG}${line}${ANSI_RESET_BG}`;
+  }
+
+  if (entry.role === 'tool') {
+    return `${ANSI_GRAY}${line}${ANSI_RESET_FG}`;
+  }
+
+  if (entry.role === 'error') {
+    return `${ANSI_RED}${line}${ANSI_RESET_FG}`;
+  }
+
+  return line;
+}
+
+export function renderTranscriptEntryText(entry: TranscriptEntry, width = 80): string {
+  const contentWidth = Math.max(1, width - 2);
+  return transcriptLines(entry, contentWidth)
+    .map(line => colorTranscriptLine(entry, line))
+    .join('\n');
+}
+
+export function TranscriptEntryBlock({ entry, width = 80 }: { entry: TranscriptEntry; width?: number }): JSX.Element {
   const contentWidth = Math.max(1, width - 2);
 
   return (
-    <Box flexDirection="column" flexGrow={1}>
+    <Box flexDirection="column" marginBottom={1}>
+      {entry.role === 'assistant' || entry.role === 'system' || entry.role === 'status' ? (
+        <Markdown width={contentWidth}>{entry.content}</Markdown>
+      ) : (
+        transcriptLines(entry, contentWidth).map((line, index) => (
+          <Text
+            key={index}
+            color={entry.role === 'error' ? 'red' : entry.role === 'tool' ? 'gray' : undefined}
+            backgroundColor={entry.role === 'user' || entry.role === 'command' ? USER_BACKGROUND : undefined}
+            wrap="truncate"
+          >
+            {line}
+          </Text>
+        ))
+      )}
+    </Box>
+  );
+}
+
+export function Transcript({ entries, maxItems, width = 80, emptyMessage = 'OpenHorse is ready.' }: TranscriptProps): JSX.Element {
+  const visible = typeof maxItems === 'number'
+    ? entries.slice(Math.max(0, entries.length - maxItems))
+    : entries;
+
+  return (
+    <Box flexDirection="column">
       {visible.length === 0 ? (
-        <Text color="gray">OpenHorse is ready.</Text>
+        emptyMessage ? <Text color="gray">{emptyMessage}</Text> : null
       ) : (
         visible.map(entry => (
-          <Box key={entry.id} flexDirection="column" marginBottom={1}>
-            {entry.role === 'assistant' || entry.role === 'system' || entry.role === 'status' ? (
-              <Markdown width={contentWidth}>{entry.content}</Markdown>
-            ) : (
-              transcriptLines(entry, contentWidth).map((line, index) => (
-                <Text
-                  key={index}
-                  color={entry.role === 'error' ? 'red' : entry.role === 'tool' ? 'gray' : undefined}
-                  backgroundColor={entry.role === 'user' || entry.role === 'command' ? USER_BACKGROUND : undefined}
-                  wrap="truncate"
-                >
-                  {line}
-                </Text>
-              ))
-            )}
-          </Box>
+          <TranscriptEntryBlock key={entry.id} entry={entry} width={width} />
         ))
       )}
     </Box>
