@@ -1001,6 +1001,90 @@ async function execCommand_(command: string, cwd?: string, timeout?: number, max
   });
 }
 
+/**
+ * Fuzzy match result
+ */
+interface FuzzyMatchResult {
+  matches: string[];  // Actual strings found in content
+  strategy: 'whitespace' | 'line' | 'fuzzy';
+}
+
+/**
+ * Attempt to find old_string in content using fuzzy matching strategies.
+ * Returns null if no match found, or the matched strings.
+ */
+function fuzzyMatch(content: string, oldString: string): FuzzyMatchResult | null {
+  // Strategy 1: Normalize whitespace (collapse multiple spaces/tabs)
+  const normalizedOld = oldString.replace(/\s+/g, ' ').trim();
+  const normalizedContent = content.replace(/\s+/g, ' ');
+  const wsMatches: string[] = [];
+
+  // Find positions of normalized match in original content
+  let searchFrom = 0;
+  while (true) {
+    const normIdx = normalizedContent.indexOf(normalizedOld, searchFrom);
+    if (normIdx === -1) break;
+
+    // Map back to original content position
+    // Count non-whitespace chars before normIdx in normalized content
+    let charCount = 0;
+    let origIdx = 0;
+    for (let i = 0; i < normIdx && i < content.length; i++) {
+      if (!/\s/.test(content[i]) || (i > 0 && /\s/.test(content[i]) && !/\s/.test(content[i - 1]))) {
+        charCount++;
+      }
+      origIdx = i + 1;
+    }
+
+    // Find the corresponding end position
+    const endNormIdx = normIdx + normalizedOld.length;
+    let endCharCount = 0;
+    let endOrigIdx = origIdx;
+    for (let i = origIdx; i < content.length && endCharCount < normalizedOld.length; i++) {
+      if (!/\s/.test(content[i]) || (i > 0 && /\s/.test(content[i]) && !/\s/.test(content[i - 1]))) {
+        endCharCount++;
+      }
+      endOrigIdx = i + 1;
+    }
+
+    const matchedStr = content.slice(origIdx, endOrigIdx);
+    if (matchedStr && !wsMatches.includes(matchedStr)) {
+      wsMatches.push(matchedStr);
+    }
+    searchFrom = normIdx + 1;
+    if (wsMatches.length > 5) break; // Safety limit
+  }
+
+  if (wsMatches.length > 0) {
+    return { matches: wsMatches, strategy: 'whitespace' };
+  }
+
+  // Strategy 2: Line-by-line matching (allow different indentation)
+  const oldLines = oldString.split('\n').map(l => l.trim()).filter(Boolean);
+  const contentLines = content.split('\n');
+  const lineMatches: string[] = [];
+
+  for (let i = 0; i <= contentLines.length - oldLines.length; i++) {
+    let allMatch = true;
+    for (let j = 0; j < oldLines.length; j++) {
+      if (contentLines[i + j].trim() !== oldLines[j]) {
+        allMatch = false;
+        break;
+      }
+    }
+    if (allMatch) {
+      const matchedStr = contentLines.slice(i, i + oldLines.length).join('\n');
+      lineMatches.push(matchedStr);
+    }
+  }
+
+  if (lineMatches.length > 0) {
+    return { matches: lineMatches, strategy: 'line' };
+  }
+
+  return null;
+}
+
 async function editFile_(path: string, old_string: string, new_string: string, replace_all?: boolean): Promise<ToolResult> {
   try {
     const resolved = safePath(path);
@@ -1013,10 +1097,43 @@ async function editFile_(path: string, old_string: string, new_string: string, r
 
     const content = readFileSync(resolved, 'utf-8');
 
-    // Check if old_string exists
+    // Check if old_string exists exactly
     const count = (content.match(new RegExp(escapeRegExp(old_string), 'g')) || []).length;
+
     if (count === 0) {
-      return { success: false, output: '', error: `old_string not found in file: ${old_string.slice(0, 100)}...` };
+      // Try fuzzy match strategies
+      const fuzzyResult = fuzzyMatch(content, old_string);
+
+      if (fuzzyResult === null) {
+        return { success: false, output: '', error: `old_string not found in file: ${old_string.slice(0, 100)}...` };
+      }
+
+      if (fuzzyResult.matches.length > 1 && !replace_all) {
+        return {
+          success: false,
+          output: '',
+          error: `Fuzzy match found ${fuzzyResult.matches.length} candidates. Provide a more specific string. First 3 candidates:\n${fuzzyResult.matches.slice(0, 3).map((m, i) => `  ${i + 1}: "${m.slice(0, 80)}..."`).join('\n')}`,
+        };
+      }
+
+      // Use the fuzzy match (single match or replace_all)
+      let newContent: string;
+      if (replace_all) {
+        newContent = content;
+        for (const match of fuzzyResult.matches) {
+          newContent = newContent.replace(match, new_string);
+        }
+      } else {
+        const match = fuzzyResult.matches[0];
+        const idx = content.indexOf(match);
+        newContent = content.slice(0, idx) + new_string + content.slice(idx + match.length);
+      }
+
+      writeFileSync(resolved, newContent, 'utf-8');
+      return {
+        success: true,
+        output: `Fuzzy edited ${path} (${fuzzyResult.matches.length} replacement(s), matched with "${fuzzyResult.matches[0].slice(0, 50)}...")`,
+      };
     }
 
     // If not replace_all, require unique match
