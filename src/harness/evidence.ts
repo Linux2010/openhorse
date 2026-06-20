@@ -5,9 +5,10 @@ import type {
   RankedEvidenceRecord,
   TurnSummary,
 } from './types';
+import { estimateTokens as estimateTokensImpl } from '../utils/token-estimate';
 
 export function estimateTokens(text: string): number {
-  return Math.max(1, Math.ceil(text.length / 4));
+  return Math.max(1, estimateTokensImpl(text));
 }
 
 function compact(text: string, max = 700): string {

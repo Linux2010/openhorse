@@ -9,6 +9,7 @@ import type { Message } from '../llm';
 import { compactMessages, type CompactOptions } from './compact';
 import { getModelContextWindow, AUTO_COMPACT_THRESHOLD } from '../model-context';
 import type { ContextCapsule, HarnessState } from '../../harness';
+import { estimateMessagesTokens } from '../../utils/token-estimate';
 
 // ============================================================================
 // 类型定义
@@ -148,8 +149,8 @@ export class AutoCompact {
       this.lastTokenCount = usedTokens;
       return Math.min(100, Math.round((usedTokens / contextWindow) * 100));
     }
-    // Fallback: 估算 token 数（平均每个消息 ~200 tokens）
-    const estimated = (messages?.length ?? 0) * 200;
+    // Fallback: 估算 token 数（使用 CJK 感知的准确估算）
+    const estimated = messages ? estimateMessagesTokens(messages) : 0;
     this.lastTokenCount = estimated;
     return Math.min(100, Math.round((estimated / contextWindow) * 100));
   }
