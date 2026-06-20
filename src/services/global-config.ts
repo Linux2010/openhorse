@@ -31,7 +31,7 @@ export interface ProjectConfig {
 export type ToolConfirmationPolicy = 'ask' | 'allow' | 'deny';
 
 /** Terminal UI renderer selection. */
-export type UIRenderer = 'ink' | 'legacy' | 'v2';
+export type UIRenderer = 'terminal' | 'tui' | 'ink' | 'legacy' | 'v2';
 
 /** How UI permission prompts should be handled. */
 export type UIConfirmationMode = 'config' | 'interactive';

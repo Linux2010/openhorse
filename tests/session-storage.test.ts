@@ -24,7 +24,7 @@ import {
   type SessionMessage,
 } from '../src/services/session-storage';
 import { createContextHarness } from '../src/harness';
-import { existsSync, rmSync, realpathSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, rmSync, realpathSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { getProjectSessionHarnessPath, getProjectSessionMessagesPath, getProjectSessionMetaPath } from '../src/services/config-dir';
@@ -282,6 +282,23 @@ describe('session-storage', () => {
       expect(existsSync(getProjectSessionMessagesPath(session.projectPath, session.id))).toBe(true);
       expect(existsSync(join(testDir, 'sessions', `${session.id}.jsonl`))).toBe(false);
       expect(readSessionMessages(session.id)[0].appliedSkills).toEqual(['code-review']);
+    });
+
+    test('loadSessionMeta reports transcript history size from the project jsonl file', () => {
+      const session = createSession('/tmp/project-history-size', 'gpt-4o');
+
+      appendSessionMessage(session.id, {
+        role: 'user',
+        content: 'history size should be visible in session picker',
+        timestamp: 1234,
+      });
+
+      const transcriptPath = getProjectSessionMessagesPath(session.projectPath, session.id);
+      const expectedSize = Buffer.byteLength(readFileSync(transcriptPath, 'utf-8'), 'utf-8');
+      const loaded = loadSessionMeta(session.id);
+
+      expect(loaded?.historySizeBytes).toBe(expectedSize);
+      expect(loaded?.messageCount).toBe(1);
     });
 
     test('readSessionMessages returns all messages', () => {

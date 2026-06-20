@@ -30,6 +30,8 @@ export interface AppState {
   memoryContent: string;
   /** Pre-rendered skills section for the system prompt */
   skillsContent: string;
+  /** Repository guidance such as AGENTS.md / CLAUDE.md */
+  projectInstructionsContent: string;
   /** Active todo list (mirrored from tool-state) */
   todos: TodoItem[];
   /** Whether the agent is in plan mode (mirrored from tool-state) */
@@ -50,7 +52,7 @@ export class Store {
   private state: AppState;
   private listeners: Set<Listener> = new Set();
 
-  constructor(initial: Omit<AppState, 'conversationHistory' | 'isProcessing' | 'tokenUsage' | 'permissionMode' | 'costTracker' | 'memoryContent' | 'skillsContent' | 'todos' | 'planMode' | 'currentPlan'> & Partial<AppState>) {
+  constructor(initial: Omit<AppState, 'conversationHistory' | 'isProcessing' | 'tokenUsage' | 'permissionMode' | 'costTracker' | 'memoryContent' | 'skillsContent' | 'projectInstructionsContent' | 'todos' | 'planMode' | 'currentPlan'> & Partial<AppState>) {
     this.state = {
       conversationHistory: [],
       isProcessing: false,
@@ -59,6 +61,7 @@ export class Store {
       costTracker: new CostTracker(),
       memoryContent: '',
       skillsContent: '',
+      projectInstructionsContent: '',
       todos: [],
       planMode: false,
       currentPlan: null,

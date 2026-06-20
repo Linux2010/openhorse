@@ -1,0 +1,220 @@
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import {
+  applyTerminalTabCompletion,
+  completeFileMention,
+  completeSlashCommand,
+  createTerminalCompleter,
+} from '../src/terminal-ui/completion';
+import { TerminalInputComposer, normalizeTerminalAnswer, parseEditInput, truncateTerminalText, visibleLength } from '../src/terminal-ui/launch';
+import { RawTerminalEditor } from '../src/terminal-ui/raw-editor';
+
+function makeRawEditor(options: { cwd?: string; onSubmit?: (input: string) => void } = {}) {
+  const writes: string[] = [];
+  const output = {
+    isTTY: true,
+    columns: 80,
+    write: (chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    },
+  } as NodeJS.WriteStream;
+
+  const editor = new RawTerminalEditor({
+    cwd: options.cwd ?? process.cwd(),
+    output,
+    onSubmit: options.onSubmit ?? (() => undefined),
+    onCtrlC: () => undefined,
+  });
+
+  return { editor, writes };
+}
+
+describe('terminal UI input normalization', () => {
+  it('applies DEL/backspace before submitting text', () => {
+    expect(normalizeTerminalAnswer('/helpx\x7f')).toBe('/help');
+    expect(normalizeTerminalAnswer('/helpx\b')).toBe('/help');
+  });
+
+  it('removes the previous unicode character for CJK input', () => {
+    expect(normalizeTerminalAnswer('开源小?\x7f')).toBe('开源小');
+    expect(normalizeTerminalAnswer('开源小\x7f')).toBe('开源');
+  });
+
+  it('supports common line editing control characters when terminals pass them through', () => {
+    expect(normalizeTerminalAnswer('abc\x15next')).toBe('next');
+    expect(normalizeTerminalAnswer('hello world\x17agent')).toBe('helloagent');
+  });
+
+  it('drops leaked terminal escape sequences', () => {
+    expect(normalizeTerminalAnswer('/help\x1b[A')).toBe('/help');
+    expect(normalizeTerminalAnswer('/help\x1b[3~')).toBe('/help');
+  });
+});
+
+describe('terminal UI visual width helpers', () => {
+  it('counts CJK and emoji by terminal cell width instead of UTF-16 length', () => {
+    expect(visibleLength('abc')).toBe(3);
+    expect(visibleLength('开源')).toBe(4);
+    expect(visibleLength('\x1b[36m开源\x1b[0m')).toBe(4);
+    expect(visibleLength('小马🐎')).toBeGreaterThan('小马🐎'.length - 1);
+  });
+
+  it('truncates long terminal text without exceeding the requested visual width', () => {
+    const truncated = truncateTerminalText('项目路径/开源小马/非常非常长的目录名', 16);
+
+    expect(visibleLength(truncated)).toBeLessThanOrEqual(16);
+    expect(truncated.endsWith('...')).toBe(true);
+  });
+});
+
+describe('raw terminal editor', () => {
+  it('keeps CJK input in its buffer and deletes one grapheme with Backspace', () => {
+    const { editor } = makeRawEditor();
+    editor.setPrompt('› ');
+
+    editor.feed(Buffer.from('开源小？事收到', 'utf8'));
+    expect(editor.getBuffer().value).toBe('开源小？事收到');
+
+    editor.feed(Buffer.from('\x7f'));
+    expect(editor.getBuffer().value).toBe('开源小？事收');
+  });
+
+  it('restores the current input after external assistant output', () => {
+    const { editor, writes } = makeRawEditor();
+    editor.setPrompt('› ');
+    editor.feed(Buffer.from('输入中事地方', 'utf8'));
+
+    editor.writeExternal('assistant chunk');
+
+    const output = writes.join('');
+    expect(output).toContain('assistant chunk\n');
+    expect(output).toContain('› 输入中事地方');
+  });
+
+  it('submits the current buffer on Enter and clears it', () => {
+    const submitted: string[] = [];
+    const { editor } = makeRawEditor({ onSubmit: input => submitted.push(input) });
+    editor.setPrompt('› ');
+
+    editor.feed(Buffer.from('hello\r'));
+
+    expect(submitted).toEqual(['hello']);
+    expect(editor.getBuffer().value).toBe('');
+  });
+});
+
+describe('terminal UI multiline composer', () => {
+  it('submits explicit /paste blocks when /end is received', () => {
+    const composer = new TerminalInputComposer();
+
+    expect(composer.receive('/paste').input).toBeUndefined();
+    expect(composer.isActive()).toBe(true);
+    expect(composer.receive('第一行').input).toBeUndefined();
+    expect(composer.receive('second line').input).toBeUndefined();
+
+    expect(composer.receive('/end')).toEqual({ input: '第一行\nsecond line' });
+    expect(composer.isActive()).toBe(false);
+  });
+
+  it('cancels explicit multiline input without submitting content', () => {
+    const composer = new TerminalInputComposer();
+
+    composer.receive('/paste');
+    composer.receive('draft');
+
+    const result = composer.receive('/cancel');
+    expect(result.cancelled).toBe(true);
+    expect(result.input).toBeUndefined();
+    expect(composer.isActive()).toBe(false);
+  });
+
+  it('submits backslash continuations as one multiline input', () => {
+    const composer = new TerminalInputComposer();
+
+    expect(composer.receive('line one\\').input).toBeUndefined();
+    expect(composer.isActive()).toBe(true);
+    expect(composer.receive('line two')).toEqual({ input: 'line one\nline two' });
+    expect(composer.isActive()).toBe(false);
+  });
+
+  it('passes normal single-line input through', () => {
+    const composer = new TerminalInputComposer();
+
+    expect(composer.receive('/help')).toEqual({ input: '/help' });
+  });
+});
+
+describe('terminal UI edit command parsing', () => {
+  it('detects /edit and optional initial content', () => {
+    expect(parseEditInput('/edit')).toEqual({ isEdit: true, initialContent: '' });
+    expect(parseEditInput('   /edit write a plan')).toEqual({ isEdit: true, initialContent: 'write a plan' });
+  });
+
+  it('does not treat similar commands as editor mode', () => {
+    expect(parseEditInput('/editor')).toEqual({ isEdit: false, initialContent: '' });
+    expect(parseEditInput('/editors hello')).toEqual({ isEdit: false, initialContent: '' });
+  });
+});
+
+describe('terminal UI readline completion', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'openhorse-terminal-completion-'));
+    mkdirSync(join(tempDir, 'src'));
+    mkdirSync(join(tempDir, 'docs'));
+    writeFileSync(join(tempDir, 'src', 'terminal.ts'), '');
+    writeFileSync(join(tempDir, 'docs', 'plan.md'), '');
+    writeFileSync(join(tempDir, '.hidden'), '');
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('completes visible slash commands with a trailing space', () => {
+    const [matches, token] = completeSlashCommand('/mod');
+
+    expect(token).toBe('/mod');
+    expect(matches).toContain('/model ');
+  });
+
+  it('does not try slash completion after command arguments begin', () => {
+    const [matches] = completeSlashCommand('/resume abc');
+
+    expect(matches).toEqual([]);
+  });
+
+  it('completes @ file mentions in chat text', () => {
+    const [matches, token] = completeFileMention('read @src/ter', tempDir);
+
+    expect(token).toBe('read @src/ter');
+    expect(matches).toEqual(['read @src/terminal.ts ']);
+  });
+
+  it('completes @ directories with a slash and ignores hidden files', () => {
+    const [matches] = completeFileMention('open @', tempDir);
+
+    expect(matches).toContain('open @src/');
+    expect(matches).toContain('open @docs/');
+    expect(matches.some(item => item.includes('.hidden'))).toBe(false);
+  });
+
+  it('creates one readline completer for slash and file paths', () => {
+    const completer = createTerminalCompleter(tempDir);
+
+    expect(completer('/stat')[0]).toContain('/status ');
+    expect(completer('look @docs/pl')[0]).toEqual(['look @docs/plan.md ']);
+  });
+
+  it('applies tab completion when a cooked terminal passes tab through as text', () => {
+    expect(applyTerminalTabCompletion('/stat\t', tempDir)).toBe('/status ');
+    expect(applyTerminalTabCompletion('look @docs/pl\t', tempDir)).toBe('look @docs/plan.md ');
+  });
+
+  it('uses the common prefix for ambiguous tab completion', () => {
+    expect(applyTerminalTabCompletion('/s\t', tempDir)).toBe('/s');
+  });
+});

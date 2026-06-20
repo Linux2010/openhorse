@@ -73,12 +73,18 @@ They remain executable for compatibility but are hidden from help, palette, and 
 
 ## Missing Commands for Future Versions
 
-- `/diff`: summarize current git diff and touched files.
-- `/commit`: guided commit message and optional commit execution.
-- `/doctor`: configuration, MCP, tool, model, and session health check.
 - `/permissions`: richer permission policy editor; currently `/mode` is the lightweight equivalent.
 - `/context`: concise current prompt/context capsule view, distinct from detailed `/harness`.
 - `/branch`: show or switch coding branch workflow.
+
+## Implemented Since This Audit
+
+- `/doctor`: configuration, MCP, tool, model, skills, project rules, session, harness, and context-size health check.
+- `openhorse doctor --output-format json`: non-interactive diagnostics for scripts and remote harnesses.
+- `/diff`: deterministic staged/unstaged/untracked Git workspace summary.
+- `openhorse diff --output-format json`: non-interactive workspace change report for scripts and higher-level automation.
+- `/commit`: read-only commit plan and suggested commit message.
+- `openhorse commit --output-format json`: non-interactive commit plan for scripts and higher-level automation.
 
 ## v0.2.1 Implementation Notes
 

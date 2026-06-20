@@ -397,4 +397,82 @@ describe('query generator', () => {
     expect(toolResult.success).toBe(false);
     expect(toolResult.error).toContain('toolConfirmation=deny');
   });
+
+  test('uses interactive confirmation hook for ask-permission tools', async () => {
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          { id: 'call-1', type: 'function', function: { name: 'web_search', arguments: '{"query":"openhorse"}' } },
+        ],
+      },
+      { content: 'Final answer', model: 'test-model' },
+    ]);
+
+    const messages: Message[] = [
+      { role: 'system', content: 'You are a bot.' },
+      { role: 'user', content: 'Search' },
+    ];
+    const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'ok' }));
+    const confirmToolUse = jest.fn(async () => true);
+
+    for await (const _event of query({
+      messages,
+      tools: [askTool],
+      toolExecutor,
+      llm,
+      permissionMode: 'default',
+      toolConfirmation: 'ask',
+      confirmToolUse,
+      toolContext,
+    })) {
+      // consume
+    }
+
+    expect(confirmToolUse).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'web_search',
+      args: { query: 'openhorse' },
+      reason: 'External query',
+    }));
+    expect(toolExecutor).toHaveBeenCalledWith('web_search', { query: 'openhorse' }, undefined);
+  });
+
+  test('interactive confirmation hook can deny ask-permission tools', async () => {
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          { id: 'call-1', type: 'function', function: { name: 'web_search', arguments: '{"query":"openhorse"}' } },
+        ],
+      },
+      { content: 'Final answer', model: 'test-model' },
+    ]);
+
+    const messages: Message[] = [
+      { role: 'system', content: 'You are a bot.' },
+      { role: 'user', content: 'Search' },
+    ];
+    const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'ok' }));
+    const events: QueryEvent[] = [];
+
+    for await (const event of query({
+      messages,
+      tools: [askTool],
+      toolExecutor,
+      llm,
+      permissionMode: 'default',
+      toolConfirmation: 'ask',
+      confirmToolUse: async () => false,
+      toolContext,
+    })) {
+      events.push(event);
+    }
+
+    const toolResult = events.find(event => event.type === 'tool_result') as Extract<QueryEvent, { type: 'tool_result' }>;
+    expect(toolExecutor).not.toHaveBeenCalled();
+    expect(toolResult.success).toBe(false);
+    expect(toolResult.error).toContain('denied by user');
+  });
 });

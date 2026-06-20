@@ -1,3 +1,5 @@
+import { nextGraphemeBoundary, previousGraphemeBoundary } from './grapheme';
+
 export interface InputBuffer {
   value: string;
   cursor: number;
@@ -138,9 +140,21 @@ export function reduceInputChunk(state: InputBuffer, text: string): InputBuffer 
       continue;
     }
 
+    if (slice.startsWith('\x15')) {
+      flush();
+      next = reduceInputBuffer(next, { type: 'clear' });
+      index += 1;
+      continue;
+    }
+
     const codePoint = text.codePointAt(index);
     if (codePoint === undefined) break;
     const char = String.fromCodePoint(codePoint);
+    if (codePoint < 32 && char !== '\n' && char !== '\t') {
+      flush();
+      index += char.length;
+      continue;
+    }
     buffer += char;
     index += char.length;
   }
@@ -174,19 +188,9 @@ export function moveInputCursor(
 }
 
 function previousCursorPosition(value: string, cursor: number): number {
-  let previous = 0;
-  for (let index = 0; index < value.length;) {
-    if (index >= cursor) break;
-    previous = index;
-    const codePoint = value.codePointAt(index);
-    index += codePoint && codePoint > 0xffff ? 2 : 1;
-  }
-  return previous;
+  return previousGraphemeBoundary(value, cursor);
 }
 
 function nextCursorPosition(value: string, cursor: number): number {
-  const current = clampInputCursor(value, cursor);
-  if (current >= value.length) return value.length;
-  const codePoint = value.codePointAt(current);
-  return Math.min(value.length, current + (codePoint && codePoint > 0xffff ? 2 : 1));
+  return nextGraphemeBoundary(value, cursor);
 }

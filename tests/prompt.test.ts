@@ -51,6 +51,17 @@ describe('buildSystemPrompt', () => {
     expect(result.dynamic).toContain('Some project memory');
   });
 
+  test('dynamic part includes project instructions when provided', () => {
+    const ctx: PromptContext = {
+      ...baseContext,
+      projectInstructionsContent: 'Project instructions loaded from repository guidance files.\n## AGENTS.md\nUse repo conventions.',
+    };
+    const result = buildSystemPrompt(ctx);
+
+    expect(result.dynamic).toContain('Project instructions loaded');
+    expect(result.dynamic).toContain('Use repo conventions.');
+  });
+
   test('dynamic part includes active skill instructions when provided', () => {
     const ctx: PromptContext = {
       ...baseContext,
@@ -59,6 +70,18 @@ describe('buildSystemPrompt', () => {
     const result = buildSystemPrompt(ctx);
     expect(result.dynamic).toContain('Active Skills');
     expect(result.dynamic).toContain('code-review');
+  });
+
+  test('dynamic part includes referenced file context when provided', () => {
+    const ctx: PromptContext = {
+      ...baseContext,
+      referencedFilesContent: 'User-referenced files from the current input:\n### @src/app.ts\n~~~\ncode\n~~~',
+    };
+    const result = buildSystemPrompt(ctx);
+
+    expect(result.dynamic).toContain('User-referenced files');
+    expect(result.dynamic).toContain('@src/app.ts');
+    expect(result.dynamic).toContain('code');
   });
 
   test('dynamic part excludes memory when not provided', () => {

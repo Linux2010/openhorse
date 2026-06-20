@@ -751,8 +751,10 @@ async function execCommand_(command: string, cwd?: string, timeout?: number, max
     const maxBytes = maxOutput ?? 51200; // Default 50KB, Issue #28 fix
 
     // Use spawn for streaming output with truncation support
+    const useProcessGroup = process.platform !== 'win32';
     const child = spawn('sh', ['-c', command], {
       cwd: workdir,
+      detached: useProcessGroup,
     });
 
     let stdoutData = '';
@@ -762,47 +764,68 @@ async function execCommand_(command: string, cwd?: string, timeout?: number, max
     // Issue #32 修复：使用独立计数器
     let stdoutBytes = 0;
     let stderrBytes = 0;
-    let aborted = false;
+    let interrupted: 'aborted' | 'timeout' | null = null;
 
     // Issue #32 #3.2: AbortSignal 处理
-    let timeoutId: NodeJS.Timeout;
+    let timeoutId: NodeJS.Timeout | undefined;
+    let killTimerId: NodeJS.Timeout | undefined;
     let settled = false;
 
     const finish = (result: ToolResult) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timeoutId);
+      if (timeoutId) clearTimeout(timeoutId);
+      if (killTimerId) clearTimeout(killTimerId);
       if (abortSignal) {
         abortSignal.removeEventListener('abort', abortHandler);
       }
       resolve(result);
     };
 
-    const abortHandler = () => {
-      aborted = true;
-      if (child.pid) {
+    const terminateChild = () => {
+      if (!child.pid || child.killed) return;
+      try {
+        if (useProcessGroup) {
+          process.kill(-child.pid, 'SIGTERM');
+        } else {
+          child.kill('SIGTERM');
+        }
+      } catch {
         child.kill('SIGTERM');
       }
-      finish({
-        success: false,
-        output: stdoutData.slice(0, maxBytes),
-        error: 'Command aborted by user',
-      });
+
+      killTimerId = setTimeout(() => {
+        if (!child.pid || child.killed || settled) return;
+        try {
+          if (useProcessGroup) {
+            process.kill(-child.pid, 'SIGKILL');
+          } else {
+            child.kill('SIGKILL');
+          }
+        } catch {
+          child.kill('SIGKILL');
+        }
+      }, 500);
+      killTimerId.unref?.();
+    };
+
+    const abortHandler = () => {
+      interrupted = 'aborted';
+      terminateChild();
     };
 
     if (abortSignal) {
       abortSignal.addEventListener('abort', abortHandler);
+      if (abortSignal.aborted) {
+        abortHandler();
+      }
     }
 
     // Timeout handling
     timeoutId = setTimeout(() => {
-      if (!aborted) {
-        child.kill();
-        finish({
-          success: false,
-          output: stdoutData.slice(0, maxBytes),
-          error: `Command timed out after ${timeoutMs}ms`,
-        });
+      if (!interrupted) {
+        interrupted = 'timeout';
+        terminateChild();
       }
     }, timeoutMs);
 
@@ -837,8 +860,23 @@ async function execCommand_(command: string, cwd?: string, timeout?: number, max
     });
 
     child.on('close', (code) => {
-      // 如果已被 abort，不再处理结果
-      if (aborted) return;
+      if (interrupted === 'aborted') {
+        finish({
+          success: false,
+          output: stdoutData.slice(0, maxBytes),
+          error: 'Command aborted by user',
+        });
+        return;
+      }
+
+      if (interrupted === 'timeout') {
+        finish({
+          success: false,
+          output: stdoutData.slice(0, maxBytes),
+          error: `Command timed out after ${timeoutMs}ms`,
+        });
+        return;
+      }
 
       const output = stdoutData.trim();
       const errOutput = stderrData.trim();

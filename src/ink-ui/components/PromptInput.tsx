@@ -1,6 +1,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import { formatPromptVisualLine, getPromptInputViewport, type PromptVisualLine } from '../runtime/prompt-layout';
+import type { DOMElement } from 'ink/build/dom';
 
 export interface PromptInputProps {
   value: string;
@@ -17,7 +18,10 @@ export function formatPromptLine(line: string, index: number, width: number): st
   return formatPromptVisualLine({ logicalIndex: index, wrapIndex: 0, content: line, start: 0, end: line.length }, width);
 }
 
-export function PromptInput({ value, running, modeText, width = 80, maxRows = 6, cursor = value.length }: PromptInputProps): JSX.Element {
+export const PromptInput = React.forwardRef<DOMElement, PromptInputProps>(function PromptInput(
+  { value, running, modeText, width = 80, maxRows = 6, cursor = value.length },
+  ref
+): JSX.Element {
   const { lines, hiddenRows, showHiddenIndicator } = getPromptInputViewport(value, width, maxRows, cursor);
 
   return (
@@ -26,18 +30,20 @@ export function PromptInput({ value, running, modeText, width = 80, maxRows = 6,
         / commands   @ files   ? shortcuts   Alt+Enter newline   Ctrl+C {running ? 'interrupt' : 'twice exits'}
         {modeText ? `   ${modeText}` : ''}
       </Text>
-      <Box width={width} borderStyle="single" borderColor={running ? 'yellow' : 'gray'} paddingX={1} flexDirection="column">
+      <Box ref={ref} width={width} borderStyle="single" borderColor={running ? 'yellow' : 'gray'} paddingX={1} flexDirection="column">
         {showHiddenIndicator && hiddenRows > 0 ? (
           <Text color="gray" wrap="truncate">
             {`  ... ${hiddenRows} hidden input line${hiddenRows === 1 ? '' : 's'}`}
           </Text>
         ) : null}
-        {lines.map((line: PromptVisualLine, index) => (
-          <Text key={`${line.logicalIndex}:${line.wrapIndex}:${index}`} backgroundColor={INPUT_BACKGROUND} color="white" wrap="truncate">
-            {formatPromptVisualLine(line, width)}
-          </Text>
-        ))}
+        {lines.map((line: PromptVisualLine, index) => {
+          return (
+            <Text key={`${line.logicalIndex}:${line.wrapIndex}:${index}`} backgroundColor={INPUT_BACKGROUND} color="white" wrap="truncate">
+              {formatPromptVisualLine(line, width)}
+            </Text>
+          );
+        })}
       </Box>
     </Box>
   );
-}
+});

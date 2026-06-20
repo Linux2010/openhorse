@@ -4,6 +4,7 @@ import stringWidth from 'string-width';
 import type { TranscriptEntry } from '../types';
 import { splitByVisualWidth } from '../runtime/prompt-layout';
 import { Markdown } from './Markdown';
+import { ToolActivityBlock, parseToolActivity } from './ToolActivity';
 
 export interface TranscriptProps {
   entries: TranscriptEntry[];
@@ -60,6 +61,13 @@ export function renderTranscriptEntryText(entry: TranscriptEntry, width = 80): s
 
 export function TranscriptEntryBlock({ entry, width = 80 }: { entry: TranscriptEntry; width?: number }): JSX.Element {
   const contentWidth = Math.max(1, width - 2);
+  const toolActivity = entry.role === 'tool' || entry.role === 'error'
+    ? parseToolActivity(entry.content)
+    : null;
+
+  if (toolActivity) {
+    return <ToolActivityBlock entry={entry} width={width} />;
+  }
 
   return (
     <Box flexDirection="column" marginBottom={1}>

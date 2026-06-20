@@ -52,7 +52,7 @@ describe('loadConfig', () => {
     expect(config.logLevel).toBe('info');
     expect(config.apiKey).toBe('');
     expect(config.toolConfirmation).toBe('allow');
-    expect(config.ui).toEqual({ renderer: 'ink', confirmations: 'config' });
+    expect(config.ui).toEqual({ renderer: 'terminal', confirmations: 'config' });
   });
 
   test('overrides take priority', () => {
@@ -103,7 +103,7 @@ describe('loadConfig', () => {
     expect(config.model).toBe('env-model');
     expect(config.fallbackModel).toBe('env-fallback');
     expect(config.toolConfirmation).toBe('ask');
-    expect(config.ui).toEqual({ renderer: 'v2', confirmations: 'interactive' });
+    expect(config.ui).toEqual({ renderer: 'terminal', confirmations: 'interactive' });
     expect(config.webSearch).toEqual({
       apiKey: 'sk-websearch-env',
       provider: 'tavily',
@@ -142,8 +142,8 @@ describe('loadConfig', () => {
     expect(config.model).toBe('glm-5');
     expect(config.fallbackModel).toBe('qwen-plus');
     expect(config.toolConfirmation).toBe('deny');
-    // openhorse.json no longer controls renderer; Ink is the default UI.
-    expect(config.ui).toEqual({ renderer: 'ink', confirmations: 'interactive' });
+    // openhorse.json no longer controls renderer; terminal is the product default.
+    expect(config.ui).toEqual({ renderer: 'terminal', confirmations: 'interactive' });
     expect(config.webSearch?.endpoint).toBe('https://dashscope.example/mcp');
     expect(config.webSearch?.apiKey).toBe('sk-websearch-global');
     expect(config.webSearch?.toolName).toBe('web_search');
@@ -165,6 +165,33 @@ describe('loadConfig', () => {
     expect(config.ui).toEqual({ renderer: 'legacy', confirmations: 'config' });
   });
 
+  test('cli renderer override can switch to renderer-owned tui preview', () => {
+    jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
+      defaultModel: 'gpt-4o',
+      totalSessions: 0,
+      totalTokens: 0,
+      totalCost: 0,
+    });
+
+    const config = loadConfig({ ui: { renderer: 'tui' } });
+    expect(config.ui).toEqual({ renderer: 'tui', confirmations: 'config' });
+  });
+
+  test('ignores env renderer so npm run start stays on the stable terminal UI', () => {
+    jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
+      defaultModel: 'gpt-4o',
+      totalSessions: 0,
+      totalTokens: 0,
+      totalCost: 0,
+    });
+
+    process.env.OPENHORSE_UI = 'ink';
+    process.env.OPENHORSE_UI_RENDERER = 'ink';
+
+    const config = loadConfig();
+    expect(config.ui).toEqual({ renderer: 'terminal', confirmations: 'config' });
+  });
+
   test('ignores invalid tool confirmation values', () => {
     jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
       defaultModel: 'gpt-4o',
@@ -180,7 +207,7 @@ describe('loadConfig', () => {
 
     const config = loadConfig();
     expect(config.toolConfirmation).toBe('allow');
-    expect(config.ui).toEqual({ renderer: 'ink', confirmations: 'config' });
+    expect(config.ui).toEqual({ renderer: 'terminal', confirmations: 'config' });
   });
 });
 
@@ -238,7 +265,7 @@ describe('getConfigSummary', () => {
     expect(summary.model).toBe('gpt-4o');
     expect(summary.fallback).toBe('claude-sonnet-4-6');
     expect(summary.toolConfirmation).toBe('allow');
-    expect(summary.ui).toBe('ink/config');
+    expect(summary.ui).toBe('terminal/config');
     expect(summary.webSearch).toBe('(default)');
   });
 });

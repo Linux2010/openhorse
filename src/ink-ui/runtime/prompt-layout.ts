@@ -1,4 +1,5 @@
 import stringWidth from 'string-width';
+import { floorGraphemeBoundary, segmentGraphemes } from './grapheme';
 
 export interface PromptVisualLine {
   logicalIndex: number;
@@ -38,11 +39,11 @@ export function splitByVisualWidth(text: string, maxWidth: number): string[] {
   const chunks: string[] = [];
   let current = '';
 
-  for (const char of text) {
-    const next = `${current}${char}`;
+  for (const part of segmentGraphemes(text)) {
+    const next = `${current}${part.segment}`;
     if (current && stringWidth(next) > maxWidth) {
       chunks.push(current);
-      current = char;
+      current = part.segment;
     } else {
       current = next;
     }
@@ -58,22 +59,20 @@ function splitByVisualWidthWithOffsets(text: string, maxWidth: number): Array<{ 
   const chunks: Array<{ content: string; start: number; end: number }> = [];
   let current = '';
   let currentStart = 0;
-  let offset = 0;
 
-  for (const char of text) {
-    const next = `${current}${char}`;
-    const nextOffset = offset + char.length;
+  for (const part of segmentGraphemes(text)) {
+    const next = `${current}${part.segment}`;
+    const nextOffset = part.index + part.segment.length;
     if (current && stringWidth(next) > maxWidth) {
-      chunks.push({ content: current, start: currentStart, end: offset });
-      current = char;
-      currentStart = offset;
+      chunks.push({ content: current, start: currentStart, end: part.index });
+      current = part.segment;
+      currentStart = part.index;
     } else {
       current = next;
     }
-    offset = nextOffset;
   }
 
-  chunks.push({ content: current, start: currentStart, end: offset });
+  chunks.push({ content: current, start: currentStart, end: text.length });
   return chunks;
 }
 
@@ -127,7 +126,11 @@ export function getPromptInputViewport(
     showHiddenIndicator,
     cursorLineIndex,
     cursorColumn: layout.cursorColumn,
-    rowsUpFromPromptBottom: Math.max(2, contentRows + 1 - cursorLineIndex),
+    // Ink leaves the terminal cursor after the prompt box has been rendered,
+    // below the bottom border. Native IME candidate windows follow that real
+    // terminal cursor, so include the bottom border row when parking it on the
+    // active input text row.
+    rowsUpFromPromptBottom: Math.max(1, contentRows - cursorLineIndex + 1),
   };
 }
 
@@ -179,16 +182,41 @@ function buildPromptVisualLines(
   };
 }
 
+function takeVisualWidth(text: string, maxWidth: number): string {
+  if (maxWidth <= 0) return '';
+
+  let result = '';
+  for (const part of segmentGraphemes(text)) {
+    const next = `${result}${part.segment}`;
+    if (stringWidth(next) > maxWidth) break;
+    result = next;
+  }
+
+  return result;
+}
+
 export function formatPromptVisualLine(
   visualLine: PromptVisualLine,
   width: number,
-  options: { showCursor?: boolean } = {}
+  options: { showCursor?: boolean; cursorOffset?: number } = {}
 ): string {
   const prefix = visualLine.logicalIndex === 0 && visualLine.wrapIndex === 0 ? '› ' : '  ';
-  const base = `${prefix}${visualLine.content}`;
-  const raw = options.showCursor && stringWidth(base) < promptContentWidth(width)
-    ? `${base}${PROMPT_CURSOR_GLYPH}`
-    : base;
+  const maxContentWidth = Math.max(1, promptContentWidth(width) - stringWidth(prefix));
+  let content = visualLine.content;
+
+  if (options.showCursor) {
+    const requestedOffset = Math.min(Math.max(0, options.cursorOffset ?? content.length), content.length);
+    const offset = floorGraphemeBoundary(content, requestedOffset);
+    const before = content.slice(0, offset);
+    const after = content.slice(offset);
+    const beforeWithCursor = `${before}${PROMPT_CURSOR_GLYPH}`;
+
+    content = stringWidth(beforeWithCursor) >= maxContentWidth
+      ? `${takeVisualWidth(before, maxContentWidth - stringWidth(PROMPT_CURSOR_GLYPH))}${PROMPT_CURSOR_GLYPH}`
+      : `${beforeWithCursor}${takeVisualWidth(after, maxContentWidth - stringWidth(beforeWithCursor))}`;
+  }
+
+  const raw = `${prefix}${content}`;
   const padding = Math.max(0, promptContentWidth(width) - stringWidth(raw));
   return raw + ' '.repeat(padding);
 }

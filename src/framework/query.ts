@@ -79,6 +79,13 @@ export interface QueryParams {
   permissionMode?: PermissionMode;
   /** Fallback for permission checks that would need an interactive prompt. */
   toolConfirmation?: ToolConfirmationPolicy;
+  /** Optional UI confirmation hook for tools whose permission check returns ask. */
+  confirmToolUse?: (request: {
+    name: string;
+    args: Record<string, unknown>;
+    reason?: string;
+    abortSignal?: AbortSignal;
+  }) => Promise<boolean>;
   /** Tool execution context */
   toolContext?: ToolContext;
   /** Cost tracker for recording usage */
@@ -248,6 +255,19 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
             const confirmation = params.toolConfirmation ?? 'ask';
             if (confirmation === 'allow') {
               result = await executeToolCall();
+            } else if (params.confirmToolUse && confirmation === 'ask') {
+              const approved = await params.confirmToolUse({
+                name: tc.function.name,
+                args,
+                reason: perm.reason,
+                abortSignal,
+              });
+              result = approved
+                ? await executeToolCall()
+                : JSON.stringify({
+                  success: false,
+                  error: `Tool ${tc.function.name} requires user confirmation and was denied by user.`,
+                });
             } else {
               result = JSON.stringify({
                 success: false,

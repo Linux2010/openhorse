@@ -1,28 +1,39 @@
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Box, Static, Text, useApp, useInput, useStdout } from 'ink';
+import type { DOMElement } from 'ink/build/dom';
 import { existsSync, readdirSync, statSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 import { getCommandCategoryLabel, getCommands, getVisibleCommands } from '../../commands';
-import { parseInput } from '../../commands/parser';
 import { getModeDisplayText } from '../../commands/types';
-import { TurnController } from '../../runtime/turn-controller';
+import { AgentRuntimeController } from '../../runtime/agent-runtime-controller';
 import { addToInputHistory, getInputHistory } from '../../services/global-config';
 import { formatBytes } from '../../ui-v2/state/sessions';
 import type { SessionMeta } from '../../services/session-storage';
+import { NativeCursor } from '../components/NativeCursor';
 import { PromptInput } from '../components/PromptInput';
 import { PixelHorseBanner } from '../components/PixelHorseBanner';
 import { SelectList, type SelectListItem } from '../components/SelectList';
 import { StatusLine } from '../components/StatusLine';
-import { TerminalCursor } from '../components/TerminalCursor';
 import { Transcript, TranscriptEntryBlock } from '../components/Transcript';
-import { InkChatController } from '../controllers/chat-controller';
+import { useRawInputBridge } from '../hooks/use-raw-input-bridge';
+import { useTerminalSize } from '../hooks/use-terminal-size';
 import { initialInputBuffer, reduceInputBuffer, type InputBuffer } from '../runtime/input-buffer';
-import type { OpenHorseInkRuntime, SessionPickerRequest, TranscriptEntry, UiEventSink } from '../types';
+import { getInkLayoutBudget } from '../runtime/layout-budget';
+import type { NativeCursorController } from '../runtime/native-cursor';
+import { deleteActionFromRawInput, hasDeletionRawInput } from '../runtime/raw-input';
+import {
+  initialTranscriptState,
+  liveTranscriptEntries,
+  staticTranscriptEntries,
+  transcriptReducer,
+} from '../runtime/transcript-state';
+import type { OpenHorseInkRuntime, SessionPickerRequest, ToolPermissionRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink } from '../types';
 
 type Overlay =
   | { type: 'commands'; selectedIndex: number }
   | { type: 'files'; selectedIndex: number }
   | { type: 'sessions'; selectedIndex: number; request: SessionPickerRequest }
+  | { type: 'permission'; selectedIndex: number; request: ToolPermissionRequest }
   | { type: 'shortcuts' }
   | null;
 
@@ -32,56 +43,9 @@ function createId(): string {
   return `ui-${nextTranscriptId++}`;
 }
 
-function isLiveTranscriptEntry(entry: Omit<TranscriptEntry, 'id'>): boolean {
-  return entry.role === 'tool';
-}
-
 type StaticTranscriptItem =
   | { id: string; type: 'banner' }
   | (TranscriptEntry & { type: 'entry' });
-
-interface TranscriptState {
-  archived: TranscriptEntry[];
-  live: TranscriptEntry[];
-  generation: number;
-}
-
-type TranscriptAction =
-  | { type: 'append'; entry: TranscriptEntry }
-  | { type: 'update'; id: string; patch: Partial<Omit<TranscriptEntry, 'id'>> }
-  | { type: 'finalize'; id: string; patch?: Partial<Omit<TranscriptEntry, 'id'>> }
-  | { type: 'replace'; entries: TranscriptEntry[] }
-  | { type: 'clear' };
-
-function transcriptReducer(state: TranscriptState, action: TranscriptAction): TranscriptState {
-  switch (action.type) {
-    case 'append':
-      if (isLiveTranscriptEntry(action.entry)) {
-        return { ...state, live: [...state.live, action.entry] };
-      }
-      return { ...state, archived: [...state.archived, action.entry] };
-    case 'update':
-      return {
-        ...state,
-        live: state.live.map(entry => entry.id === action.id ? { ...entry, ...action.patch } : entry),
-      };
-    case 'finalize': {
-      let finalized: TranscriptEntry | null = null;
-      const live = state.live.filter(entry => {
-        if (entry.id !== action.id) return true;
-        finalized = action.patch ? { ...entry, ...action.patch } : entry;
-        return false;
-      });
-      return finalized
-        ? { ...state, archived: [...state.archived, finalized], live }
-        : state;
-    }
-    case 'replace':
-      return { archived: action.entries, live: [], generation: state.generation + 1 };
-    case 'clear':
-      return { archived: [], live: [], generation: state.generation + 1 };
-  }
-}
 
 export function visibleCommandItems(input: string): SelectListItem[] {
   const query = input.startsWith('/') ? input.slice(1).toLowerCase() : '';
@@ -167,9 +131,34 @@ export function sessionItems(request: SessionPickerRequest): SelectListItem[] {
   }));
 }
 
-function isExitCommand(input: string): boolean {
-  const parsed = parseInput(input.trim());
-  return parsed.isCommand && ['exit', 'quit', 'q'].includes(parsed.name);
+function compactPermissionArgs(args: Record<string, unknown>): string {
+  for (const key of ['path', 'file_path', 'file', 'cwd', 'command', 'pattern', 'query', 'url', 'target', 'sessionId']) {
+    const value = args[key];
+    if (typeof value === 'string') {
+      return value.length > 72 ? `${value.slice(0, 69)}...` : value;
+    }
+  }
+  const firstString = Object.values(args).find(value => typeof value === 'string');
+  if (typeof firstString === 'string') {
+    return firstString.length > 72 ? `${firstString.slice(0, 69)}...` : firstString;
+  }
+  return '';
+}
+
+export function permissionItems(request: ToolPermissionRequest): SelectListItem[] {
+  const detail = compactPermissionArgs(request.args);
+  return [
+    {
+      value: 'allow',
+      label: `Allow ${request.name}`,
+      description: [detail, request.reason].filter(Boolean).join('  '),
+    },
+    {
+      value: 'deny',
+      label: `Deny ${request.name}`,
+      description: 'Do not run this tool call',
+    },
+  ];
 }
 
 export function normalizePastedInput(value: string): string {
@@ -186,36 +175,38 @@ export function isMultilinePasteValue(value: string | undefined): boolean {
   return normalized.length > 1 && normalized.includes('\n');
 }
 
-function fitCount(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
 export interface ReplScreenProps {
   runtime: OpenHorseInkRuntime;
+  cursorController: NativeCursorController;
+  resizeEpoch?: number;
 }
 
-export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
+export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplScreenProps): JSX.Element {
   const app = useApp();
   const { stdout } = useStdout();
-  const terminalHeight = process.stdout.rows || 24;
-  const terminalWidth = stdout?.columns || process.stdout.columns || 80;
-  const layoutWidth = Math.max(20, terminalWidth - 1);
-  const maxLiveTranscriptItems = fitCount(terminalHeight - 10, 1, 8);
-  const maxOverlayItems = fitCount(terminalHeight - 9, 3, 10);
-  const maxPromptRows = fitCount(Math.floor(terminalHeight / 4), 1, 6);
-  const [transcriptState, dispatchTranscript] = useReducer(transcriptReducer, { archived: [], live: [], generation: 0 });
+  const terminalSize = useTerminalSize(stdout);
+  const terminalHeight = terminalSize.height;
+  const terminalWidth = terminalSize.width;
+  const [transcriptState, dispatchTranscript] = useReducer(transcriptReducer, initialTranscriptState);
   const [inputBuffer, dispatchInput] = useReducer(reduceInputBuffer, initialInputBuffer);
   const input = inputBuffer.value;
   const inputCursor = inputBuffer.cursor;
   const [overlay, setOverlay] = useState<Overlay>(null);
+  const layout = useMemo(
+    () => getInkLayoutBudget(terminalWidth, terminalHeight, { overlayVisible: overlay !== null }),
+    [terminalWidth, terminalHeight, overlay]
+  );
+  const { layoutWidth, maxLiveTranscriptItems, maxOverlayItems, maxPromptRows } = layout;
   const [processing, setProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
+  const [exiting, setExiting] = useState(false);
   const [history, setHistory] = useState(() => getInputHistory());
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [, setStoreVersion] = useState(0);
-  const turnControllerRef = useRef(new TurnController({ exitConfirmWindowMs: 5000 }));
-  const runningRef = useRef(false);
+  const shuttingDownRef = useRef(false);
+  const lastCtrlCEventAtRef = useRef(0);
   const inputRef = useRef<InputBuffer>(initialInputBuffer);
+  const promptBoxRef = useRef<DOMElement>(null);
 
   useEffect(() => {
     inputRef.current = inputBuffer;
@@ -223,7 +214,7 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
 
   useEffect(() => runtime.store.subscribe(() => setStoreVersion(version => version + 1)), [runtime.store]);
 
-  const append = useCallback((entry: Omit<TranscriptEntry, 'id'>): string => {
+  const append = useCallback((entry: TranscriptAppendEntry): string => {
     const id = createId();
     const next = { id, ...entry };
     dispatchTranscript({ type: 'append', entry: next });
@@ -238,66 +229,52 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
     dispatchTranscript({ type: 'finalize', id, patch });
   }, []);
 
+  const remove = useCallback((id: string) => {
+    dispatchTranscript({ type: 'remove', id });
+  }, []);
+
   const events: UiEventSink = useMemo(() => ({
     append,
     update,
     finalize,
+    remove,
     replaceTranscript: entries => {
       dispatchTranscript({ type: 'replace', entries });
     },
     clearTranscript: () => {
-      stdout?.write('\x1b[2J\x1b[3J\x1b[H');
       dispatchTranscript({ type: 'clear' });
     },
     setStatus: setStatusMessage,
     showSessionPicker: request => setOverlay({ type: 'sessions', selectedIndex: 0, request }),
+    showPermissionRequest: request => setOverlay({ type: 'permission', selectedIndex: 0, request }),
     setProcessing,
-  }), [append, finalize, stdout, update]);
+  }), [append, finalize, remove, stdout, update]);
 
-  const controller = useMemo(() => new InkChatController(runtime, events), [runtime, events]);
+  const agentController = useMemo(() => new AgentRuntimeController({
+    runtime,
+    events,
+    exitConfirmWindowMs: 5000,
+    useRuntimeToolPermissions: true,
+    beforeTurn: () => setStatusMessage(''),
+  }), [runtime, events]);
 
-  const shutdown = useCallback(async () => {
-    await runtime.shutdown();
-    app.exit();
-  }, [app, runtime]);
-
-  const appendSubmittedInput = useCallback((value: string) => {
-    const parsed = parseInput(value.trim());
-    append({
-      role: parsed.isCommand ? 'command' : 'user',
-      title: parsed.isCommand ? 'command' : 'you',
-      content: value,
-    });
-  }, [append]);
-
-  const runTurn = useCallback(async (firstInput: string) => {
-    let nextInput: string | undefined = firstInput;
-
-    while (nextInput && nextInput.trim()) {
-      appendSubmittedInput(nextInput);
-      const turn = turnControllerRef.current.beginTurn(nextInput);
-      runningRef.current = true;
-      setProcessing(true);
-      runtime.store.setProcessing(true);
-      setStatusMessage('');
-
-      try {
-        await controller.runInput(nextInput, { abortSignal: turn.abortSignal });
-      } finally {
-        const revision = turnControllerRef.current.finishTurn(turn.id);
-        if (revision?.trim()) {
-          setStatusMessage('Restarting with latest instruction...');
-          nextInput = revision;
-        } else {
-          nextInput = undefined;
-        }
-      }
-    }
-
-    runningRef.current = false;
-    setProcessing(false);
+  const shutdown = useCallback(() => {
+    if (shuttingDownRef.current) return;
+    shuttingDownRef.current = true;
+    cursorController.disable();
     runtime.store.setProcessing(false);
-  }, [appendSubmittedInput, controller, runtime.store]);
+    setProcessing(false);
+    setExiting(true);
+
+    setTimeout(() => {
+      app.exit();
+    }, 50);
+
+    void runtime.shutdown().catch(error => {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`OpenHorse shutdown warning: ${message}\n`);
+    });
+  }, [app, cursorController, runtime]);
 
   const submit = useCallback((value: string) => {
     const submitted = value.trim();
@@ -308,83 +285,55 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
     setHistory(getInputHistory());
     setHistoryIndex(-1);
 
-    if (isExitCommand(submitted)) {
+    const result = agentController.handle({ type: 'submit', text: submitted, source: 'composer' });
+    if (result.type === 'exit_requested') {
       void shutdown();
-      return;
     }
+  }, [agentController, shutdown]);
 
-    if (turnControllerRef.current.hasActiveTurn()) {
-      const parsed = parseInput(submitted);
-      if (parsed.isCommand) {
-        setStatusMessage('Command ignored while agent is running. Press Ctrl+C to interrupt first.');
-        return;
-      }
-
-      turnControllerRef.current.clearExitIntent();
-      turnControllerRef.current.requestRevision(submitted);
-      setStatusMessage('Revision received. Interrupting current response...');
-      return;
-    }
-
-    void runTurn(submitted);
-  }, [runTurn, shutdown]);
+  const answerPermission = useCallback((request: ToolPermissionRequest, approved: boolean) => {
+    setOverlay(null);
+    agentController.handle({
+      type: 'permission_decision',
+      requestId: request.id,
+      approved,
+      source: 'keyboard',
+    });
+  }, [agentController]);
 
   const closeOverlay = useCallback((): boolean => {
     if (!overlay) return false;
+    if (overlay.type === 'permission') {
+      answerPermission(overlay.request, false);
+      return true;
+    }
     setOverlay(null);
     return true;
-  }, [overlay]);
+  }, [answerPermission, overlay]);
 
   const handleCtrlC = useCallback(() => {
     if (closeOverlay()) {
-      turnControllerRef.current.clearExitIntent();
+      agentController.handle({ type: 'clear_exit_intent' });
       return;
     }
 
-    if (turnControllerRef.current.hasActiveTurn()) {
-      const shouldExit = turnControllerRef.current.registerExitIntent();
-      turnControllerRef.current.interruptActiveTurn();
-      if (shouldExit) {
-        void shutdown();
-      } else {
-        setStatusMessage('again exits');
-      }
-      return;
-    }
-
-    if (turnControllerRef.current.registerExitIntent()) {
+    const result = agentController.handle({ type: 'interrupt', source: 'keyboard' });
+    if (result.type === 'exit_requested') {
       void shutdown();
+    }
+  }, [agentController, closeOverlay, shutdown]);
+
+  const handleCtrlCEvent = useCallback((options: { allowRapidRepeat?: boolean } = {}) => {
+    const now = Date.now();
+    const delta = now - lastCtrlCEventAtRef.current;
+    if (!options.allowRapidRepeat && delta < 30) {
       return;
     }
-
-    setStatusMessage('again exits');
-  }, [closeOverlay, shutdown]);
-
-  useEffect(() => {
-    let lastDataCtrlCAt = 0;
-
-    const onData = (chunk: Buffer | string) => {
-      const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk;
-      const ctrlCCount = [...text].filter(char => char === '\u0003').length;
-      if (ctrlCCount > 0) {
-        lastDataCtrlCAt = Date.now();
-      }
-      for (let i = 0; i < ctrlCCount; i++) {
-        handleCtrlC();
-      }
-    };
-    const onSignal = () => {
-      if (Date.now() - lastDataCtrlCAt < 50) return;
-      handleCtrlC();
-    };
-
-    process.stdin.on('data', onData);
-    process.on('SIGINT', onSignal);
-    return () => {
-      process.stdin.off('data', onData);
-      process.off('SIGINT', onSignal);
-    };
+    lastCtrlCEventAtRef.current = now;
+    handleCtrlC();
   }, [handleCtrlC]);
+
+  const lastRawInputRef = useRawInputBridge(handleCtrlCEvent);
 
   const commandItems = visibleCommandItems(input);
   const fileItems = visibleFileItems(runtime.cwd, input);
@@ -411,18 +360,29 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
     const session = request.sessions[index];
     if (!session) return;
     setOverlay(null);
-    submit(`/resume ${session.id}${request.allProjects ? ' --all' : ''}`);
-  }, [submit]);
+    const result = agentController.handle({
+      type: 'select_session',
+      sessionId: session.id,
+      allProjects: request.allProjects,
+      source: 'picker',
+    });
+    if (result.type === 'exit_requested') {
+      void shutdown();
+    }
+  }, [agentController, shutdown]);
 
   useInput((value, key: any) => {
     const isReturn = key?.return || value === '\r' || value === '\n';
 
-    if (value === '\u0003' || value?.includes('\u0003')) {
+    if (key?.ctrl && value === 'c') {
+      handleCtrlCEvent();
       return;
     }
 
+    agentController.handle({ type: 'clear_exit_intent' });
+
     if (!key?.ctrl && isMultilinePasteValue(value)) {
-      dispatchInput({ type: 'insert', text: normalizePastedInput(value) });
+      dispatchInput({ type: 'inputChunk', text: normalizePastedInput(value) });
       setOverlay(null);
       return;
     }
@@ -504,6 +464,31 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
       }
     }
 
+    if (overlay?.type === 'permission') {
+      const items = permissionItems(overlay.request);
+      if (key?.escape || value?.toLowerCase() === 'n') {
+        answerPermission(overlay.request, false);
+        return;
+      }
+      if (value?.toLowerCase() === 'y') {
+        answerPermission(overlay.request, true);
+        return;
+      }
+      if (key?.upArrow) {
+        setOverlay({ ...overlay, selectedIndex: Math.max(0, overlay.selectedIndex - 1) });
+        return;
+      }
+      if (key?.downArrow || key?.tab) {
+        setOverlay({ ...overlay, selectedIndex: Math.min(items.length - 1, overlay.selectedIndex + 1) });
+        return;
+      }
+      if (isReturn) {
+        answerPermission(overlay.request, items[overlay.selectedIndex]?.value === 'allow');
+        return;
+      }
+      return;
+    }
+
     if (isReturn && key?.meta) {
       dispatchInput({ type: 'insert', text: '\n' });
       return;
@@ -529,8 +514,20 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
       return;
     }
 
+    if (key?.ctrl && value === 'u') {
+      const rawInput = lastRawInputRef.current;
+      dispatchInput({ type: 'inputChunk', text: rawInput.startsWith('\x15') ? rawInput : '\x15' });
+      setOverlay(null);
+      return;
+    }
+
     if (isReturn) {
       submit(inputRef.current.value);
+      return;
+    }
+
+    if (value && hasDeletionRawInput(value)) {
+      dispatchInput({ type: 'inputChunk', text: value });
       return;
     }
 
@@ -540,7 +537,7 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
     }
 
     if (key?.delete) {
-      dispatchInput({ type: 'delete' });
+      dispatchInput({ type: deleteActionFromRawInput(value || lastRawInputRef.current) });
       return;
     }
 
@@ -567,13 +564,13 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
       return;
     }
 
-    if (value === '/' && inputRef.current.value === '' && !turnControllerRef.current.hasActiveTurn()) {
+    if (value === '/' && inputRef.current.value === '' && !agentController.hasActiveTurn()) {
       dispatchInput({ type: 'set', value: '/' });
       setOverlay({ type: 'commands', selectedIndex: 0 });
       return;
     }
 
-    if (value === '@' && !turnControllerRef.current.hasActiveTurn()) {
+    if (value === '@' && !agentController.hasActiveTurn()) {
       dispatchInput({ type: 'insert', text: '@' });
       setOverlay({ type: 'files', selectedIndex: 0 });
       return;
@@ -594,14 +591,19 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
   const staticItems = useMemo<StaticTranscriptItem[]>(
     () => [
       { id: 'openhorse-banner', type: 'banner' },
-      ...transcriptState.archived.map(entry => ({ ...entry, type: 'entry' as const })),
+      ...staticTranscriptEntries(transcriptState).map(entry => ({ ...entry, type: 'entry' as const })),
     ],
-    [transcriptState.archived]
+    [transcriptState]
   );
+  const liveEntries = useMemo(() => liveTranscriptEntries(transcriptState), [transcriptState]);
+
+  if (exiting) {
+    return <Box flexDirection="column" />;
+  }
 
   return (
     <Box flexDirection="column">
-      <Static key={transcriptState.generation} items={staticItems}>
+      <Static key={`${transcriptState.generation}:${resizeEpoch}`} items={staticItems}>
         {item => item.type === 'banner' ? (
           <Box key={item.id} flexDirection="column" marginBottom={1}>
             <PixelHorseBanner runtime={runtime} width={layoutWidth} />
@@ -612,7 +614,7 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
       </Static>
 
       <Transcript
-        entries={transcriptState.live}
+        entries={liveEntries}
         maxItems={maxLiveTranscriptItems}
         width={layoutWidth}
         emptyMessage={null}
@@ -625,6 +627,7 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
           selectedIndex={overlay.selectedIndex}
           maxVisibleItems={maxOverlayItems}
           footer="↑↓ navigate  Tab complete  Enter select  Esc cancel"
+          width={layoutWidth}
         />
       ) : null}
 
@@ -635,6 +638,7 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
           selectedIndex={overlay.selectedIndex}
           maxVisibleItems={maxOverlayItems}
           footer="↑↓ navigate  Tab/Enter complete  Esc cancel"
+          width={layoutWidth}
         />
       ) : null}
 
@@ -645,11 +649,23 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
           selectedIndex={overlay.selectedIndex}
           maxVisibleItems={Math.min(overlay.request.maxVisibleItems ?? maxOverlayItems, maxOverlayItems)}
           footer="↑↓ scroll  PgUp/PgDn  Enter resume  Esc cancel"
+          width={layoutWidth}
+        />
+      ) : null}
+
+      {overlay?.type === 'permission' ? (
+        <SelectList
+          title="Tool Permission"
+          items={permissionItems(overlay.request)}
+          selectedIndex={overlay.selectedIndex}
+          maxVisibleItems={2}
+          footer="↑↓ choose  Enter select  y allow  n/Esc deny"
+          width={layoutWidth}
         />
       ) : null}
 
       {overlay?.type === 'shortcuts' ? (
-        <Box borderStyle="single" borderColor="gray" paddingX={1} flexDirection="column">
+        <Box width={layoutWidth} borderStyle="single" borderColor="gray" paddingX={1} flexDirection="column">
           <Text color="cyan">Shortcuts</Text>
           <Text>/ commands    @ file picker    ? shortcuts</Text>
           <Text>Alt+Enter newline    Ctrl+C interrupt / twice exits    ↑↓ history or picker navigation</Text>
@@ -658,8 +674,15 @@ export function ReplScreen({ runtime }: ReplScreenProps): JSX.Element {
       ) : null}
 
       <StatusLine runtime={runtime} running={processing} statusMessage={statusMessage} width={layoutWidth} />
-      <PromptInput value={input} cursor={inputCursor} running={processing} modeText={modeText} width={layoutWidth} maxRows={maxPromptRows} />
-      <TerminalCursor value={input} cursor={inputCursor} maxRows={maxPromptRows} terminalHeight={terminalHeight} terminalWidth={layoutWidth} sticky={processing} />
+      <PromptInput ref={promptBoxRef} value={input} cursor={inputCursor} running={processing} modeText={modeText} width={layoutWidth} maxRows={maxPromptRows} />
+      <NativeCursor
+        cursorController={cursorController}
+        promptRef={promptBoxRef}
+        value={input}
+        cursor={inputCursor}
+        maxRows={maxPromptRows}
+        terminalWidth={layoutWidth}
+      />
     </Box>
   );
 }
