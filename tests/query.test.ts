@@ -127,6 +127,42 @@ describe('query generator', () => {
     expect(executedTools[0].args).toEqual({ path: '/test' });
   });
 
+  test('propagates structured tool result summary metadata', async () => {
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/test"}' } },
+        ],
+      },
+      { content: 'Done', model: 'test-model' },
+    ]);
+
+    const events: QueryEvent[] = [];
+
+    for await (const event of query({
+      messages: [
+        { role: 'system', content: 'You are a bot.' },
+        { role: 'user', content: 'Read the file' },
+      ],
+      tools: [mockTool],
+      toolExecutor: async () => JSON.stringify({
+        success: true,
+        output: 'file content',
+        summary: 'read /test (1L, 12B)',
+        outputBytes: 12,
+      }),
+      llm,
+    })) {
+      events.push(event);
+    }
+
+    const toolResult = events.find(event => event.type === 'tool_result') as Extract<QueryEvent, { type: 'tool_result' }>;
+    expect(toolResult.summary).toBe('read /test (1L, 12B)');
+    expect(toolResult.outputBytes).toBe(12);
+  });
+
   test('respects abort signal', async () => {
     const controller = new AbortController();
     controller.abort();

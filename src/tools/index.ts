@@ -92,6 +92,13 @@ export const TOOLS: OpenHorseTool[] = [
     },
     isReadOnly: () => true,
     userFacingName: (args) => `Read ${args.path as string}`,
+    getSummary: (args, result) => {
+      const path = args.path as string;
+      if (!result.success) return `📄 read ${path} → error`;
+      const lines = result.output.split('\n').length;
+      const bytes = Buffer.byteLength(result.output, 'utf8');
+      return `📄 read ${path} (${lines}L, ${bytes}B)`;
+    },
   }),
 
   buildTool({
@@ -129,6 +136,12 @@ export const TOOLS: OpenHorseTool[] = [
       return { behavior: 'ask', reason: 'Write operation may modify existing files' };
     },
     userFacingName: (args) => `Write ${args.path as string}`,
+    getSummary: (args, result) => {
+      const path = args.path as string;
+      if (!result.success) return `💾 write ${path} → error`;
+      const bytes = Buffer.byteLength(args.content as string || '', 'utf8');
+      return `💾 write ${path} (${bytes}B)`;
+    },
   }),
 
   buildTool({
@@ -159,6 +172,12 @@ export const TOOLS: OpenHorseTool[] = [
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
     userFacingName: (args) => `List ${args.path as string}`,
+    getSummary: (args, result) => {
+      const path = args.path as string;
+      if (!result.success) return `📁 list ${path} → error`;
+      const count = result.output.split('\n').filter(Boolean).length;
+      return `📁 list ${path} (${count} entries)`;
+    },
   }),
 
   buildTool({
@@ -225,11 +244,17 @@ export const TOOLS: OpenHorseTool[] = [
       return isReadOnlyCommand(cmd);
     },
     userFacingName: (args) => `Exec ${(args.command as string)?.slice(0, 60) || ''}`,
+    getSummary: (args, result) => {
+      const cmd = (args.command as string)?.slice(0, 40) || '';
+      if (!result.success) return `🔧 exec: ${cmd} → error`;
+      const bytes = Buffer.byteLength(result.output, 'utf8');
+      return `🔧 exec: ${cmd} (${bytes}B output)`;
+    },
   }),
 
   buildTool({
     name: 'edit_file',
-    description: '对文件进行精确字符串替换。old_string 必须在文件中唯一匹配，否则拒绝执行。使用 replace_all 可替换所有匹配。',
+    description: '对文件进行精确字符串替换。old_string 必须在文件中唯一匹配，否则拒绝执行。使用 replace_all 可替换所有精确匹配；只有显式 fuzzy_match=true 时才尝试宽松空白匹配。',
     parameters: {
       type: 'object',
       properties: {
@@ -249,6 +274,10 @@ export const TOOLS: OpenHorseTool[] = [
           type: 'boolean',
           description: '是否替换所有匹配（可选，默认 false）',
         },
+        fuzzy_match: {
+          type: 'boolean',
+          description: '精确匹配失败时是否允许宽松空白匹配（可选，默认 false；多候选时总是拒绝）',
+        },
       },
       required: ['path', 'old_string', 'new_string'],
     },
@@ -266,13 +295,25 @@ export const TOOLS: OpenHorseTool[] = [
       if (typeof new_string !== 'string') {
         return { success: false, output: '', error: 'edit_file requires a new_string parameter' };
       }
-      return editFile_(path, old_string, new_string, args.replace_all as boolean | undefined);
+      return editFile_(
+        path,
+        old_string,
+        new_string,
+        args.replace_all as boolean | undefined,
+        args.fuzzy_match as boolean | undefined
+      );
     },
     isDestructive: () => true,
     checkPermissions: (args, context) => {
       return { behavior: 'ask', reason: 'Edit operation modifies file contents' };
     },
     userFacingName: (args) => `Edit ${args.path as string}`,
+    getSummary: (args, result) => {
+      const path = args.path as string;
+      if (!result.success) return `✏️ edit ${path} → error`;
+      const replaceAll = args.replace_all ? ' (all)' : '';
+      return `✏️ edit ${path}${replaceAll}`;
+    },
   }),
 
   buildTool({
@@ -303,6 +344,12 @@ export const TOOLS: OpenHorseTool[] = [
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
     userFacingName: (args) => `Glob ${args.pattern as string}`,
+    getSummary: (args, result) => {
+      const pattern = args.pattern as string;
+      if (!result.success) return `🔍 glob ${pattern} → error`;
+      const count = result.output.split('\n').filter(Boolean).length;
+      return `🔍 glob ${pattern} → ${count} matches`;
+    },
   }),
 
   buildTool({
@@ -341,6 +388,12 @@ export const TOOLS: OpenHorseTool[] = [
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
     userFacingName: (args) => `Grep ${args.pattern as string}`,
+    getSummary: (args, result) => {
+      const pattern = args.pattern as string;
+      if (!result.success) return `🔎 grep /${pattern}/ → error`;
+      const count = result.output.split('\n').filter(l => l && !l.startsWith('--')).length;
+      return `🔎 grep /${pattern}/ → ${count} matches`;
+    },
   }),
 
   // Memory tools
@@ -410,6 +463,12 @@ export const TOOLS: OpenHorseTool[] = [
     },
     isReadOnly: () => false,
     userFacingName: (args) => `Memory save ${args.name as string}`,
+    getSummary: (args, result) => {
+      const name = args.name as string;
+      const type = args.type as string;
+      if (!result.success) return `🧠 save ${name} → error`;
+      return `🧠 save ${name} (${type})`;
+    },
   }),
 
   buildTool({
@@ -490,6 +549,13 @@ export const TOOLS: OpenHorseTool[] = [
     },
     isReadOnly: () => true,
     userFacingName: (args) => `Memory recall ${(args.query as string) || 'all'}`,
+    getSummary: (args, result) => {
+      const query = (args.query as string) || 'all';
+      if (!result.success) return `🧠 recall "${query}" → error`;
+      if (result.output === 'No memories found') return `🧠 recall "${query}" → 0 found`;
+      const count = result.output.split(/^## /m).length - 1;
+      return `🧠 recall "${query}" → ${count} memories`;
+    },
   }),
 
   buildTool({
@@ -535,6 +601,11 @@ export const TOOLS: OpenHorseTool[] = [
     },
     isReadOnly: () => false,
     userFacingName: (args) => `Memory forget ${args.name as string}`,
+    getSummary: (args, result) => {
+      const name = args.name as string;
+      if (!result.success) return `🧠 forget ${name} → error`;
+      return `🧠 forget ${name}`;
+    },
   }),
 
   // History search tool
@@ -641,6 +712,14 @@ export const TOOLS: OpenHorseTool[] = [
     },
     isReadOnly: () => true,
     userFacingName: (args) => `History search ${args.query as string}`,
+    getSummary: (args, result) => {
+      const query = args.query as string;
+      if (!result.success) return `📜 history "${query}" → error`;
+      if (result.output.startsWith('No matching')) return `📜 history "${query}" → 0 found`;
+      const match = result.output.match(/Found (\d+) matching/);
+      const count = match ? match[1] : '?';
+      return `📜 history "${query}" → ${count} found`;
+    },
   }),
 ];
 
@@ -682,11 +761,24 @@ async function readFileSync_(path: string, maxLines?: number): Promise<ToolResul
     const content = readFileSync(resolved, 'utf-8');
     const lines = content.split('\n');
     const limit = maxLines ?? 500;
+    const maxBytes = 51200; // 50KB byte limit
 
     if (lines.length > limit) {
+      const truncated = lines.slice(0, limit).join('\n');
+      const byteLen = Buffer.byteLength(truncated, 'utf8');
+      const notice = `\n\n[... truncated, ${lines.length - limit} more lines]`;
       return {
         success: true,
-        output: lines.slice(0, limit).join('\n') + `\n\n[... truncated, ${lines.length - limit} more lines]`,
+        output: byteLen > maxBytes ? truncated.slice(0, maxBytes) + `\n\n[... truncated at ${maxBytes}B]` : truncated + notice,
+      };
+    }
+
+    // Also apply byte limit to full content
+    const byteLen = Buffer.byteLength(content, 'utf8');
+    if (byteLen > maxBytes) {
+      return {
+        success: true,
+        output: content.slice(0, maxBytes) + `\n\n[... truncated at ${maxBytes}B of ${byteLen}B]`,
       };
     }
 
@@ -740,7 +832,14 @@ async function listFiles_(path: string, maxDepth?: number): Promise<ToolResult> 
   }
 
   walk(resolved, 1, '');
-  return { success: true, output: results.join('\n') };
+
+  // Limit output to 500 entries
+  const maxEntries = 500;
+  const output = results.length > maxEntries
+    ? results.slice(0, maxEntries).join('\n') + `\n\n[... truncated, ${results.length - maxEntries} more entries]`
+    : results.join('\n');
+
+  return { success: true, output };
 }
 
 // Issue #32 #3.2: execCommand_ 支持 abortSignal
@@ -912,7 +1011,67 @@ async function execCommand_(command: string, cwd?: string, timeout?: number, max
   });
 }
 
-async function editFile_(path: string, old_string: string, new_string: string, replace_all?: boolean): Promise<ToolResult> {
+/**
+ * Fuzzy match result
+ */
+interface FuzzyMatchResult {
+  matches: string[];  // Actual strings found in content
+  strategy: 'whitespace' | 'line';
+}
+
+/**
+ * Attempt to find old_string in content using fuzzy matching strategies.
+ * Returns null if no match found, or the matched strings.
+ */
+function fuzzyMatch(content: string, oldString: string): FuzzyMatchResult | null {
+  // Strategy 1: Line-by-line matching (allow different indentation)
+  const oldLines = oldString.split('\n').map(l => l.trim()).filter(Boolean);
+  const contentLines = content.split('\n');
+  const lineMatches: string[] = [];
+
+  for (let i = 0; i <= contentLines.length - oldLines.length; i++) {
+    let allMatch = true;
+    for (let j = 0; j < oldLines.length; j++) {
+      if (contentLines[i + j].trim() !== oldLines[j]) {
+        allMatch = false;
+        break;
+      }
+    }
+    if (allMatch) {
+      const matchedStr = contentLines.slice(i, i + oldLines.length).join('\n');
+      lineMatches.push(matchedStr);
+    }
+  }
+
+  if (lineMatches.length > 0) {
+    return { matches: lineMatches, strategy: 'line' };
+  }
+
+  // Strategy 2: Whitespace-tolerant token match. This preserves the actual
+  // matched span without consuming unrelated leading/trailing blank lines.
+  const tokens = oldString.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return null;
+
+  const pattern = tokens.map(escapeRegExp).join('\\s+');
+  const regex = new RegExp(pattern, 'g');
+  const wsMatches: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(content)) !== null) {
+    if (match[0]) {
+      wsMatches.push(match[0]);
+    }
+    if (wsMatches.length > 5) break; // Safety limit
+    if (match.index === regex.lastIndex) regex.lastIndex++;
+  }
+
+  if (wsMatches.length > 0) {
+    return { matches: wsMatches, strategy: 'whitespace' };
+  }
+
+  return null;
+}
+
+async function editFile_(path: string, old_string: string, new_string: string, replace_all?: boolean, fuzzy_match?: boolean): Promise<ToolResult> {
   try {
     const resolved = safePath(path);
     if (!existsSync(resolved)) {
@@ -924,10 +1083,43 @@ async function editFile_(path: string, old_string: string, new_string: string, r
 
     const content = readFileSync(resolved, 'utf-8');
 
-    // Check if old_string exists
+    // Check if old_string exists exactly
     const count = (content.match(new RegExp(escapeRegExp(old_string), 'g')) || []).length;
+
     if (count === 0) {
-      return { success: false, output: '', error: `old_string not found in file: ${old_string.slice(0, 100)}...` };
+      if (!fuzzy_match) {
+        return {
+          success: false,
+          output: '',
+          error: `old_string not found in file: ${old_string.slice(0, 100)}...`,
+        };
+      }
+
+      // Try fuzzy match strategies
+      const fuzzyResult = fuzzyMatch(content, old_string);
+
+      if (fuzzyResult === null) {
+        return { success: false, output: '', error: `old_string not found in file: ${old_string.slice(0, 100)}...` };
+      }
+
+      if (fuzzyResult.matches.length > 1) {
+        return {
+          success: false,
+          output: '',
+          error: `Fuzzy match found ${fuzzyResult.matches.length} candidates. Provide a more specific string. First 3 candidates:\n${fuzzyResult.matches.slice(0, 3).map((m, i) => `  ${i + 1}: "${m.slice(0, 80)}..."`).join('\n')}`,
+        };
+      }
+
+      // Use the single fuzzy match only.
+      const match = fuzzyResult.matches[0];
+      const idx = content.indexOf(match);
+      const newContent = content.slice(0, idx) + new_string + content.slice(idx + match.length);
+
+      writeFileSync(resolved, newContent, 'utf-8');
+      return {
+        success: true,
+        output: `Fuzzy edited ${path} (matched by ${fuzzyResult.strategy}, "${match.slice(0, 50)}...")`,
+      };
     }
 
     // If not replace_all, require unique match
@@ -1046,7 +1238,14 @@ async function glob_(pattern: string, basePath?: string): Promise<ToolResult> {
       return { success: true, output: 'No files found matching pattern' };
     }
 
-    return { success: true, output: results.sort().join('\n') };
+    // Limit output to 200 matches
+    const maxMatches = 200;
+    const sorted = results.sort();
+    const output = sorted.length > maxMatches
+      ? sorted.slice(0, maxMatches).join('\n') + `\n\n[... truncated, ${sorted.length - maxMatches} more matches]`
+      : sorted.join('\n');
+
+    return { success: true, output };
   } catch (err: any) {
     return { success: false, output: '', error: String(err.message) };
   }
@@ -1181,25 +1380,39 @@ export async function executeTool(name: string, args: Record<string, unknown>, a
     cwd: process.cwd(),
     config: {
       name: 'openhorse',
-      mode: 'development',
+      mode: process.env.OPENHORSE_MODE || 'development',
     },
     abortSignal,  // Issue #32 #3.2: 透传 abortSignal
   };
 
   const result = await tool.execute(args, context);
+  const summary = summarizeToolResult(tool, args, result);
+  const outputBytes = Buffer.byteLength(result.output || '', 'utf8');
 
   if (!result.success) {
     return JSON.stringify({
       success: false,
       error: result.error,
       output: result.output,
+      summary,
+      outputBytes,
     });
   }
 
   return JSON.stringify({
     success: true,
     output: result.output,
+    summary,
+    outputBytes,
   });
+}
+
+function summarizeToolResult(tool: OpenHorseTool, args: Record<string, unknown>, result: ToolResult): string | undefined {
+  try {
+    return tool.getSummary?.(args, result);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

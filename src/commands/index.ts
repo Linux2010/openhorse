@@ -361,32 +361,91 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
   }
 
   if (explain) {
+    // Build explain output from harnessState in store
+    const contract = state.contract;
+
+    // Contract section
+    console.log(HEADER('  Contract'));
+    if (contract) {
+      console.log(`    Objective   ${ACCENT(contract.objective || '(none)')}`);
+      if (contract.requirements?.length) {
+        console.log(`    Requires    ${DIM(contract.requirements.slice(0, 3).join(' | '))}`);
+      }
+      if (contract.prohibitions?.length) {
+        console.log(`    Prohibits   ${WARN(contract.prohibitions.slice(0, 3).join(' | '))}`);
+      }
+      if (contract.successCriteria?.length) {
+        console.log(`    Success     ${DIM(contract.successCriteria.slice(0, 3).join(' | '))}`);
+      }
+    } else {
+      console.log(DIM('    (no contract established)'));
+    }
+    console.log();
+
+    // Intent history
+    console.log(HEADER('  Recent Intents'));
+    const intents = state.intentHistory?.slice(-5) ?? [];
+    if (intents.length > 0) {
+      for (const intent of intents) {
+        const conf = intent.confidence != null ? ` (${Math.round(intent.confidence * 100)}%)` : '';
+        console.log(`    ${ACCENT(intent.kind)}${DIM(conf)} ${DIM(intent.summary?.slice(0, 50) || '')}`);
+      }
+    } else {
+      console.log(DIM('    (no intents recorded)'));
+    }
+    console.log();
+
+    // Capsule snapshot
+    console.log(HEADER('  Capsule'));
+    const capsule = state.capsule;
+    if (capsule) {
+      console.log(`    Next        ${DIM(capsule.nextAction)}`);
+      if (capsule.completed?.length) {
+        console.log(`    Done        ${SUCCESS(`${capsule.completed.length} steps`)}`);
+      }
+      if (capsule.openTodos?.length) {
+        console.log(`    Open        ${WARN(`${capsule.openTodos.length} todos`)}`);
+      }
+      if (capsule.changedFiles?.length) {
+        console.log(`    Files       ${DIM(capsule.changedFiles.slice(0, 5).join(', '))}`);
+      }
+      const passed = capsule.verification?.passed?.length ?? 0;
+      const failed = capsule.verification?.failed?.length ?? 0;
+      console.log(`    Verify      ${SUCCESS(`${passed} passed`)} / ${failed > 0 ? ERROR(`${failed} failed`) : DIM('0 failed')}`);
+    } else {
+      console.log(DIM('    (no capsule yet)'));
+    }
+    console.log();
+
+    // Prompt assembly stats
     const stats = state.promptAssemblyStats;
-    if (!stats) {
-      console.log(DIM('  No prompt assembly stats recorded yet. Run a chat turn first.'));
+    console.log(HEADER('  Prompt Assembly'));
+    if (stats) {
+      console.log(`    Model       ${ACCENT(stats.modelId)}`);
+      console.log(`    Budget      ${DIM(`${stats.estimatedTokens}/${stats.budgetTokens} tokens`)}`);
+      console.log(`    Sections    ${DIM(stats.sections.join(', ') || 'none')}`);
+      console.log(`    Ledger      ${DIM(`${state.ledger?.length ?? 0} entries`)}`);
+      console.log(`    Evidence    ${DIM(`${state.evidenceIndex?.length ?? 0} records`)}`);
+      console.log(`    Turns       ${DIM(`${state.turnSummaries?.length ?? 0} summaries`)}`);
       console.log();
-      return { success: true };
-    }
-    console.log(`  Model       ${ACCENT(stats.modelId)}`);
-    console.log(`  Budget      ${DIM(`${stats.estimatedTokens}/${stats.budgetTokens} tokens`)}`);
-    console.log(`  Sections    ${DIM(stats.sections.join(', ') || 'none')}`);
-    console.log();
-    console.log(HEADER('  Included Evidence'));
-    for (const item of stats.includedEvidence.slice(0, 12)) {
-      console.log(`    ${ACCENT(item.id)} ${DIM(`[${item.kind}] score=${item.score} tokens=${item.tokens}`)}`);
-      console.log(`      ${DIM(item.reason)}`);
-    }
-    if (stats.includedEvidence.length === 0) {
-      console.log(DIM('    none'));
-    }
-    console.log();
-    console.log(HEADER('  Omitted Evidence'));
-    for (const item of stats.omittedEvidence.slice(0, 12)) {
-      console.log(`    ${DIM(item.id)} ${DIM(`[${item.kind}] score=${item.score} tokens=${item.tokens}`)}`);
-      console.log(`      ${DIM(item.reason)}`);
-    }
-    if (stats.omittedEvidence.length === 0) {
-      console.log(DIM('    none'));
+      console.log(HEADER('    Included Evidence'));
+      for (const item of stats.includedEvidence.slice(0, 10)) {
+        console.log(`      ${ACCENT(item.id)} ${DIM(`[${item.kind}] score=${item.score} tokens=${item.tokens}`)}`);
+        console.log(`        ${DIM(item.reason)}`);
+      }
+      if (stats.includedEvidence.length === 0) {
+        console.log(DIM('      none'));
+      }
+      if (stats.omittedEvidence.length > 0) {
+        console.log();
+        console.log(HEADER('    Omitted Evidence'));
+        for (const item of stats.omittedEvidence.slice(0, 8)) {
+          console.log(`      ${DIM(item.id)} ${DIM(`[${item.kind}] score=${item.score} tokens=${item.tokens}`)}`);
+          console.log(`        ${DIM(item.reason)}`);
+        }
+      }
+    } else {
+      console.log(DIM('    No prompt assembly stats recorded yet. Run a chat turn first.'));
     }
     console.log();
     return { success: true };
@@ -918,7 +977,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           // Issue #22: 隐藏进度指示
           hideProgress();
           // 显示工具结果后，准备下一轮（不启动 spinner）
-          writeLine(toolLine(event.name, event.args, event.success, event.duration));
+          writeLine(event.summary || toolLine(event.name, event.args, event.success, event.duration));
           // 显示错误详情
           if (!event.success && event.error) {
             writeLine(ERROR(`    Error: ${event.error}`));
@@ -1296,6 +1355,7 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
       maxMessages: threshold,
       getContextCapsule: () => ctx.store.getSnapshot().harnessState?.capsule,
       getHarnessState: () => ctx.store.getSnapshot().harnessState,
+      llm: ctx.llm,
     });
     const compacted = await autoCompact.forceCompact(history);
 

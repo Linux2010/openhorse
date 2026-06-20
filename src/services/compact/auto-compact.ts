@@ -6,9 +6,11 @@
  */
 
 import type { Message } from '../llm';
+import type { LLMService } from '../llm';
 import { compactMessages, type CompactOptions } from './compact';
 import { getModelContextWindow, AUTO_COMPACT_THRESHOLD } from '../model-context';
 import type { ContextCapsule, HarnessState } from '../../harness';
+import { estimateMessagesTokens } from '../../utils/token-estimate';
 
 // ============================================================================
 // 类型定义
@@ -31,6 +33,8 @@ export interface AutoCompactConfig {
   getContextCapsule?: () => ContextCapsule | undefined | null;
   /** 获取最新完整 Harness State */
   getHarnessState?: () => HarnessState | undefined | null;
+  /** Optional LLM service for high-quality compact summaries. */
+  llm?: LLMService | null;
 }
 
 // ============================================================================
@@ -42,6 +46,7 @@ export class AutoCompact {
     onCompact?: AutoCompactConfig['onCompact'];
     getContextCapsule?: AutoCompactConfig['getContextCapsule'];
     getHarnessState?: AutoCompactConfig['getHarnessState'];
+    llm?: LLMService;
   };
   private lastCompactTime: number = 0;
   private compactCount: number = 0;
@@ -58,6 +63,7 @@ export class AutoCompact {
       onCompact: config?.onCompact,
       getContextCapsule: config?.getContextCapsule,
       getHarnessState: config?.getHarnessState,
+      llm: config?.llm ?? undefined,
     };
   }
 
@@ -75,6 +81,7 @@ export class AutoCompact {
     if (config.onCompact !== undefined) this.config.onCompact = config.onCompact;
     if (config.getContextCapsule !== undefined) this.config.getContextCapsule = config.getContextCapsule;
     if (config.getHarnessState !== undefined) this.config.getHarnessState = config.getHarnessState;
+    if ('llm' in config) this.config.llm = config.llm ?? undefined;
   }
 
   /**
@@ -120,6 +127,7 @@ export class AutoCompact {
       maxMessages: this.config.maxMessages,
       contextCapsule,
       harnessState,
+      llm: this.config.llm,
       compactMode: 'auto_pre_turn',
     });
 
@@ -148,8 +156,8 @@ export class AutoCompact {
       this.lastTokenCount = usedTokens;
       return Math.min(100, Math.round((usedTokens / contextWindow) * 100));
     }
-    // Fallback: 估算 token 数（平均每个消息 ~200 tokens）
-    const estimated = (messages?.length ?? 0) * 200;
+    // Fallback: 估算 token 数（使用 CJK 感知的准确估算）
+    const estimated = messages ? estimateMessagesTokens(messages) : 0;
     this.lastTokenCount = estimated;
     return Math.min(100, Math.round((estimated / contextWindow) * 100));
   }
@@ -169,6 +177,7 @@ export class AutoCompact {
       maxMessages: this.config.maxMessages,
       contextCapsule: this.config.getContextCapsule?.() ?? undefined,
       harnessState: this.config.getHarnessState?.() ?? undefined,
+      llm: this.config.llm,
       compactMode: 'manual',
     });
 

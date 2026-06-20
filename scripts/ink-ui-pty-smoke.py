@@ -568,7 +568,7 @@ def run_resume_check(repo: Path, env: dict[str, str]) -> None:
         assert_ordered(decoded, [
             "mock-stream-chunk-1",
             "tool-intro: checking files first.",
-            "✓ list_files",
+            "list . (",
             "tool-final: list_files result integrated.",
         ])
 
@@ -732,7 +732,7 @@ def main() -> int:
         sync_screen("during tool intro")
         wait_for(master, output, "› list_files .", timeout=8)
         sync_screen("during tool running")
-        wait_for(master, output, "✓ list_files", timeout=8)
+        wait_for(master, output, "list . (", timeout=8)
         tool_completion_start = len(b"".join(output))
         sync_screen("after tool success")
         wait_for(master, output, "tool-final: list_files result integrated.", timeout=8)
@@ -743,7 +743,7 @@ def main() -> int:
         assert_ordered(tool_order_output, [
             "tool-intro: checking files first.",
             "› list_files .",
-            "✓ list_files",
+            "list . (",
             "tool-final: list_files result integrated.",
         ])
         write_input(master, b"x")

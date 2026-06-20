@@ -237,6 +237,8 @@ describe('executeTool', () => {
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(true);
     expect(parsed.output).toContain('openhorse');
+    expect(parsed.summary).toContain('read package.json');
+    expect(parsed.outputBytes).toBeGreaterThan(0);
   });
 
   test('returns error for unknown tool', async () => {
@@ -298,6 +300,59 @@ describe('edit_file tool', () => {
     const result = await tool.execute({ path: testFile, old_string: 'notfound', new_string: 'hi' }, ctx);
     expect(result.success).toBe(false);
     expect(result.error).toContain('not found');
+  });
+
+  test('does not fuzzy edit unless explicitly requested', async () => {
+    const testFile = path.join(testDir, 'test-edit-fuzzy-default.txt');
+    fs.writeFileSync(testFile, 'function target() {\n  return true;\n}\n', 'utf-8');
+
+    const result = await tool.execute({
+      path: testFile,
+      old_string: 'function target() { return true; }',
+      new_string: 'function target() {\n  return false;\n}',
+    }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(fs.readFileSync(testFile, 'utf-8')).toContain('return true;');
+  });
+
+  test('supports explicit fuzzy edit without consuming leading blank lines', async () => {
+    const testFile = path.join(testDir, 'test-edit-fuzzy-opt-in.txt');
+    fs.writeFileSync(testFile, 'prefix\n\nfunction target() {\n  return true;\n}\n', 'utf-8');
+
+    const result = await tool.execute({
+      path: testFile,
+      old_string: 'function target() { return true; }',
+      new_string: 'function target() {\n  return false;\n}',
+      fuzzy_match: true,
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(testFile, 'utf-8')).toBe('prefix\n\nfunction target() {\n  return false;\n}\n');
+  });
+
+  test('rejects ambiguous fuzzy matches', async () => {
+    const testFile = path.join(testDir, 'test-edit-fuzzy-ambiguous.txt');
+    fs.writeFileSync(testFile, [
+      'function foo() {',
+      '  return 1;',
+      '}',
+      'function foo() {',
+      '  return 2;',
+      '}',
+      '',
+    ].join('\n'), 'utf-8');
+
+    const result = await tool.execute({
+      path: testFile,
+      old_string: 'function foo() { return',
+      new_string: 'function bar() { return',
+      fuzzy_match: true,
+      replace_all: true,
+    }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Fuzzy match found');
   });
 
   test('rejects multiple matches without replace_all', async () => {

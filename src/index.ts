@@ -58,7 +58,7 @@ export type {
   AgentRunnerResult,
 } from './services/agent-runner';
 
-// Harness Engine 模块
+// Harness Engine 模块（public API compatibility）
 export { HarnessEngine } from './harness/harness';
 export type {
   HarnessConfig as HarnessEngineConfig,

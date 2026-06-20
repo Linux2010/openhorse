@@ -6,7 +6,8 @@
  */
 
 import type { Message } from '../llm';
-import { summaryGenerator, type SummaryOptions } from './summary-generator';
+import type { LLMService } from '../llm';
+import { summaryGenerator, generateLLMSummary, type SummaryOptions } from './summary-generator';
 import { renderContextCapsule, renderHarnessStateForCompact, type ContextCapsule, type HarnessState } from '../../harness';
 
 // ============================================================================
@@ -28,6 +29,8 @@ export interface CompactOptions {
   contextCapsule?: ContextCapsule;
   /** Full Context Harness state that must survive compaction */
   harnessState?: HarnessState;
+  /** LLM service for high-quality summarization (optional, falls back to heuristic) */
+  llm?: LLMService;
   /** Why this compaction happened */
   compactMode?: 'manual' | 'auto_pre_turn' | 'mid_turn';
 }
@@ -101,7 +104,10 @@ export async function compactMessages(
   const oldMessages = toCompact.slice(0, toCompact.length - opts.maxMessages!);
 
   // 4. 对早期消息生成摘要
-  const summary = await summaryGenerator(oldMessages, opts.summaryOptions);
+  // Use LLM-driven summary if LLM service is provided, else fall back to heuristic
+  const summary = opts.llm
+    ? await generateLLMSummary(oldMessages, opts.llm, opts.summaryOptions)
+    : await summaryGenerator(oldMessages, opts.summaryOptions);
 
   // 5. 构建压缩后的消息列表
   let compactedMessages: Message[] = [];

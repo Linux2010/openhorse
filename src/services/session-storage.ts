@@ -24,6 +24,7 @@ import {
   getSessionsDir,
 } from './config-dir';
 import { atomicWriteFileSync } from './atomic-write';
+import { deleteSessionIndex, updateSessionIndex } from './session-index';
 import type { Message } from './llm';
 import { summarizeHarnessStateForMeta, upgradeHarnessState, type ContextCapsule, type HarnessSidecar, type HarnessState } from '../harness';
 
@@ -242,10 +243,20 @@ function uniquePaths(paths: string[]): string[] {
 function parseSessionMetaFile(path: string): SessionMeta | null {
   try {
     const content = readFileSync(path, 'utf-8');
-    return JSON.parse(content) as SessionMeta;
+    const parsed = JSON.parse(content) as Partial<SessionMeta>;
+    if (typeof parsed.id !== 'string' || !parsed.id) return null;
+    if (typeof parsed.projectPath !== 'string' || !parsed.projectPath) return null;
+    return parsed as SessionMeta;
   } catch {
     return null;
   }
+}
+
+function isSessionMetaFile(file: string): boolean {
+  return file.endsWith('.json')
+    && !file.endsWith('.messages.json')
+    && !file.endsWith('.harness.json')
+    && !file.endsWith('.index.json');
 }
 
 function parseHarnessSidecarFile(path: string): HarnessSidecar | null {
@@ -624,6 +635,11 @@ export function appendSessionMessage(sessionId: string, message: SessionMessage)
   for (const path of uniquePaths(paths)) {
     appendFileSync(path, line, { mode: 0o600 });
   }
+
+  // Update session index for fast search
+  if (session) {
+    updateSessionIndex(sessionId, session.projectPath, message);
+  }
 }
 
 /**
@@ -646,6 +662,12 @@ export function appendSessionMessages(sessionId: string, messages: SessionMessag
 
   for (const path of uniquePaths(paths)) {
     appendFileSync(path, lines, { mode: 0o600 });
+  }
+
+  if (session) {
+    for (const message of messages) {
+      updateSessionIndex(sessionId, session.projectPath, message);
+    }
   }
 }
 
@@ -712,7 +734,7 @@ export function listSessions(limit?: number): SessionMeta[] {
   const sessionsById = new Map<string, SessionMeta>();
 
   if (existsSync(sessionsDir)) {
-    const files = readdirSync(sessionsDir).filter(f => f.endsWith('.json') && !f.endsWith('.harness.json'));
+    const files = readdirSync(sessionsDir).filter(isSessionMetaFile);
     for (const file of files) {
       const rawSession = parseSessionMetaFile(join(sessionsDir, file));
       if (rawSession) {
@@ -727,7 +749,7 @@ export function listSessions(limit?: number): SessionMeta[] {
       const projectSessionsDir = join(projectsDir, projectKey, 'sessions');
       if (!existsSync(projectSessionsDir)) continue;
 
-      const files = readdirSync(projectSessionsDir).filter(f => f.endsWith('.json') && !f.endsWith('.harness.json'));
+      const files = readdirSync(projectSessionsDir).filter(isSessionMetaFile);
       for (const file of files) {
         const rawSession = parseSessionMetaFile(join(projectSessionsDir, file));
         if (rawSession) {
@@ -750,7 +772,7 @@ export function listProjectSessions(projectPath: string, limit?: number): Sessio
 
   const projectSessionsDir = getProjectSessionsDir(canonicalProjectPath);
   if (existsSync(projectSessionsDir)) {
-    const files = readdirSync(projectSessionsDir).filter(f => f.endsWith('.json') && !f.endsWith('.harness.json'));
+    const files = readdirSync(projectSessionsDir).filter(isSessionMetaFile);
     for (const file of files) {
       const rawSession = parseSessionMetaFile(join(projectSessionsDir, file));
       if (rawSession) {
@@ -848,6 +870,7 @@ export function deleteSession(sessionId: string): boolean {
       getProjectSessionMessagesPath(session.projectPath, sessionId),
       getProjectSessionHarnessPath(session.projectPath, sessionId)
     );
+    deleteSessionIndex(sessionId, session.projectPath);
   }
 
   let deleted = false;

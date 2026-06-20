@@ -9,6 +9,7 @@ import {
   readHistory,
   readProjectHistory,
   appendSessionMessage,
+  appendSessionMessages,
   readSessionMessages,
   listProjectSessions,
   findSession,
@@ -23,6 +24,7 @@ import {
   type HistoryEntry,
   type SessionMessage,
 } from '../src/services/session-storage';
+import { loadSessionIndex } from '../src/services/session-index';
 import { createContextHarness } from '../src/harness';
 import { existsSync, readFileSync, rmSync, realpathSync, writeFileSync } from 'fs';
 import { join } from 'path';
@@ -383,6 +385,50 @@ describe('session-storage', () => {
       expect(projectMatch?.id).toBe(projectSession.id);
       expect(wrongProjectMatch).toBeNull();
       expect(allProjectsMatch?.id).toBe(otherSession.id);
+    });
+
+    test('project session index sidecars are not listed as sessions', () => {
+      const session = createSession('/tmp/project-index-sidecar', 'gpt-4o');
+      appendSessionMessage(session.id, {
+        role: 'user',
+        content: 'sidecar indexing check',
+        timestamp: Date.now(),
+      });
+
+      const sessions = listProjectSessions('/tmp/project-index-sidecar');
+
+      expect(sessions.filter(s => s.id === session.id)).toHaveLength(1);
+      expect(sessions.every(s => typeof s.id === 'string' && !s.id.endsWith('.index'))).toBe(true);
+      expect(findSession(session.id.slice(0, 8), '/tmp/project-index-sidecar')?.id).toBe(session.id);
+    });
+
+    test('appendSessionMessages updates the session index', () => {
+      const session = createSession('/tmp/project-index-batch', 'gpt-4o');
+      appendSessionMessages(session.id, [
+        {
+          role: 'user',
+          content: 'batch topic',
+          timestamp: Date.now(),
+        },
+        {
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          tool_calls: [
+            {
+              id: 'call-1',
+              type: 'function',
+              function: { name: 'read_file', arguments: '{"path":"src/index.ts"}' },
+            },
+          ],
+        },
+      ]);
+
+      const index = loadSessionIndex(session.id, '/tmp/project-index-batch');
+
+      expect(index?.topics).toContain('batch topic');
+      expect(index?.tools.read_file).toBe(1);
+      expect(index?.files).toContain('src/index.ts');
     });
 
     test('lookupSessionRef reports ambiguous id prefixes', () => {
