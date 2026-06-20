@@ -751,11 +751,24 @@ async function readFileSync_(path: string, maxLines?: number): Promise<ToolResul
     const content = readFileSync(resolved, 'utf-8');
     const lines = content.split('\n');
     const limit = maxLines ?? 500;
+    const maxBytes = 51200; // 50KB byte limit
 
     if (lines.length > limit) {
+      const truncated = lines.slice(0, limit).join('\n');
+      const byteLen = Buffer.byteLength(truncated, 'utf8');
+      const notice = `\n\n[... truncated, ${lines.length - limit} more lines]`;
       return {
         success: true,
-        output: lines.slice(0, limit).join('\n') + `\n\n[... truncated, ${lines.length - limit} more lines]`,
+        output: byteLen > maxBytes ? truncated.slice(0, maxBytes) + `\n\n[... truncated at ${maxBytes}B]` : truncated + notice,
+      };
+    }
+
+    // Also apply byte limit to full content
+    const byteLen = Buffer.byteLength(content, 'utf8');
+    if (byteLen > maxBytes) {
+      return {
+        success: true,
+        output: content.slice(0, maxBytes) + `\n\n[... truncated at ${maxBytes}B of ${byteLen}B]`,
       };
     }
 
@@ -809,7 +822,14 @@ async function listFiles_(path: string, maxDepth?: number): Promise<ToolResult> 
   }
 
   walk(resolved, 1, '');
-  return { success: true, output: results.join('\n') };
+
+  // Limit output to 500 entries
+  const maxEntries = 500;
+  const output = results.length > maxEntries
+    ? results.slice(0, maxEntries).join('\n') + `\n\n[... truncated, ${results.length - maxEntries} more entries]`
+    : results.join('\n');
+
+  return { success: true, output };
 }
 
 // Issue #32 #3.2: execCommand_ 支持 abortSignal
@@ -1115,7 +1135,14 @@ async function glob_(pattern: string, basePath?: string): Promise<ToolResult> {
       return { success: true, output: 'No files found matching pattern' };
     }
 
-    return { success: true, output: results.sort().join('\n') };
+    // Limit output to 200 matches
+    const maxMatches = 200;
+    const sorted = results.sort();
+    const output = sorted.length > maxMatches
+      ? sorted.slice(0, maxMatches).join('\n') + `\n\n[... truncated, ${sorted.length - maxMatches} more matches]`
+      : sorted.join('\n');
+
+    return { success: true, output };
   } catch (err: any) {
     return { success: false, output: '', error: String(err.message) };
   }
