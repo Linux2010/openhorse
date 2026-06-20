@@ -259,6 +259,38 @@ export class ContextHarness {
     return this.capsule;
   }
 
+  getContract(): HarnessState['contract'] {
+    return this.contract;
+  }
+
+  getIntentHistory(): IntentUpdate[] {
+    return this.intentHistory;
+  }
+
+  /**
+   * Generate a structured diagnostic summary for /harness explain
+   */
+  explain(): {
+    contract: HarnessState['contract'];
+    recentIntents: IntentUpdate[];
+    capsule: ContextCapsule | undefined;
+    assemblyStats: HarnessState['promptAssemblyStats'];
+    ledgerSize: number;
+    evidenceSize: number;
+    turnSummaryCount: number;
+  } {
+    this.refreshEvidenceIndex();
+    return {
+      contract: this.contract,
+      recentIntents: this.intentHistory.slice(-5),
+      capsule: this.getCapsule(),
+      assemblyStats: this.promptAssemblyStats,
+      ledgerSize: this.ledger.getEntries().length,
+      evidenceSize: this.evidenceIndex.length,
+      turnSummaryCount: this.turnSummaries.length,
+    };
+  }
+
   toJSON(): HarnessState {
     this.refreshEvidenceIndex();
     return {
