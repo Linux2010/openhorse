@@ -117,15 +117,20 @@ export class ContextHarness {
     if (!built.text.trim()) return messages;
 
     const cloned = messages.map(message => ({ ...message }));
+
+    // Inject harness context as a user/assistant pair AFTER the system message
+    // This keeps the system message stable across turns for prompt caching
     const systemIndex = cloned.findIndex(message => message.role === 'system');
-    if (systemIndex >= 0) {
-      cloned[systemIndex] = {
-        ...cloned[systemIndex],
-        content: `${cloned[systemIndex].content}\n\n---\n${built.text}`,
-      };
-    } else {
-      cloned.unshift({ role: 'system', content: built.text });
-    }
+    const insertIndex = systemIndex >= 0 ? systemIndex + 1 : 0;
+
+    cloned.splice(insertIndex, 0, {
+      role: 'user',
+      content: built.text,
+    });
+    cloned.splice(insertIndex + 1, 0, {
+      role: 'assistant',
+      content: 'I will continue with the current context harness state.',
+    });
 
     return cloned;
   }
