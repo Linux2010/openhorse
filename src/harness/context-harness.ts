@@ -186,6 +186,7 @@ export class ContextHarness {
     duration: number;
     success: boolean;
     error?: string;
+    summary?: string;
   }): void {
     if (this.config.enabled === false) return;
     this.ledger.recordToolResult(params);

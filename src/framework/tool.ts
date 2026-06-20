@@ -24,6 +24,10 @@ export interface ToolResult {
   success: boolean;
   output: string;
   error?: string;
+  /** Compact summary for harness evidence and UI display (optional, falls back to output truncation) */
+  summary?: string;
+  /** Output size in bytes */
+  outputBytes?: number;
   metadata?: Record<string, unknown>;
 }
 

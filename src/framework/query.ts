@@ -320,6 +320,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           duration,
           success: toolSuccess,
           error: toolError,
+          summary: toolSummary,
         });
 
         yield {

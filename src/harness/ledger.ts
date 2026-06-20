@@ -97,11 +97,13 @@ export class ContextLedger {
     duration: number;
     success: boolean;
     error?: string;
+    summary?: string;
   }): ContextLedgerEntry {
     const parsed = parseToolPayload(params.result);
     const command = commandFromArgs(params.args);
     const path = pathFromArgs(params.args);
-    const output = parsed.error || params.error || parsed.output || params.result;
+    // Use summary when available to reduce evidence size
+    const output = params.summary || parsed.error || params.error || parsed.output || params.result;
     const isVerification = isVerificationCommand(command);
     const type: LedgerEntryType = isVerification ? 'verification' : 'tool_result';
     const content = [
