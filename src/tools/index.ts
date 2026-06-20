@@ -92,6 +92,13 @@ export const TOOLS: OpenHorseTool[] = [
     },
     isReadOnly: () => true,
     userFacingName: (args) => `Read ${args.path as string}`,
+    getSummary: (args, result) => {
+      const path = args.path as string;
+      if (!result.success) return `📄 read ${path} → error`;
+      const lines = result.output.split('\n').length;
+      const bytes = Buffer.byteLength(result.output, 'utf8');
+      return `📄 read ${path} (${lines}L, ${bytes}B)`;
+    },
   }),
 
   buildTool({
@@ -129,6 +136,12 @@ export const TOOLS: OpenHorseTool[] = [
       return { behavior: 'ask', reason: 'Write operation may modify existing files' };
     },
     userFacingName: (args) => `Write ${args.path as string}`,
+    getSummary: (args, result) => {
+      const path = args.path as string;
+      if (!result.success) return `💾 write ${path} → error`;
+      const bytes = Buffer.byteLength(args.content as string || '', 'utf8');
+      return `💾 write ${path} (${bytes}B)`;
+    },
   }),
 
   buildTool({
@@ -159,6 +172,12 @@ export const TOOLS: OpenHorseTool[] = [
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
     userFacingName: (args) => `List ${args.path as string}`,
+    getSummary: (args, result) => {
+      const path = args.path as string;
+      if (!result.success) return `📁 list ${path} → error`;
+      const count = result.output.split('\n').filter(Boolean).length;
+      return `📁 list ${path} (${count} entries)`;
+    },
   }),
 
   buildTool({
@@ -225,6 +244,12 @@ export const TOOLS: OpenHorseTool[] = [
       return isReadOnlyCommand(cmd);
     },
     userFacingName: (args) => `Exec ${(args.command as string)?.slice(0, 60) || ''}`,
+    getSummary: (args, result) => {
+      const cmd = (args.command as string)?.slice(0, 40) || '';
+      if (!result.success) return `🔧 exec: ${cmd} → error`;
+      const bytes = Buffer.byteLength(result.output, 'utf8');
+      return `🔧 exec: ${cmd} (${bytes}B output)`;
+    },
   }),
 
   buildTool({
@@ -273,6 +298,12 @@ export const TOOLS: OpenHorseTool[] = [
       return { behavior: 'ask', reason: 'Edit operation modifies file contents' };
     },
     userFacingName: (args) => `Edit ${args.path as string}`,
+    getSummary: (args, result) => {
+      const path = args.path as string;
+      if (!result.success) return `✏️ edit ${path} → error`;
+      const replaceAll = args.replace_all ? ' (all)' : '';
+      return `✏️ edit ${path}${replaceAll}`;
+    },
   }),
 
   buildTool({
@@ -303,6 +334,12 @@ export const TOOLS: OpenHorseTool[] = [
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
     userFacingName: (args) => `Glob ${args.pattern as string}`,
+    getSummary: (args, result) => {
+      const pattern = args.pattern as string;
+      if (!result.success) return `🔍 glob ${pattern} → error`;
+      const count = result.output.split('\n').filter(Boolean).length;
+      return `🔍 glob ${pattern} → ${count} matches`;
+    },
   }),
 
   buildTool({
@@ -341,6 +378,12 @@ export const TOOLS: OpenHorseTool[] = [
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
     userFacingName: (args) => `Grep ${args.pattern as string}`,
+    getSummary: (args, result) => {
+      const pattern = args.pattern as string;
+      if (!result.success) return `🔎 grep /${pattern}/ → error`;
+      const count = result.output.split('\n').filter(l => l && !l.startsWith('--')).length;
+      return `🔎 grep /${pattern}/ → ${count} matches`;
+    },
   }),
 
   // Memory tools
@@ -410,6 +453,12 @@ export const TOOLS: OpenHorseTool[] = [
     },
     isReadOnly: () => false,
     userFacingName: (args) => `Memory save ${args.name as string}`,
+    getSummary: (args, result) => {
+      const name = args.name as string;
+      const type = args.type as string;
+      if (!result.success) return `🧠 save ${name} → error`;
+      return `🧠 save ${name} (${type})`;
+    },
   }),
 
   buildTool({
@@ -490,6 +539,13 @@ export const TOOLS: OpenHorseTool[] = [
     },
     isReadOnly: () => true,
     userFacingName: (args) => `Memory recall ${(args.query as string) || 'all'}`,
+    getSummary: (args, result) => {
+      const query = (args.query as string) || 'all';
+      if (!result.success) return `🧠 recall "${query}" → error`;
+      if (result.output === 'No memories found') return `🧠 recall "${query}" → 0 found`;
+      const count = result.output.split(/^## /m).length - 1;
+      return `🧠 recall "${query}" → ${count} memories`;
+    },
   }),
 
   buildTool({
@@ -535,6 +591,11 @@ export const TOOLS: OpenHorseTool[] = [
     },
     isReadOnly: () => false,
     userFacingName: (args) => `Memory forget ${args.name as string}`,
+    getSummary: (args, result) => {
+      const name = args.name as string;
+      if (!result.success) return `🧠 forget ${name} → error`;
+      return `🧠 forget ${name}`;
+    },
   }),
 
   // History search tool
@@ -641,6 +702,14 @@ export const TOOLS: OpenHorseTool[] = [
     },
     isReadOnly: () => true,
     userFacingName: (args) => `History search ${args.query as string}`,
+    getSummary: (args, result) => {
+      const query = args.query as string;
+      if (!result.success) return `📜 history "${query}" → error`;
+      if (result.output.startsWith('No matching')) return `📜 history "${query}" → 0 found`;
+      const match = result.output.match(/Found (\d+) matching/);
+      const count = match ? match[1] : '?';
+      return `📜 history "${query}" → ${count} found`;
+    },
   }),
 ];
 
