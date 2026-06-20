@@ -595,6 +595,15 @@ export class AgentChatController {
       if (wasAborted) {
         assistantStream.discardSegment();
         this.events.setStatus('Interrupted.');
+        // Clean up: remove the incomplete user+assistant pair from store
+        const history = this.runtime.store.getSnapshot().conversationHistory;
+        if (history.length >= 1) {
+          const lastMsg = history[history.length - 1];
+          // Remove user message if the last assistant was already completed
+          if (lastMsg?.role === 'user') {
+            this.runtime.store.setState({ conversationHistory: history.slice(0, -1) });
+          }
+        }
         return;
       }
 
