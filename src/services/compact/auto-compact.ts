@@ -6,6 +6,7 @@
  */
 
 import type { Message } from '../llm';
+import type { LLMService } from '../llm';
 import { compactMessages, type CompactOptions } from './compact';
 import { getModelContextWindow, AUTO_COMPACT_THRESHOLD } from '../model-context';
 import type { ContextCapsule, HarnessState } from '../../harness';
@@ -32,6 +33,8 @@ export interface AutoCompactConfig {
   getContextCapsule?: () => ContextCapsule | undefined | null;
   /** 获取最新完整 Harness State */
   getHarnessState?: () => HarnessState | undefined | null;
+  /** Optional LLM service for high-quality compact summaries. */
+  llm?: LLMService | null;
 }
 
 // ============================================================================
@@ -43,6 +46,7 @@ export class AutoCompact {
     onCompact?: AutoCompactConfig['onCompact'];
     getContextCapsule?: AutoCompactConfig['getContextCapsule'];
     getHarnessState?: AutoCompactConfig['getHarnessState'];
+    llm?: LLMService;
   };
   private lastCompactTime: number = 0;
   private compactCount: number = 0;
@@ -59,6 +63,7 @@ export class AutoCompact {
       onCompact: config?.onCompact,
       getContextCapsule: config?.getContextCapsule,
       getHarnessState: config?.getHarnessState,
+      llm: config?.llm ?? undefined,
     };
   }
 
@@ -76,6 +81,7 @@ export class AutoCompact {
     if (config.onCompact !== undefined) this.config.onCompact = config.onCompact;
     if (config.getContextCapsule !== undefined) this.config.getContextCapsule = config.getContextCapsule;
     if (config.getHarnessState !== undefined) this.config.getHarnessState = config.getHarnessState;
+    if ('llm' in config) this.config.llm = config.llm ?? undefined;
   }
 
   /**
@@ -121,6 +127,7 @@ export class AutoCompact {
       maxMessages: this.config.maxMessages,
       contextCapsule,
       harnessState,
+      llm: this.config.llm,
       compactMode: 'auto_pre_turn',
     });
 
@@ -170,6 +177,7 @@ export class AutoCompact {
       maxMessages: this.config.maxMessages,
       contextCapsule: this.config.getContextCapsule?.() ?? undefined,
       harnessState: this.config.getHarnessState?.() ?? undefined,
+      llm: this.config.llm,
       compactMode: 'manual',
     });
 

@@ -48,6 +48,8 @@ export type QueryEvent =
       duration: number;
       success: boolean;
       error?: string;
+      summary?: string;
+      outputBytes?: number;
       batchCount?: number;
       batchIndex?: number;
     }
@@ -290,12 +292,16 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         // Issue #21 修复：解析结果，提取 success/error 字段
         let toolSuccess = true;
         let toolError: string | undefined;
+        let toolSummary: string | undefined;
+        let toolOutputBytes: number | undefined;
         let strategyResult: 'success' | 'failed' = 'success';
         let errorMsg: string | undefined;
         try {
           const parsed = JSON.parse(result);
           toolSuccess = parsed.success === true;
           toolError = parsed.error;
+          toolSummary = typeof parsed.summary === 'string' ? parsed.summary : undefined;
+          toolOutputBytes = typeof parsed.outputBytes === 'number' ? parsed.outputBytes : undefined;
           if (parsed.success === false) {
             strategyResult = 'failed';
             errorMsg = parsed.error || 'Unknown error';
@@ -325,6 +331,8 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           duration,
           success: toolSuccess,   // Issue #21: 添加 success 字段
           error: toolError,       // Issue #21: 添加 error 字段
+          summary: toolSummary,
+          outputBytes: toolOutputBytes,
           batchCount: response.toolCalls.length,
           batchIndex: i,
         };
@@ -387,6 +395,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       modelId: response.model || llm.getModel(),
       getContextCapsule: harness ? () => harness.getCapsule() : undefined,
       getHarnessState: harness ? () => harness.toJSON() : undefined,
+      llm,
     });
     const compacted = await autoCompact.checkAndCompact(messages, totalTokens);
     if (compacted.length < messages.length) {

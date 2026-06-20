@@ -84,12 +84,13 @@ function parseToolCallArgs(rawArgs: string | undefined): Record<string, unknown>
   }
 }
 
-function parseSessionToolResult(content: string): { success: boolean; error?: string } {
+function parseSessionToolResult(content: string): { success: boolean; error?: string; summary?: string } {
   try {
-    const parsed = JSON.parse(content) as { success?: unknown; error?: unknown };
+    const parsed = JSON.parse(content) as { success?: unknown; error?: unknown; summary?: unknown };
     return {
       success: parsed.success === true,
       error: typeof parsed.error === 'string' ? parsed.error : undefined,
+      summary: typeof parsed.summary === 'string' ? parsed.summary : undefined,
     };
   } catch {
     return { success: false, error: 'Invalid JSON result' };
@@ -107,7 +108,7 @@ function sessionToolResultSummary(
   const args = parseToolCallArgs(call.function.arguments);
   const detail = compactToolArgs(args);
   const parsed = parseSessionToolResult(message.content);
-  const firstLine = `${parsed.success ? '✓' : '✗'} ${call.function.name}${detail ? ` ${detail}` : ''}`;
+  const firstLine = parsed.summary || `${parsed.success ? '✓' : '✗'} ${call.function.name}${detail ? ` ${detail}` : ''}`;
   return parsed.error ? `${firstLine}\nError: ${parsed.error}` : firstLine;
 }
 
@@ -259,7 +260,7 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
 
     finish(event: ToolResultEvent): void {
       const content = [
-        toolSummary(event.name, event.args, event.success, event.duration),
+        event.summary || toolSummary(event.name, event.args, event.success, event.duration),
         event.error ? `Error: ${event.error}` : '',
       ].filter(Boolean).join('\n');
       const existingEntryId = runningToolEntries.get(event.callId);

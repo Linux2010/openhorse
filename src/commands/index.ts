@@ -977,7 +977,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           // Issue #22: 隐藏进度指示
           hideProgress();
           // 显示工具结果后，准备下一轮（不启动 spinner）
-          writeLine(toolLine(event.name, event.args, event.success, event.duration));
+          writeLine(event.summary || toolLine(event.name, event.args, event.success, event.duration));
           // 显示错误详情
           if (!event.success && event.error) {
             writeLine(ERROR(`    Error: ${event.error}`));
@@ -1355,6 +1355,7 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
       maxMessages: threshold,
       getContextCapsule: () => ctx.store.getSnapshot().harnessState?.capsule,
       getHarnessState: () => ctx.store.getSnapshot().harnessState,
+      llm: ctx.llm,
     });
     const compacted = await autoCompact.forceCompact(history);
 

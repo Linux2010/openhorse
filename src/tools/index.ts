@@ -254,7 +254,7 @@ export const TOOLS: OpenHorseTool[] = [
 
   buildTool({
     name: 'edit_file',
-    description: '对文件进行精确字符串替换。old_string 必须在文件中唯一匹配，否则拒绝执行。使用 replace_all 可替换所有匹配。',
+    description: '对文件进行精确字符串替换。old_string 必须在文件中唯一匹配，否则拒绝执行。使用 replace_all 可替换所有精确匹配；只有显式 fuzzy_match=true 时才尝试宽松空白匹配。',
     parameters: {
       type: 'object',
       properties: {
@@ -274,6 +274,10 @@ export const TOOLS: OpenHorseTool[] = [
           type: 'boolean',
           description: '是否替换所有匹配（可选，默认 false）',
         },
+        fuzzy_match: {
+          type: 'boolean',
+          description: '精确匹配失败时是否允许宽松空白匹配（可选，默认 false；多候选时总是拒绝）',
+        },
       },
       required: ['path', 'old_string', 'new_string'],
     },
@@ -291,7 +295,13 @@ export const TOOLS: OpenHorseTool[] = [
       if (typeof new_string !== 'string') {
         return { success: false, output: '', error: 'edit_file requires a new_string parameter' };
       }
-      return editFile_(path, old_string, new_string, args.replace_all as boolean | undefined);
+      return editFile_(
+        path,
+        old_string,
+        new_string,
+        args.replace_all as boolean | undefined,
+        args.fuzzy_match as boolean | undefined
+      );
     },
     isDestructive: () => true,
     checkPermissions: (args, context) => {
@@ -1006,7 +1016,7 @@ async function execCommand_(command: string, cwd?: string, timeout?: number, max
  */
 interface FuzzyMatchResult {
   matches: string[];  // Actual strings found in content
-  strategy: 'whitespace' | 'line' | 'fuzzy';
+  strategy: 'whitespace' | 'line';
 }
 
 /**
@@ -1014,52 +1024,7 @@ interface FuzzyMatchResult {
  * Returns null if no match found, or the matched strings.
  */
 function fuzzyMatch(content: string, oldString: string): FuzzyMatchResult | null {
-  // Strategy 1: Normalize whitespace (collapse multiple spaces/tabs)
-  const normalizedOld = oldString.replace(/\s+/g, ' ').trim();
-  const normalizedContent = content.replace(/\s+/g, ' ');
-  const wsMatches: string[] = [];
-
-  // Find positions of normalized match in original content
-  let searchFrom = 0;
-  while (true) {
-    const normIdx = normalizedContent.indexOf(normalizedOld, searchFrom);
-    if (normIdx === -1) break;
-
-    // Map back to original content position
-    // Count non-whitespace chars before normIdx in normalized content
-    let charCount = 0;
-    let origIdx = 0;
-    for (let i = 0; i < normIdx && i < content.length; i++) {
-      if (!/\s/.test(content[i]) || (i > 0 && /\s/.test(content[i]) && !/\s/.test(content[i - 1]))) {
-        charCount++;
-      }
-      origIdx = i + 1;
-    }
-
-    // Find the corresponding end position
-    const endNormIdx = normIdx + normalizedOld.length;
-    let endCharCount = 0;
-    let endOrigIdx = origIdx;
-    for (let i = origIdx; i < content.length && endCharCount < normalizedOld.length; i++) {
-      if (!/\s/.test(content[i]) || (i > 0 && /\s/.test(content[i]) && !/\s/.test(content[i - 1]))) {
-        endCharCount++;
-      }
-      endOrigIdx = i + 1;
-    }
-
-    const matchedStr = content.slice(origIdx, endOrigIdx);
-    if (matchedStr && !wsMatches.includes(matchedStr)) {
-      wsMatches.push(matchedStr);
-    }
-    searchFrom = normIdx + 1;
-    if (wsMatches.length > 5) break; // Safety limit
-  }
-
-  if (wsMatches.length > 0) {
-    return { matches: wsMatches, strategy: 'whitespace' };
-  }
-
-  // Strategy 2: Line-by-line matching (allow different indentation)
+  // Strategy 1: Line-by-line matching (allow different indentation)
   const oldLines = oldString.split('\n').map(l => l.trim()).filter(Boolean);
   const contentLines = content.split('\n');
   const lineMatches: string[] = [];
@@ -1082,10 +1047,31 @@ function fuzzyMatch(content: string, oldString: string): FuzzyMatchResult | null
     return { matches: lineMatches, strategy: 'line' };
   }
 
+  // Strategy 2: Whitespace-tolerant token match. This preserves the actual
+  // matched span without consuming unrelated leading/trailing blank lines.
+  const tokens = oldString.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return null;
+
+  const pattern = tokens.map(escapeRegExp).join('\\s+');
+  const regex = new RegExp(pattern, 'g');
+  const wsMatches: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(content)) !== null) {
+    if (match[0]) {
+      wsMatches.push(match[0]);
+    }
+    if (wsMatches.length > 5) break; // Safety limit
+    if (match.index === regex.lastIndex) regex.lastIndex++;
+  }
+
+  if (wsMatches.length > 0) {
+    return { matches: wsMatches, strategy: 'whitespace' };
+  }
+
   return null;
 }
 
-async function editFile_(path: string, old_string: string, new_string: string, replace_all?: boolean): Promise<ToolResult> {
+async function editFile_(path: string, old_string: string, new_string: string, replace_all?: boolean, fuzzy_match?: boolean): Promise<ToolResult> {
   try {
     const resolved = safePath(path);
     if (!existsSync(resolved)) {
@@ -1101,6 +1087,14 @@ async function editFile_(path: string, old_string: string, new_string: string, r
     const count = (content.match(new RegExp(escapeRegExp(old_string), 'g')) || []).length;
 
     if (count === 0) {
+      if (!fuzzy_match) {
+        return {
+          success: false,
+          output: '',
+          error: `old_string not found in file: ${old_string.slice(0, 100)}...`,
+        };
+      }
+
       // Try fuzzy match strategies
       const fuzzyResult = fuzzyMatch(content, old_string);
 
@@ -1108,7 +1102,7 @@ async function editFile_(path: string, old_string: string, new_string: string, r
         return { success: false, output: '', error: `old_string not found in file: ${old_string.slice(0, 100)}...` };
       }
 
-      if (fuzzyResult.matches.length > 1 && !replace_all) {
+      if (fuzzyResult.matches.length > 1) {
         return {
           success: false,
           output: '',
@@ -1116,23 +1110,15 @@ async function editFile_(path: string, old_string: string, new_string: string, r
         };
       }
 
-      // Use the fuzzy match (single match or replace_all)
-      let newContent: string;
-      if (replace_all) {
-        newContent = content;
-        for (const match of fuzzyResult.matches) {
-          newContent = newContent.replace(match, new_string);
-        }
-      } else {
-        const match = fuzzyResult.matches[0];
-        const idx = content.indexOf(match);
-        newContent = content.slice(0, idx) + new_string + content.slice(idx + match.length);
-      }
+      // Use the single fuzzy match only.
+      const match = fuzzyResult.matches[0];
+      const idx = content.indexOf(match);
+      const newContent = content.slice(0, idx) + new_string + content.slice(idx + match.length);
 
       writeFileSync(resolved, newContent, 'utf-8');
       return {
         success: true,
-        output: `Fuzzy edited ${path} (${fuzzyResult.matches.length} replacement(s), matched with "${fuzzyResult.matches[0].slice(0, 50)}...")`,
+        output: `Fuzzy edited ${path} (matched by ${fuzzyResult.strategy}, "${match.slice(0, 50)}...")`,
       };
     }
 
@@ -1400,19 +1386,33 @@ export async function executeTool(name: string, args: Record<string, unknown>, a
   };
 
   const result = await tool.execute(args, context);
+  const summary = summarizeToolResult(tool, args, result);
+  const outputBytes = Buffer.byteLength(result.output || '', 'utf8');
 
   if (!result.success) {
     return JSON.stringify({
       success: false,
       error: result.error,
       output: result.output,
+      summary,
+      outputBytes,
     });
   }
 
   return JSON.stringify({
     success: true,
     output: result.output,
+    summary,
+    outputBytes,
   });
+}
+
+function summarizeToolResult(tool: OpenHorseTool, args: Record<string, unknown>, result: ToolResult): string | undefined {
+  try {
+    return tool.getSummary?.(args, result);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

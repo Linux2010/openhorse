@@ -58,6 +58,15 @@ export type {
   AgentRunnerResult,
 } from './services/agent-runner';
 
+// Harness Engine 模块（public API compatibility）
+export { HarnessEngine } from './harness/harness';
+export type {
+  HarnessConfig as HarnessEngineConfig,
+  HarnessVerdict as HarnessEngineVerdict,
+  HarnessContext,
+  HarnessExecutionResult,
+} from './harness/harness';
+
 // Task Manager 模块
 export { TaskManager } from './services/task-manager';
 export type {

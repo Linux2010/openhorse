@@ -502,13 +502,13 @@ def main() -> int:
         os.write(master, b"tool order test\r")
         wait_for(master, output, "tool-intro-before-call", timeout=8)
         wait_for(master, output, "Running list_files .", timeout=8)
-        wait_for(master, output, "✓ list_files .", timeout=8)
+        wait_for(master, output, "list . (", timeout=8)
         wait_for(master, output, "tool-final-response", timeout=8)
         tool_output = strip_ansi(b"".join(output)[tool_start:].decode("utf-8", errors="replace"))
         assert_ordered(tool_output, [
             "tool-intro-before-call",
             "Running list_files .",
-            "✓ list_files .",
+            "list . (",
             "tool-final-response",
         ])
         visible = sync_screen()

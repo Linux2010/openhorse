@@ -132,10 +132,12 @@ describe('MCP integration', () => {
     expect(runtimeTool?.isReadOnly?.({})).toBe(true);
 
     const rawResult = await executeTool(toolName, { text: 'hello' });
-    expect(JSON.parse(rawResult)).toEqual({
+    expect(JSON.parse(rawResult)).toEqual(expect.objectContaining({
       success: true,
       output: 'echo:hello:ok',
-    });
+      summary: 'MCP sample/echo',
+      outputBytes: 13,
+    }));
   });
 
   test('mcp_list includes connected server tools', async () => {

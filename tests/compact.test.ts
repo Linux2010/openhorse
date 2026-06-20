@@ -132,6 +132,25 @@ describe('AutoCompact', () => {
       // 100k is 78% of gpt-4o's 128000
       expect(autoCompact.getCtxPercent(100000)).toBe(78);
     });
+
+    test('passes configured LLM to compact summary generation', async () => {
+      const llm = {
+        chat: jest.fn(async () => ({
+          content: 'Auto LLM summary',
+          model: 'test-model',
+        })),
+      };
+      const autoCompact = getAutoCompact({
+        modelId: 'test-model',
+        maxMessages: 2,
+        llm: llm as any,
+      });
+
+      const result = await autoCompact.checkAndCompact(createMessages(10), 200000);
+
+      expect(llm.chat).toHaveBeenCalled();
+      expect(result.map(message => message.content).join('\n')).toContain('Auto LLM summary');
+    });
   });
 
   test('compactMessages preserves structured Harness State v2 before summary text', async () => {
@@ -153,5 +172,23 @@ describe('AutoCompact', () => {
     expect(joined).toContain('[OpenHorse Context State v2]');
     expect(joined).toContain('rootObjective');
     expect(joined.indexOf('[OpenHorse Context State v2]')).toBeLessThan(joined.indexOf('[Context Summary]'));
+  });
+
+  test('compactMessages uses LLM summary when an LLM service is provided', async () => {
+    const llm = {
+      chat: jest.fn(async () => ({
+        content: 'LLM compact summary',
+        model: 'test-model',
+      })),
+    };
+
+    const result = await compactMessages(createMessages(8), {
+      maxMessages: 2,
+      llm: llm as any,
+    });
+
+    expect(llm.chat).toHaveBeenCalled();
+    expect(result.summary).toBe('LLM compact summary');
+    expect(result.messages.map(message => message.content).join('\n')).toContain('LLM compact summary');
   });
 });
