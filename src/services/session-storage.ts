@@ -624,6 +624,16 @@ export function appendSessionMessage(sessionId: string, message: SessionMessage)
   for (const path of uniquePaths(paths)) {
     appendFileSync(path, line, { mode: 0o600 });
   }
+
+  // Update session index for fast search
+  if (session) {
+    try {
+      const { updateSessionIndex } = require('./session-index');
+      updateSessionIndex(sessionId, session.projectPath, message);
+    } catch {
+      // Best-effort — don't fail the main flow
+    }
+  }
 }
 
 /**
