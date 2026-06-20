@@ -4,10 +4,4 @@ dist/
 package-lock.json
 tests/tmp/
 docs/*
-!docs/codex/
-!docs/issues/
-!docs/test/
-!docs/version/
-!docs/config.md
-!docs/openhorse.example.json
 coverage/

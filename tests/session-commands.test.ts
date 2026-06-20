@@ -48,7 +48,7 @@ describe('session commands', () => {
     }
   });
 
-  function makeContext(renderer: 'legacy' | 'v2' = 'v2') {
+  function makeContext(renderer: 'legacy' | 'v2' | 'tui' = 'v2') {
     const config = loadConfig({
       apiKey: 'test-key',
       ui: { renderer, confirmations: 'config' },
@@ -93,6 +93,19 @@ describe('session commands', () => {
     expect(result.sessionPicker).toBeDefined();
     expect(result.sessionPicker?.sessions).toHaveLength(2);
     expect(result.sessionPicker?.title).toBe('Pick a Session');
+  });
+
+  test('/resume returns an interactive picker request for tui when multiple sessions exist', async () => {
+    createRestorableSession('first tui restorable session');
+    createRestorableSession('second tui restorable session');
+    const { ctx } = makeContext('tui');
+
+    const result = await findCommand('resume')!.execute(ctx, '');
+
+    expect(result.success).toBe(true);
+    expect(result.sessionPicker).toBeDefined();
+    expect(result.sessionPicker?.sessions.length).toBeGreaterThanOrEqual(2);
+    expect(result.sessionPicker?.maxVisibleItems).toBe(10);
   });
 
   test('/resume <session-id> restores history and switches active session', async () => {

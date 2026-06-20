@@ -95,28 +95,116 @@ Tools that return `deny` from safety checks are still blocked regardless of this
 
 ## UI
 
-v0.1.20 开始引入 `ui-v2`，先把 shell header、prompt、status line、command suggestion / picker / command palette 抽成状态驱动模块，再逐步迁移完整 PromptInput、permission dialog 和 transcript viewer。v0.1.21 起，`v2` 是默认 renderer；v0.1.22 起，renderer 不再写入 `~/.openhorse/openhorse.json`。
+v0.2.3 起，默认启动路径是稳定的 scrollback terminal renderer。它使用轻量 raw editor 管理当前输入缓冲，但不进入 alternate screen，也不绘制会污染 shell scrollback 的全屏 overlay；中文提交文本、Backspace、运行中输入恢复、shell scrollback 和窗口历史都在普通终端窗口里工作。renderer-owned TUI 和 Ink/React UI 仍保留为显式实验模式。
 
-- 默认启动 `openhorse`：使用 v2 UI。
-- `openhorse --ui legacy`：本次启动回退到旧 CLI renderer。
-- `openhorse --ui v2`：显式使用 v2 UI。
+- 默认启动 `openhorse`：使用稳定 scrollback terminal UI。
+- `openhorse --ui terminal`：显式使用稳定 scrollback terminal UI。
+- `openhorse --ui tui`：显式启用 renderer-owned TUI。它使用单一 input parser、frame model 和 terminal writer 管理输入、输出、overlay、状态栏和光标，适合继续验证高级交互。
+- `openhorse --ui ink`：显式启用实验 Ink UI。中文 IME 场景请优先使用默认 terminal UI。
+- `openhorse --ui legacy` / `openhorse --ui v2`：兼容旧参数，会回退到稳定 terminal UI。
+- `OPENHORSE_UI` / `OPENHORSE_UI_RENDERER` 不再切换 renderer，避免 `.env` 或 `~/.openhorse.env` 遗留配置让默认启动误入实验 UI。
 - `ui.confirmations: "config"`：工具确认沿用 `toolConfirmation` 兜底。
 - `ui.confirmations: "interactive"`：预留给后续 permission dialog。
+- `toolConfirmation: "ask"`：默认 `terminal` renderer 会显示交互确认；实验 `tui` / `ink` renderer 尚未接入该确认 hook，建议使用 `--ui terminal` 或配置为 `allow` / `deny`。
 
-v2 参考 Codex CLI 的 keyboard-first 交互，当前支持：
+默认 terminal UI 当前支持：
 
-- `/` 打开命令面板。
-- `@` 打开文件补全。
-- `?` 在空输入时显示快捷键面板。
-- `Ctrl+R` 搜索历史输入。
-- `Ctrl+L` 清空当前终端视图，但保留会话上下文。
-- `Ctrl+C` 退出或取消当前多行输入。
+- 轻量 raw editor 历史、光标移动、Backspace、中文提交文本和运行中输入恢复。
+- `/` 命令补全和 `@` 项目文件补全。
+- `/paste` 多行输入，`/end` 提交，`/cancel` 取消。
+- 行尾 `\` 续行。
+- `/edit` 使用 `$VISUAL`、`$EDITOR` 或 `vi` 编辑长输入。
+- `/resume` session picker 打印完整候选列表，用户可输入序号、id 或名称恢复。
+- agent 输出过程中可以继续输入普通文本作为修正目标；当前 turn 会中断，并以最新输入重启。
+- 运行中的 slash command 不并发执行；需要先中断当前 turn。
+- 两次 `Ctrl+C` 退出；运行中第一次中断当前 turn。
+- 不清屏、不进入 alternate screen，终端 scrollback 保留完整输出。
 
-环境变量示例：
+renderer-owned TUI 当前支持：
+
+- 底部受控输入框、CJK 输入、Backspace、Ctrl+U/Ctrl+W、Alt/手动多行输入。
+- `/` 命令面板、Tab/Enter 补全或选择，完整命令可直接 Enter 提交。
+- `@` 项目文件 picker，Tab/Enter 补全当前文件引用。
+- `?` 快捷键 overlay，仅显示在 live frame 中，不写入 transcript。
+- PageUp/PageDown 滚动查看 TUI 内部 transcript scrollback。
+- `/resume` session picker 可滚动选择，session 行展示消息数和历史 size。
+- agent 输出过程中继续输入会触发 live revision，中断当前 turn 并以最新目标重启。
+- 两次 `Ctrl+C` 退出；运行中第一次中断当前 turn。
+
+启动示例：
 
 ```bash
-OPENHORSE_UI=legacy npx openhorse
+openhorse --ui terminal
+openhorse --ui tui
+openhorse --ui ink
 ```
+
+## Print Mode
+
+`-p` / `--print` 提供 Claude Code/Codex 风格的非交互执行入口，适合脚本、CI、远程 harness 和管道调用。它复用同一套 agent runtime，因此 tools、MCP、skills、session、harness 与交互模式一致。
+
+```bash
+openhorse -p "review the current git diff"
+echo "summarize this project" | openhorse --print
+openhorse --print --output-format json "list next actions"
+```
+
+- 默认 `--output-format text`：assistant 内容输出到 stdout，状态和工具进度输出到 stderr。
+- `--output-format json`：输出 `{ content, entries, statuses, errors, sessionId, model }`，方便上层程序读取。
+- print mode 不渲染 banner、prompt、picker 或交互确认；需要选择 session 时请直接使用 `/resume <session-id>` 或 `/resume --last`。
+
+## Doctor Diagnostics
+
+`openhorse doctor` 和 `/doctor` 会检查当前 coding-agent runtime 的关键能力，适合排查“模型不可用、MCP 工具没加载、skills 未触发、项目规则没入模、session 没恢复”等问题。
+
+```bash
+openhorse doctor
+openhorse doctor --output-format json
+```
+
+检查项包括：
+
+- API key、模型和 LLM 初始化状态。
+- tool confirmation 与 UI confirmation 是否匹配。
+- built-in tools 与 MCP tools 数量。
+- `~/.openhorse/mcp.json` 是否存在、server 是否 connected/dead/disconnected。
+- skills 数量与 auto-trigger 数量。
+- `AGENTS.md`、`CLAUDE.md`、`.openhorse/instructions.md`、`.cursor/rules/*` 等项目规则是否加载。
+- 当前 project session、harness objective、context size。
+
+## Workspace Diff
+
+`openhorse diff` 和 `/diff` 提供确定性的 Git 工作区摘要，不调用 LLM，不修改文件。它适合在 review、commit、PR、resume 后快速确认当前真实变更。
+
+```bash
+openhorse diff
+openhorse diff --output-format json
+/diff --max-files 80
+```
+
+报告包括：
+
+- Git root、branch、HEAD、clean/dirty 状态。
+- staged、unstaged、untracked 文件列表。
+- staged/unstaged diff stat。
+- 非 Git 目录会返回清晰的 not-a-git-repository 诊断。
+
+## Commit Planning
+
+`openhorse commit` 和 `/commit` 基于同一份 workspace diff 生成只读 commit plan 和建议消息。默认不会 stage、commit 或 push，适合作为提交前检查或给 LLM review 提供事实基础。
+
+```bash
+openhorse commit
+openhorse commit --output-format json
+/commit --max-files 50
+```
+
+报告包括：
+
+- 建议 commit message。
+- staged、unstaged、untracked 文件摘要。
+- 是否 `Ready yes/no`：只有存在 staged 变更且没有 unstaged/untracked 时才是 ready。
+- warnings 和 next steps，例如先 review untracked 或 stage intended files。
 
 ## MCP Servers
 

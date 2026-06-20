@@ -9,8 +9,9 @@
  *   3. 环境变量
  *   4. Agent 内部默认值
  *
- * UI renderer is intentionally not read from openhorse.json. The new UI is the
- * default, and startup flags such as --ui legacy are the supported fallback.
+ * UI renderer is intentionally not read from openhorse.json or env. The stable
+ * native terminal UI is the default; --ui tui keeps the renderer-owned TUI
+ * available for explicit testing while it matures.
  */
 
 import {
@@ -75,7 +76,7 @@ const INTERNAL_DEFAULTS = {
   logLevel: 'info',
   toolConfirmation: 'allow' as ToolConfirmationPolicy,
   ui: {
-    renderer: 'ink' as UIRenderer,
+    renderer: 'terminal' as UIRenderer,
     confirmations: 'config' as UIConfirmationMode,
   },
 } as const;
@@ -87,7 +88,8 @@ function normalizeToolConfirmationPolicy(value: unknown): ToolConfirmationPolicy
 }
 
 function normalizeUIRenderer(value: unknown): UIRenderer | undefined {
-  return value === 'ink' || value === 'legacy' || value === 'v2'
+  if (value === 'stable') return 'terminal';
+  return value === 'terminal' || value === 'tui' || value === 'ink' || value === 'legacy' || value === 'v2'
     ? value
     : undefined;
 }
@@ -140,13 +142,11 @@ function loadUIConfig(
   globalConfig: GlobalConfig,
   overrides: Partial<OpenHorseCLIConfig>
 ): Required<UIConfig> {
-  const envRenderer = process.env.OPENHORSE_UI_RENDERER ?? process.env.OPENHORSE_UI;
   const envConfirmations = process.env.OPENHORSE_UI_CONFIRMATIONS;
 
   return {
     renderer:
       normalizeUIRenderer(overrides.ui?.renderer)
-      ?? normalizeUIRenderer(envRenderer)
       ?? INTERNAL_DEFAULTS.ui.renderer,
     confirmations:
       normalizeUIConfirmationMode(overrides.ui?.confirmations)

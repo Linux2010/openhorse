@@ -13,6 +13,9 @@ import { LLMService, type Message, type Tool } from '../src/services/llm';
 import { TOOLS } from '../src/tools';
 import { loadConfig } from '../src/services/config';
 import { executeChat } from '../src/commands';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 // Mock LLMService for testing without real API
 class MockLLMService {
@@ -245,6 +248,81 @@ describe('CLI Chat Regression', () => {
         expect(store.getSnapshot().harnessState?.ledger.some(entry => entry.type === 'skill')).toBe(true);
       } finally {
         logSpy.mockRestore();
+      }
+    });
+
+    test('executeChat injects @ referenced file content into the system prompt', async () => {
+      const projectDir = mkdtempSync(join(tmpdir(), 'openhorse-chat-file-ref-'));
+      const filePath = join(projectDir, 'target.ts');
+      writeFileSync(filePath, 'export const referencedValue = 123;\n');
+      const config = loadConfig({
+        apiKey: 'test-key',
+        ui: { renderer: 'terminal', confirmations: 'config' },
+      });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'gpt-4o',
+      });
+      const mockLLM = new MockLLMService('gpt-4o') as unknown as MockLLMService & LLMService;
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+      try {
+        await executeChat({
+          cwd: projectDir,
+          config,
+          store,
+          llm: mockLLM,
+          runtime: {} as any,
+          writeOutput: () => {},
+          writeLine: () => {},
+        }, 'explain @target.ts');
+
+        const systemPrompt = mockLLM.lastMessages[0]?.content || '';
+        expect(systemPrompt).toContain('User-referenced files');
+        expect(systemPrompt).toContain('### @target.ts');
+        expect(systemPrompt).toContain('referencedValue');
+      } finally {
+        logSpy.mockRestore();
+        rmSync(projectDir, { recursive: true, force: true });
+      }
+    });
+
+    test('executeChat refreshes and injects project instructions into the system prompt', async () => {
+      const projectDir = mkdtempSync(join(tmpdir(), 'openhorse-chat-project-rules-'));
+      writeFileSync(join(projectDir, 'AGENTS.md'), 'Fresh repo rules from disk.\n');
+      const config = loadConfig({
+        apiKey: 'test-key',
+        ui: { renderer: 'terminal', confirmations: 'config' },
+      });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'gpt-4o',
+        projectInstructionsContent: 'stale rules',
+      });
+      const mockLLM = new MockLLMService('gpt-4o') as unknown as MockLLMService & LLMService;
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+      try {
+        await executeChat({
+          cwd: projectDir,
+          config,
+          store,
+          llm: mockLLM,
+          runtime: {} as any,
+          writeOutput: () => {},
+          writeLine: () => {},
+        }, 'hello');
+
+        const systemPrompt = mockLLM.lastMessages[0]?.content || '';
+        expect(systemPrompt).toContain('Project instructions loaded');
+        expect(systemPrompt).toContain('Fresh repo rules from disk.');
+        expect(systemPrompt).not.toContain('stale rules');
+        expect(store.getSnapshot().projectInstructionsContent).toContain('Fresh repo rules from disk.');
+      } finally {
+        logSpy.mockRestore();
+        rmSync(projectDir, { recursive: true, force: true });
       }
     });
   });

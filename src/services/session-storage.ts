@@ -70,6 +70,8 @@ export interface SessionMeta {
   messageCount?: number;
   /** Size of the session transcript history file in bytes */
   historySizeBytes?: number;
+  /** UI transcript should resume from this timestamp; compacted earlier messages may stay hidden. */
+  transcriptDisplayStartTime?: number;
   /** Optional human-readable name */
   name?: string;
   /** Git branch at session creation/resume time */
@@ -470,6 +472,17 @@ export function updateSessionSkills(sessionId: string, skills: string[]): void {
   session.updatedAt = Date.now();
   session.updatedAtIso = new Date(session.updatedAt).toISOString();
   saveSessionMeta(session);
+}
+
+export function markSessionTranscriptDisplayStart(sessionId: string, timestamp: number = Date.now()): SessionMeta | null {
+  const session = loadSessionMeta(sessionId);
+  if (!session) return null;
+
+  session.transcriptDisplayStartTime = timestamp;
+  session.updatedAt = timestamp;
+  session.updatedAtIso = new Date(timestamp).toISOString();
+  saveSessionMeta(session);
+  return session;
 }
 
 /**

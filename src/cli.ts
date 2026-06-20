@@ -13,13 +13,20 @@ import { ensureConfigDir } from './services/config-dir';
 import { recordFirstStartTime, incrementSessionCount } from './services/global-config';
 import { createSession, endSession, readSessionMessages, updateSessionSummary, type SessionMeta } from './services/session-storage';
 import { loadAllMemories } from './memory/storage';
+import { loadProjectInstructions } from './services/project-instructions';
 import { getSkillsRegistry } from './skills';
 import { Store, subscribeToolState, resetToolState } from './framework';
 import { getRuntimeTools } from './tools';
 import { mcpManager } from './tools/mcp';
 import { discoverModelContexts } from './services/model-context';
 import { launchInkUI } from './ink-ui/launch';
-import type { OpenHorseInkRuntime } from './ink-ui/types';
+import { launchTuiUI } from './tui-ui/launch';
+import { launchTerminalUI } from './terminal-ui/launch';
+import { launchPrintMode, readPromptFromStdinIfAvailable, type PrintOutputFormat } from './print-ui/launch';
+import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from './services/doctor';
+import { collectWorkspaceDiff, formatWorkspaceDiff } from './services/workspace-diff';
+import { createCommitPlan, formatCommitPlan } from './services/commit-plan';
+import type { OpenHorseInkRuntime } from './runtime/ui-events';
 
 const BRAND = chalk.hex('#FF6B35');
 const ACCENT = chalk.hex('#00D4AA');
@@ -43,43 +50,107 @@ function showCliHelp(): void {
   console.log(DIM('  Universal Agent Harness Framework'));
   console.log();
   console.log(ACCENT('Usage:'));
-  console.log('  openhorse             Start the Ink/React interactive UI');
+  console.log('  openhorse             Start the stable native terminal UI');
+  console.log('  openhorse doctor      Run local diagnostics and exit');
+  console.log('  openhorse diff        Summarize current git workspace changes');
+  console.log('  openhorse commit      Create a read-only commit plan and suggested message');
+  console.log('  openhorse -p "task"   Run one non-interactive task and print the result');
   console.log('  openhorse --help      Show this help message');
   console.log('  openhorse --version   Show version');
-  console.log('  openhorse --ui ink    Start the Ink UI explicitly');
+  console.log('  openhorse --ui terminal  Start the stable native terminal UI explicitly');
+  console.log('  openhorse --ui tui    Start the experimental renderer-owned TUI');
+  console.log('  openhorse --ui ink    Start the experimental Ink/React UI');
   console.log();
   console.log(ACCENT('Options:'));
   console.log('  -h, --help     Show help');
   console.log('  -v, --version  Show version');
-  console.log('  --ui <mode>    UI renderer: ink');
+  console.log('  -p, --print    Non-interactive print mode');
+  console.log('  --ui <mode>    UI renderer: terminal, tui, ink');
+  console.log('  --output-format <text|json>  Print-mode output format');
   console.log();
-  console.log(DIM('Legacy readline/v2 renderers were removed in v0.2.0.'));
+  console.log(DIM('terminal is the default. tui and ink remain experimental renderers.'));
   console.log();
 }
 
-function parseCliUIRenderer(args: string[]): UIRenderer {
+interface CliOptions {
+  uiRenderer: UIRenderer;
+  printMode: boolean;
+  outputFormat: PrintOutputFormat;
+  promptArgs: string[];
+}
+
+function parseCliOptions(args: string[]): CliOptions {
+  let uiRenderer: UIRenderer = 'terminal';
+  let printMode = false;
+  let outputFormat: PrintOutputFormat = 'text';
+  const promptArgs: string[] = [];
+
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    const value = arg === '--ui'
+    if (arg === '--') {
+      promptArgs.push(...args.slice(i + 1));
+      break;
+    }
+
+    if (arg === '-p' || arg === '--print') {
+      printMode = true;
+      continue;
+    }
+
+    const uiValue = arg === '--ui'
       ? args[i + 1]
       : arg.startsWith('--ui=')
         ? arg.slice('--ui='.length)
         : undefined;
 
-    if (value === undefined) continue;
-    if (value === 'ink') return 'ink';
+    if (uiValue !== undefined) {
+      if (arg === '--ui') i++;
+      if (uiValue === 'terminal' || uiValue === 'stable') {
+        uiRenderer = 'terminal';
+        continue;
+      }
+      if (uiValue === 'tui') {
+        uiRenderer = 'tui';
+        continue;
+      }
+      if (uiValue === 'ink') {
+        uiRenderer = 'ink';
+        continue;
+      }
 
-    if (value === 'legacy' || value === 'v2') {
-      console.log(WARN(`Renderer "${value}" was removed in v0.2.0; starting Ink UI instead.`));
-      return 'ink';
+      if (uiValue === 'legacy' || uiValue === 'v2') {
+        console.log(WARN(`Renderer "${uiValue}" was removed in v0.2.0; starting stable terminal UI instead.`));
+        uiRenderer = 'terminal';
+        continue;
+      }
+
+      console.error(ERROR(`Invalid --ui value: ${uiValue}`));
+      console.error(DIM('Expected: terminal, tui, ink'));
+      process.exit(1);
     }
 
-    console.error(ERROR(`Invalid --ui value: ${value}`));
-    console.error(DIM('Expected: ink'));
-    process.exit(1);
+    const outputFormatValue = arg === '--output-format'
+      ? args[i + 1]
+      : arg.startsWith('--output-format=')
+        ? arg.slice('--output-format='.length)
+        : undefined;
+
+    if (outputFormatValue !== undefined) {
+      if (arg === '--output-format') i++;
+      if (outputFormatValue === 'text' || outputFormatValue === 'json') {
+        outputFormat = outputFormatValue;
+        continue;
+      }
+
+      console.error(ERROR(`Invalid --output-format value: ${outputFormatValue}`));
+      console.error(DIM('Expected: text, json'));
+      process.exit(1);
+    }
+
+    promptArgs.push(arg);
   }
 
-  return 'ink';
+  return { uiRenderer, printMode, outputFormat, promptArgs };
 }
 
 async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OpenHorseInkRuntime> {
@@ -92,6 +163,7 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OpenHorseInkRun
   const memoryContent = memories.length > 0
     ? memories.map(memory => `## ${memory.name} (${memory.type})\n${memory.content}`).join('\n\n')
     : '';
+  const projectInstructionsContent = loadProjectInstructions(cwd);
 
   let skillsContent = '';
   try {
@@ -107,6 +179,7 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OpenHorseInkRun
     currentModel: config.model,
     memoryContent,
     skillsContent,
+    projectInstructionsContent,
   });
 
   resetToolState();
@@ -139,7 +212,7 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OpenHorseInkRun
   });
   await runtime.start();
 
-  void (async () => {
+  const mcpReady = (async () => {
     const originalLog = console.log;
     const originalError = console.error;
     try {
@@ -154,6 +227,7 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OpenHorseInkRun
       console.error = originalError;
     }
   })();
+  void mcpReady;
 
   let currentSession: SessionMeta | null = null;
   let shuttingDown = false;
@@ -196,6 +270,7 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OpenHorseInkRun
     llm,
     runtime,
     isConfigured: isConfigured(config),
+    mcpReady,
     ensureSession,
     setSession,
     getSession,
@@ -214,9 +289,90 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  const uiRenderer = parseCliUIRenderer(args);
-  const runtime = await bootstrapRuntime(uiRenderer);
-  await launchInkUI(runtime);
+  const options = parseCliOptions(args);
+  const runtime = await bootstrapRuntime(options.uiRenderer);
+  if (!options.printMode && options.promptArgs[0] === 'doctor') {
+    await runtime.mcpReady?.catch(() => undefined);
+    const report = collectDoctorReport({
+      cwd: runtime.cwd,
+      config: runtime.config,
+      store: runtime.store,
+      llm: runtime.llm,
+      runtime: runtime.runtime,
+      getSession: runtime.getSession,
+    });
+    if (options.outputFormat === 'json') {
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    } else {
+      process.stdout.write(`${formatDoctorReport(report)}\n`);
+    }
+    await runtime.shutdown();
+    process.exit(hasDoctorFailures(report) ? 1 : 0);
+  }
+
+  if (!options.printMode && options.promptArgs[0] === 'diff') {
+    const maxFilesIndex = options.promptArgs.findIndex(arg => arg === '--max-files');
+    const maxFiles = maxFilesIndex >= 0
+      ? Number(options.promptArgs[maxFilesIndex + 1] ?? 40)
+      : Number(options.promptArgs.find(arg => arg.startsWith('--max-files='))?.slice('--max-files='.length) ?? 40);
+    const report = collectWorkspaceDiff({
+      cwd: runtime.cwd,
+      maxFiles: Number.isFinite(maxFiles) && maxFiles > 0 ? maxFiles : 40,
+    });
+    if (options.outputFormat === 'json') {
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    } else {
+      process.stdout.write(`${formatWorkspaceDiff(report, { maxFiles: Number.isFinite(maxFiles) && maxFiles > 0 ? maxFiles : 40 })}\n`);
+    }
+    await runtime.shutdown();
+    process.exit(report.isGitRepo ? 0 : 1);
+  }
+
+  if (!options.printMode && options.promptArgs[0] === 'commit') {
+    const maxFilesIndex = options.promptArgs.findIndex(arg => arg === '--max-files');
+    const maxFiles = maxFilesIndex >= 0
+      ? Number(options.promptArgs[maxFilesIndex + 1] ?? 20)
+      : Number(options.promptArgs.find(arg => arg.startsWith('--max-files='))?.slice('--max-files='.length) ?? 20);
+    const plan = createCommitPlan({
+      cwd: runtime.cwd,
+      maxFiles: Number.isFinite(maxFiles) && maxFiles > 0 ? maxFiles : 20,
+    });
+    if (options.outputFormat === 'json') {
+      process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
+    } else {
+      process.stdout.write(`${formatCommitPlan(plan)}\n`);
+    }
+    await runtime.shutdown();
+    process.exit(plan.diff.isGitRepo ? 0 : 1);
+  }
+
+  if (options.printMode) {
+    const prompt = options.promptArgs.join(' ').trim() || await readPromptFromStdinIfAvailable();
+    if (!prompt) {
+      console.error(ERROR('Print mode requires a prompt argument or piped stdin.'));
+      await runtime.shutdown();
+      process.exit(1);
+    }
+
+    const exitCode = await launchPrintMode(runtime, prompt, { outputFormat: options.outputFormat });
+    process.exit(exitCode);
+  }
+
+  if (options.promptArgs.length > 0) {
+    console.error(ERROR(`Unexpected argument: ${options.promptArgs[0]}`));
+    console.error(DIM('Use -p/--print to run a non-interactive prompt.'));
+    await runtime.shutdown();
+    process.exit(1);
+  }
+
+  const uiRenderer = options.uiRenderer;
+  if (uiRenderer === 'tui') {
+    await launchTuiUI(runtime);
+  } else if (uiRenderer === 'ink') {
+    await launchInkUI(runtime);
+  } else {
+    await launchTerminalUI(runtime);
+  }
 }
 
 main().catch(async error => {

@@ -34,6 +34,7 @@ import {
   lookupSessionRef,
   loadSessionHistory,
   loadSessionMeta,
+  markSessionTranscriptDisplayStart,
   appendSessionMessage,
   appendSessionMessages,
   endSession,
@@ -51,6 +52,12 @@ import {
 import { getAutoCompact } from '../services/compact/auto-compact';
 import { createContextHarness } from '../harness';
 import { resolveSkillsForTurn } from '../skills';
+import { buildReferencedFilesPrompt } from '../services/file-context';
+import { loadProjectInstructionFiles } from '../services/project-instructions';
+import { refreshProjectInstructions } from '../services/prompt-context';
+import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from '../services/doctor';
+import { collectWorkspaceDiff, formatWorkspaceDiff } from '../services/workspace-diff';
+import { createCommitPlan, formatCommitPlan } from '../services/commit-plan';
 
 // ============================================================================
 // 颜色常量
@@ -190,7 +197,23 @@ function showStatus(ctx: CommandContext): CommandResult {
   console.log(`    Short-term ${storeStats['short-term']} entries`);
   console.log(`    Long-term  ${storeStats['long-term']} entries`);
 
-  const harnessState = ctx.store.getSnapshot().harnessState;
+  refreshProjectInstructions(ctx.store, ctx.cwd);
+  const snapshot = ctx.store.getSnapshot();
+  const instructionFiles = loadProjectInstructionFiles(ctx.cwd);
+  console.log();
+  console.log(`  Context:`);
+  console.log(`    Project rules ${instructionFiles.length > 0 ? SUCCESS(`${instructionFiles.length} files`) : DIM('none')}`);
+  for (const file of instructionFiles.slice(0, 8)) {
+    console.log(`      ${DIM(file.path)}${file.truncated ? ` ${WARN('(truncated)')}` : ''}`);
+  }
+  if (instructionFiles.length > 8) {
+    console.log(`      ${DIM(`... ${instructionFiles.length - 8} more`)}`);
+  }
+  console.log(`    Prompt rules  ${snapshot.projectInstructionsContent ? SUCCESS(`${snapshot.projectInstructionsContent.length} chars`) : DIM('none')}`);
+  console.log(`    Project memory ${snapshot.memoryContent ? SUCCESS(`${snapshot.memoryContent.length} chars`) : DIM('none')}`);
+  console.log(`    Skills index   ${snapshot.skillsContent ? SUCCESS(`${snapshot.skillsContent.length} chars`) : DIM('none')}`);
+
+  const harnessState = snapshot.harnessState;
   if (harnessState?.contract || harnessState?.capsule) {
     console.log();
     console.log(`  Harness:`);
@@ -749,6 +772,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
   }
 
   ctx.store.addMessage({ role: 'user', content: input });
+  refreshProjectInstructions(ctx.store, ctx.cwd);
   const snapshot = ctx.store.getSnapshot();
   const harness = createContextHarness({
     cwd: ctx.cwd,
@@ -770,7 +794,9 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
     tools: skillResolution.tools,
     memoryContent: snapshot.memoryContent,
     skillsContent: snapshot.skillsContent,
+    projectInstructionsContent: snapshot.projectInstructionsContent,
     activeSkillsContent: skillResolution.promptInjection,
+    referencedFilesContent: buildReferencedFilesPrompt(input, ctx.cwd),
   };
   const systemPrompt = getSystemPrompt(promptCtx);
 
@@ -1138,6 +1164,34 @@ function handleMcp(ctx: CommandContext): CommandResult {
   return { success: true };
 }
 
+function handleDoctor(ctx: CommandContext): CommandResult {
+  const report = collectDoctorReport(ctx);
+  console.log();
+  console.log(formatDoctorReport(report));
+  console.log();
+  return { success: !hasDoctorFailures(report) };
+}
+
+function handleDiff(ctx: CommandContext, args: string): CommandResult {
+  const maxFilesMatch = args.match(/--max-files(?:=|\s+)(\d+)/);
+  const maxFiles = maxFilesMatch ? Number(maxFilesMatch[1]) : 40;
+  const report = collectWorkspaceDiff({ cwd: ctx.cwd, maxFiles });
+  console.log();
+  console.log(formatWorkspaceDiff(report, { maxFiles }));
+  console.log();
+  return { success: report.isGitRepo };
+}
+
+function handleCommitPlan(ctx: CommandContext, args: string): CommandResult {
+  const maxFilesMatch = args.match(/--max-files(?:=|\s+)(\d+)/);
+  const maxFiles = maxFilesMatch ? Number(maxFilesMatch[1]) : 20;
+  const plan = createCommitPlan({ cwd: ctx.cwd, maxFiles });
+  console.log();
+  console.log(formatCommitPlan(plan));
+  console.log();
+  return { success: plan.diff.isGitRepo };
+}
+
 function handleTools(ctx: CommandContext): CommandResult {
   const tools = ctx.store.getSnapshot().tools.length > 0
     ? ctx.store.getSnapshot().tools
@@ -1250,6 +1304,10 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
 
     const reduction = history.length - compacted.length;
     const percent = Math.round((reduction / history.length) * 100);
+    const sessionId = ctx.getSession?.()?.id ?? ctx.sessionId;
+    if (sessionId) {
+      markSessionTranscriptDisplayStart(sessionId);
+    }
 
     console.log(SUCCESS(`✔ Compacted ${history.length} → ${compacted.length} messages`));
     console.log(DIM(`  Reduced by ${reduction} messages (${percent}%)`));
@@ -1475,7 +1533,7 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
       maxVisibleItems: 10,
     };
 
-    if (ctx.config.ui?.renderer === 'v2' || ctx.config.ui?.renderer === 'ink') {
+    if (ctx.config.ui?.renderer === 'v2' || ctx.config.ui?.renderer === 'ink' || ctx.config.ui?.renderer === 'terminal' || ctx.config.ui?.renderer === 'tui') {
       return { success: true, sessionPicker: picker };
     }
 
@@ -1647,6 +1705,24 @@ function continueAsSlashChat(name: string, args: string): CommandResult {
 
 const COMMANDS: SlashCommand[] = [
   // Coding workflows
+  {
+    name: 'diff',
+    description: 'Summarize current git workspace changes and touched files',
+    argumentHint: '[--max-files N]',
+    category: 'workflow',
+    priority: 5,
+    type: 'builtin',
+    execute: (ctx, args) => handleDiff(ctx, args),
+  },
+  {
+    name: 'commit',
+    description: 'Create a read-only commit plan and suggested message for current changes',
+    argumentHint: '[--max-files N]',
+    category: 'workflow',
+    priority: 8,
+    type: 'builtin',
+    execute: (ctx, args) => handleCommitPlan(ctx, args),
+  },
   {
     name: 'review',
     description: 'Review the current change or requested files',
@@ -1858,6 +1934,15 @@ const COMMANDS: SlashCommand[] = [
   },
 
   // Diagnostics
+  {
+    name: 'doctor',
+    aliases: ['diag', 'diagnose'],
+    description: 'Run configuration, tools, MCP, skills, session, and harness diagnostics',
+    category: 'diagnostics',
+    priority: 5,
+    type: 'builtin',
+    execute: (ctx) => handleDoctor(ctx),
+  },
   {
     name: 'usage',
     aliases: ['stats'],

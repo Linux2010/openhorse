@@ -50,6 +50,25 @@ export OPENHORSE_API_KEY=your-api-key
 
 # Start
 openhorse
+
+# Explicit renderer-owned TUI preview
+openhorse --ui tui
+
+# Explicit stable terminal editor
+openhorse --ui terminal
+
+# Diagnose local config, tools, MCP, skills, and context
+openhorse doctor
+
+# Inspect current workspace changes deterministically
+openhorse diff
+
+# Generate a read-only commit plan and suggested message
+openhorse commit
+
+# Run one non-interactive task for scripts/CI
+openhorse -p "review the current git diff"
+echo "summarize this project" | openhorse --print
 ```
 
 ## Key Features
@@ -65,6 +84,10 @@ openhorse
 | **Safety Boundaries** | Bash safety checks, audit logging, permission modes |
 | **Streaming Output** | Real-time LLM responses with Markdown rendering |
 | **Skills System** | Builtin, user, and project-level skill extensions |
+| **Print Mode** | `-p/--print` one-shot tasks with text or JSON output |
+| **Doctor Diagnostics** | `openhorse doctor` / `/doctor` checks config, tools, MCP, skills, sessions, and harness |
+| **Workspace Diff** | `openhorse diff` / `/diff` summarizes staged, unstaged, and untracked changes |
+| **Commit Planning** | `openhorse commit` / `/commit` suggests a commit message without creating a commit |
 
 ## Configuration
 

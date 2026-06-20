@@ -1,14 +1,25 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { getCursorRestoreDelays, getPromptCursorPosition } from '../src/ink-ui/components/TerminalCursor';
+import stringWidth from 'string-width';
 import { formatPromptLine } from '../src/ink-ui/components/PromptInput';
-import { markdownBlockTypes } from '../src/ink-ui/components/Markdown';
-import { createAssistantStreamPresenter, createToolEventPresenter } from '../src/ink-ui/controllers/chat-controller';
-import { getPromptVisualLines } from '../src/ink-ui/runtime/prompt-layout';
-import { getFileQuery, sessionItems, visibleCommandItems, visibleFileItems } from '../src/ink-ui/screens/ReplScreen';
+import { decodeHtmlEntities, markdownBlockTypes } from '../src/ink-ui/components/Markdown';
+import { getRunningHorseFrame, runningHorseLabel } from '../src/ink-ui/components/RunningHorseIndicator';
+import { formatToolActivityLine, parseToolActivity } from '../src/ink-ui/components/ToolActivity';
+import { createAssistantStreamPresenter, createToolEventPresenter, sessionMessagesToTranscriptEntries } from '../src/ink-ui/controllers/chat-controller';
+import { readTerminalSize } from '../src/ink-ui/hooks/use-terminal-size';
+import { prepareInkStdin } from '../src/ink-ui/launch';
+import { initialInputBuffer, reduceInputBuffer } from '../src/ink-ui/runtime/input-buffer';
+import { getInkLayoutBudget } from '../src/ink-ui/runtime/layout-budget';
+import { applyTerminalOutputToCursor, createNativeCursorController, nativeCursorAbsoluteMoveSequence, nativeCursorAbsoluteParkSequence, nativeCursorAnchorFromNode, nativeCursorMoveSequence, nativeCursorParkSequence } from '../src/ink-ui/runtime/native-cursor';
+import { formatPromptVisualLine, getPromptInputViewport, getPromptVisualLines, getVisiblePromptVisualLines, splitByVisualWidth } from '../src/ink-ui/runtime/prompt-layout';
+import { floorGraphemeBoundary, nextGraphemeBoundary, previousGraphemeBoundary, segmentGraphemes } from '../src/ink-ui/runtime/grapheme';
+import { countCtrlCEvents, deleteActionFromRawInput, hasDeletionRawInput } from '../src/ink-ui/runtime/raw-input';
+import { initialTranscriptState, liveTranscriptEntries, staticTranscriptEntries, transcriptReducer } from '../src/ink-ui/runtime/transcript-state';
+import { getFileQuery, isMultilinePasteValue, normalizePastedInput, permissionItems, sessionItems, visibleCommandItems, visibleFileItems } from '../src/ink-ui/screens/ReplScreen';
 import type { TranscriptEntry, UiEventSink } from '../src/ink-ui/types';
 import type { SessionMeta } from '../src/services/session-storage';
+import { appendSessionMessage, createSession, markSessionTranscriptDisplayStart } from '../src/services/session-storage';
 
 describe('Ink UI helpers', () => {
   it('filters command palette entries by slash query', () => {
@@ -32,6 +43,34 @@ describe('Ink UI helpers', () => {
     expect(getFileQuery('open @src/cli')).toEqual({ base: 'open ', query: 'src/cli' });
     expect(getFileQuery('@')).toEqual({ base: '', query: '' });
     expect(getFileQuery('no file token')).toBeNull();
+  });
+
+  it('detects pasted multiline chunks without treating Enter as paste', () => {
+    expect(isMultilinePasteValue('line one\nline two')).toBe(true);
+    expect(isMultilinePasteValue('line one\r\nline two')).toBe(true);
+    expect(isMultilinePasteValue('\n')).toBe(false);
+    expect(isMultilinePasteValue('\r')).toBe(false);
+    expect(isMultilinePasteValue('plain text')).toBe(false);
+  });
+
+  it('normalizes bracketed paste and CRLF newlines', () => {
+    expect(normalizePastedInput('\x1b[200~one\r\ntwo\x1b[201~')).toBe('one\ntwo');
+  });
+
+  it('counts repeated Ctrl+C bytes when terminal input batches them', () => {
+    expect(countCtrlCEvents('\x03')).toBe(1);
+    expect(countCtrlCEvents('\x03\x03')).toBe(2);
+    expect(countCtrlCEvents('hello')).toBe(0);
+  });
+
+  it('treats terminal DEL as backspace and CSI 3 as forward delete', () => {
+    expect(deleteActionFromRawInput('\x7f')).toBe('backspace');
+    expect(deleteActionFromRawInput('\x08')).toBe('backspace');
+    expect(deleteActionFromRawInput('\x1b[3~')).toBe('delete');
+    expect(hasDeletionRawInput('\x7f')).toBe(true);
+    expect(hasDeletionRawInput('\x08')).toBe(true);
+    expect(hasDeletionRawInput('\x1b[3~')).toBe(true);
+    expect(hasDeletionRawInput('开源')).toBe(false);
   });
 
   it('lists matching file completion entries', () => {
@@ -67,19 +106,294 @@ describe('Ink UI helpers', () => {
     expect(item.description).toContain('1.5 KB');
   });
 
-  it('positions terminal cursor with fullwidth Chinese input', () => {
-    const ascii = getPromptCursorPosition('ab', 24, 80);
-    const chinese = getPromptCursorPosition('你好', 24, 80);
+  it('builds tool permission picker entries from the runtime request', () => {
+    const items = permissionItems({
+      id: 'permission-1',
+      name: 'exec_command',
+      args: { command: 'npm publish --dry-run' },
+      reason: 'requires confirmation',
+    });
 
-    expect(ascii.row).toBe(23);
-    expect(ascii.column).toBe(7);
-    expect(chinese.row).toBe(23);
-    expect(chinese.column).toBe(9);
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({
+      value: 'allow',
+      label: 'Allow exec_command',
+    });
+    expect(items[0].description).toContain('npm publish --dry-run');
+    expect(items[0].description).toContain('requires confirmation');
+    expect(items[1]).toMatchObject({
+      value: 'deny',
+      label: 'Deny exec_command',
+    });
   });
 
-  it('uses extra cursor restore passes while streaming', () => {
-    expect(getCursorRestoreDelays(true).length).toBeGreaterThan(getCursorRestoreDelays(false).length);
-    expect(getCursorRestoreDelays(true)).toContain(64);
+  it('keeps overlay row budget inside the live terminal frame', () => {
+    const compact = getInkLayoutBudget(80, 20, { overlayVisible: true });
+    const roomy = getInkLayoutBudget(160, 49, { overlayVisible: true });
+
+    expect(compact.maxOverlayItems + compact.maxPromptRows + compact.maxLiveTranscriptItems + 10).toBeLessThanOrEqual(compact.terminalHeight);
+    expect(roomy.maxOverlayItems).toBeLessThanOrEqual(10);
+    expect(roomy.layoutWidth).toBe(159);
+  });
+
+  it('reads terminal size from the active stdout and falls back safely', () => {
+    expect(readTerminalSize({ columns: 120, rows: 42 } as NodeJS.WriteStream)).toEqual({ width: 120, height: 42 });
+    expect(readTerminalSize({ columns: 0, rows: 0 } as NodeJS.WriteStream, { columns: 88, rows: 33 } as NodeJS.WriteStream))
+      .toEqual({ width: 88, height: 33 });
+  });
+
+  it('prepares stdin raw mode before Ink mounts so terminal echo cannot leak into the prompt', () => {
+    const rawModeCalls: boolean[] = [];
+    const stdin: {
+      isTTY: boolean;
+      isRaw: boolean;
+      setEncoding: jest.Mock;
+      resume: jest.Mock;
+      setRawMode: jest.Mock<NodeJS.ReadStream, [boolean]>;
+    } = {
+      isTTY: true,
+      isRaw: false,
+      setEncoding: jest.fn(),
+      resume: jest.fn(),
+      setRawMode: jest.fn((mode: boolean) => {
+        rawModeCalls.push(mode);
+        stdin.isRaw = mode;
+        return stdin as unknown as NodeJS.ReadStream;
+      }),
+    };
+
+    const restore = prepareInkStdin(stdin as unknown as NodeJS.ReadStream);
+
+    expect(stdin.setEncoding).toHaveBeenCalledWith('utf8');
+    expect(stdin.resume).toHaveBeenCalledTimes(1);
+    expect(rawModeCalls).toEqual([true]);
+
+    restore();
+    expect(rawModeCalls).toEqual([true, false]);
+  });
+
+  it('anchors the native cursor after Ink writes and restores baseline before the next frame', async () => {
+    const writes: string[] = [];
+    const stdout = {
+      rows: 20,
+      columns: 80,
+      isTTY: true,
+      write: (chunk: string | Buffer) => {
+        writes.push(String(chunk));
+        return true;
+      },
+      on: jest.fn(),
+      off: jest.fn(),
+    } as unknown as NodeJS.WriteStream;
+
+    const controller = createNativeCursorController(stdout);
+    const wrapped = controller.wrapStdout();
+    controller.setState({ enabled: true, column: 9, rowsUp: 2, row: 8, absolute: true });
+
+    try {
+      wrapped.write('frame');
+      await Promise.resolve();
+      expect(writes).toEqual(['frame', nativeCursorAbsoluteParkSequence({ row: 8, column: 8 })]);
+
+      wrapped.write('next');
+      await Promise.resolve();
+      expect(writes.slice(-3)).toEqual([
+        nativeCursorAbsoluteMoveSequence({ row: 0, column: 5 }),
+        'next',
+        nativeCursorAbsoluteParkSequence({ row: 8, column: 8 }),
+      ]);
+    } finally {
+      controller.disable();
+    }
+  });
+
+  it('uses relative cursor parking by default for normal scrollback startup', async () => {
+    const writes: string[] = [];
+    const stdout = {
+      rows: 20,
+      columns: 80,
+      isTTY: true,
+      write: (chunk: string | Buffer) => {
+        writes.push(String(chunk));
+        return true;
+      },
+      on: jest.fn(),
+      off: jest.fn(),
+    } as unknown as NodeJS.WriteStream;
+
+    const controller = createNativeCursorController(stdout);
+    const wrapped = controller.wrapStdout();
+    controller.setState({ enabled: true, column: 9, rowsUp: 2, row: 8 });
+
+    try {
+      wrapped.write('one\r\ntwo\r\nend');
+      await Promise.resolve();
+      expect(writes).toEqual(['one\r\ntwo\r\nend', nativeCursorParkSequence({ enabled: true, column: 9, rowsUp: 2 })]);
+
+      wrapped.write('next');
+      await Promise.resolve();
+      expect(writes.slice(-3)).toEqual([
+        nativeCursorMoveSequence({ row: 0, column: 8 }, { row: 2, column: 3 }),
+        'next',
+        nativeCursorParkSequence({ enabled: true, column: 9, rowsUp: 2 }),
+      ]);
+    } finally {
+      controller.disable();
+    }
+  });
+
+  it('does not rewrite cursor escape sequences when the native cursor is already parked', () => {
+    const writes: string[] = [];
+    const stdout = {
+      rows: 20,
+      columns: 80,
+      isTTY: true,
+      write: (chunk: string | Buffer) => {
+        writes.push(String(chunk));
+        return true;
+      },
+      on: jest.fn(),
+      off: jest.fn(),
+    } as unknown as NodeJS.WriteStream;
+
+    const controller = createNativeCursorController(stdout);
+    controller.setState({ enabled: true, column: 12, rowsUp: 2, row: 4, absolute: true });
+
+    try {
+      controller.restore();
+      controller.restore();
+      expect(writes).toEqual([nativeCursorAbsoluteParkSequence({ row: 4, column: 11 })]);
+    } finally {
+      controller.disable();
+    }
+  });
+
+  it('keeps native cursor controller state isolated per renderer', () => {
+    const writesA: string[] = [];
+    const writesB: string[] = [];
+    const createStdout = (writes: string[]) => ({
+      rows: 20,
+      columns: 80,
+      isTTY: true,
+      write: (chunk: string | Buffer) => {
+        writes.push(String(chunk));
+        return true;
+      },
+      on: jest.fn(),
+      off: jest.fn(),
+    }) as unknown as NodeJS.WriteStream;
+
+    const controllerA = createNativeCursorController(createStdout(writesA));
+    const controllerB = createNativeCursorController(createStdout(writesB));
+    controllerA.setState({ enabled: true, column: 9, rowsUp: 2, row: 6, absolute: true });
+    controllerB.setState({ enabled: true, column: 12, rowsUp: 3, row: 7, absolute: true });
+
+    controllerA.restore();
+    controllerB.restore();
+    controllerA.disable();
+
+    expect(writesA).toEqual([
+      nativeCursorAbsoluteParkSequence({ row: 6, column: 8 }),
+      nativeCursorAbsoluteMoveSequence({ row: 0, column: 0 }),
+    ]);
+    expect(writesB).toEqual([
+      nativeCursorAbsoluteParkSequence({ row: 7, column: 11 }),
+    ]);
+
+    controllerB.disable();
+  });
+
+  it('resets observed cursor state after an Ink resize viewport clear', async () => {
+    const writes: string[] = [];
+    const stdout = {
+      rows: 20,
+      columns: 80,
+      isTTY: true,
+      write: (chunk: string | Buffer) => {
+        writes.push(String(chunk));
+        return true;
+      },
+      on: jest.fn(),
+      off: jest.fn(),
+    } as unknown as NodeJS.WriteStream;
+
+    const controller = createNativeCursorController(stdout);
+    const wrapped = controller.wrapStdout();
+    controller.setState({ enabled: true, column: 12, rowsUp: 2, row: 6, absolute: true });
+
+    try {
+      wrapped.write('┌────────┐\n│ › hello│\n└────────┘');
+      await Promise.resolve();
+      controller.resetForViewportClear();
+      controller.restore();
+
+      expect(writes.slice(-1)).toEqual([nativeCursorAbsoluteParkSequence({ row: 6, column: 11 })]);
+      expect(writes).not.toContain(nativeCursorAbsoluteMoveSequence({ row: 0, column: 0 }));
+    } finally {
+      controller.disable();
+    }
+  });
+
+  it('tracks terminal cursor output by grapheme cluster', () => {
+    const combining = 'e\u0301';
+    const family = '👨‍👩‍👧‍👦';
+
+    expect(applyTerminalOutputToCursor({ row: 0, column: 0 }, combining, 80))
+      .toEqual({ row: 0, column: 1 });
+    expect(applyTerminalOutputToCursor({ row: 0, column: 0 }, family, 80))
+      .toEqual({ row: 0, column: stringWidth(family) });
+    expect(applyTerminalOutputToCursor({ row: 0, column: 78 }, `${family}x`, 80))
+      .toEqual({ row: 0, column: 79 });
+  });
+
+  it('tracks visual prompt cursor columns with fullwidth Chinese input', () => {
+    const ascii = getPromptInputViewport('ab', 80, 6, 2);
+    const chinese = getPromptInputViewport('你好', 80, 6, 2);
+    const empty = getPromptInputViewport('', 80, 6, 0);
+
+    expect(ascii.cursorColumn).toBe(7);
+    expect(chinese.cursorColumn).toBe(9);
+    expect(empty.cursorColumn).toBe(5);
+  });
+
+  it('parks the native cursor on the prompt content row for IME composition', () => {
+    const singleLine = getPromptInputViewport('hello', 80, 6, 5);
+    const multiLineAtEnd = getPromptInputViewport('one\ntwo', 80, 6, 7);
+    const multiLineAtStart = getPromptInputViewport('one\ntwo', 80, 6, 1);
+
+    expect(singleLine.rowsUpFromPromptBottom).toBe(2);
+    expect(multiLineAtEnd.rowsUpFromPromptBottom).toBe(2);
+    expect(multiLineAtStart.rowsUpFromPromptBottom).toBe(3);
+  });
+
+  it('derives native cursor parking from the prompt box Yoga node when available', () => {
+    const root = {
+      yogaNode: {
+        getComputedLeft: () => 0,
+        getComputedTop: () => 0,
+        getComputedHeight: () => 7,
+      },
+      parentNode: null,
+    };
+    const parent = {
+      yogaNode: {
+        getComputedLeft: () => 0,
+        getComputedTop: () => 2,
+        getComputedHeight: () => 7,
+      },
+      parentNode: root,
+    };
+    const promptBox = {
+      yogaNode: {
+        getComputedLeft: () => 3,
+        getComputedTop: () => 1,
+        getComputedHeight: () => 3,
+      },
+      parentNode: parent,
+    };
+
+    expect(nativeCursorAnchorFromNode(promptBox, { cursorColumn: 5, cursorLineIndex: 0 }))
+      .toEqual({ column: 8, row: 4, rowsUp: 3 });
   });
 
   it('pads live prompt lines to the full input width', () => {
@@ -89,13 +403,125 @@ describe('Ink UI helpers', () => {
     expect(line.length).toBeGreaterThan('› 你好'.length);
   });
 
+  it('can render a visual cursor when explicitly requested', () => {
+    const line = formatPromptVisualLine({ logicalIndex: 0, wrapIndex: 0, content: '', start: 0, end: 0 }, 20, { showCursor: true });
+
+    expect(line.startsWith('› ▌')).toBe(true);
+  });
+
+  it('renders the visual cursor at the active edit offset', () => {
+    const line = formatPromptVisualLine(
+      { logicalIndex: 0, wrapIndex: 0, content: 'abcd', start: 0, end: 4 },
+      20,
+      { showCursor: true, cursorOffset: 2 }
+    );
+
+    expect(line.startsWith('› ab▌cd')).toBe(true);
+  });
+
   it('soft-wraps long prompt input before it reaches the footer', () => {
     const visualLines = getPromptVisualLines('abcdefghij', 12);
-    const cursor = getPromptCursorPosition('abcdefghij', 24, 12);
+    const viewport = getPromptInputViewport('abcdefghij', 12, 6, 10);
 
     expect(visualLines.length).toBeGreaterThan(1);
-    expect(cursor.row).toBe(23);
-    expect(cursor.column).toBeGreaterThan(4);
+    expect(viewport.cursorColumn).toBeGreaterThan(4);
+  });
+
+  it('renders only the tail of very tall prompt input', () => {
+    const { lines, hiddenRows } = getVisiblePromptVisualLines('one\ntwo\nthree\nfour', 40, 2);
+
+    expect(hiddenRows).toBe(2);
+    expect(lines.map(line => line.content)).toEqual(['three', 'four']);
+  });
+
+  it('keeps prompt viewport within the row budget including the hidden indicator', () => {
+    const viewport = getPromptInputViewport('one\ntwo\nthree\nfour', 40, 3);
+
+    expect(viewport.showHiddenIndicator).toBe(true);
+    expect(viewport.hiddenRows).toBe(2);
+    expect(viewport.lines.map(line => line.content)).toEqual(['three', 'four']);
+    expect(viewport.lines.length + 1).toBeLessThanOrEqual(3);
+  });
+
+  it('keeps the prompt viewport centered around an earlier cursor', () => {
+    const viewport = getPromptInputViewport('one\ntwo\nthree\nfour', 40, 3, 1);
+
+    expect(viewport.lines.map(line => line.content)).toEqual(['one', 'two']);
+    expect(viewport.cursorLineIndex).toBe(1);
+    expect(viewport.cursorColumn).toBe(6);
+  });
+
+  it('edits input at the cursor instead of always appending', () => {
+    const draft = reduceInputBuffer(initialInputBuffer, { type: 'set', value: 'helo', cursor: 2 });
+    const inserted = reduceInputBuffer(draft, { type: 'insert', text: 'l' });
+    const removed = reduceInputBuffer(inserted, { type: 'backspace' });
+    const deleted = reduceInputBuffer({ value: 'abcd', cursor: 1 }, { type: 'delete' });
+    const cjkRemoved = reduceInputBuffer({ value: '开源小？事收到', cursor: '开源小？事收到'.length }, { type: 'backspace' });
+
+    expect(inserted).toEqual({ value: 'hello', cursor: 3 });
+    expect(removed).toEqual({ value: 'helo', cursor: 2 });
+    expect(deleted).toEqual({ value: 'acd', cursor: 1 });
+    expect(cjkRemoved).toEqual({ value: '开源小？事收', cursor: '开源小？事收'.length });
+  });
+
+  it('calculates grapheme boundaries for combining marks and emoji sequences', () => {
+    const combining = 'e\u0301';
+    const family = '👨‍👩‍👧‍👦';
+    const value = `${combining}${family}z`;
+
+    expect(segmentGraphemes(value).map(part => part.segment)).toEqual([combining, family, 'z']);
+    expect(previousGraphemeBoundary(value, combining.length + family.length)).toBe(combining.length);
+    expect(nextGraphemeBoundary(value, combining.length)).toBe(combining.length + family.length);
+    expect(floorGraphemeBoundary(value, combining.length + 1)).toBe(combining.length);
+    expect(floorGraphemeBoundary(value, combining.length + family.length)).toBe(combining.length + family.length);
+  });
+
+  it('edits by grapheme cluster so emoji and combining marks are not split', () => {
+    const combining = 'e\u0301';
+    const family = '👨‍👩‍👧‍👦';
+
+    expect(reduceInputBuffer({ value: combining, cursor: combining.length }, { type: 'backspace' }))
+      .toEqual({ value: '', cursor: 0 });
+    expect(reduceInputBuffer({ value: family, cursor: family.length }, { type: 'backspace' }))
+      .toEqual({ value: '', cursor: 0 });
+    expect(reduceInputBuffer({ value: `${family}x`, cursor: 0 }, { type: 'delete' }))
+      .toEqual({ value: 'x', cursor: 0 });
+    expect(reduceInputBuffer({ value: `${family}x`, cursor: `${family}x`.length }, { type: 'move', direction: 'left' }).cursor)
+      .toBe(family.length);
+  });
+
+  it('wraps prompt input by grapheme cluster instead of splitting emoji sequences', () => {
+    const family = '👨‍👩‍👧‍👦';
+    const chunks = splitByVisualWidth(`a${family}b`, 2);
+
+    expect(chunks).toEqual(['a', family, 'b']);
+  });
+
+  it('parses mixed text and arrow escape sequences in one input chunk', () => {
+    const edited = reduceInputBuffer(initialInputBuffer, { type: 'inputChunk', text: 'helo\x1b[D\x1b[Dl' });
+    const deleted = reduceInputBuffer(initialInputBuffer, { type: 'inputChunk', text: 'ab\x1b[D\x1b[3~' });
+    const pastedWithControl = reduceInputBuffer({ value: '/', cursor: 1 }, { type: 'inputChunk', text: '\x7fone\ntwo' });
+    const clearedThenInserted = reduceInputBuffer({ value: 'draft', cursor: 5 }, { type: 'inputChunk', text: '\x15abc' });
+    const ignoredControl = reduceInputBuffer(initialInputBuffer, { type: 'inputChunk', text: '\x16abc' });
+
+    expect(edited).toEqual({ value: 'hello', cursor: 3 });
+    expect(deleted).toEqual({ value: 'a', cursor: 1 });
+    expect(pastedWithControl).toEqual({ value: 'one\ntwo', cursor: 7 });
+    expect(clearedThenInserted).toEqual({ value: 'abc', cursor: 3 });
+    expect(ignoredControl).toEqual({ value: 'abc', cursor: 3 });
+  });
+
+  it('normalizes running status into a horse animation label', () => {
+    expect(runningHorseLabel('Turn 2...')).toBe('working');
+    expect(runningHorseLabel('Revision received. Interrupting current response...')).toBe('Revision received. Interrupting current response...');
+  });
+
+  it('uses stable-width running horse frames with moving dust', () => {
+    const frames = [0, 1, 2, 3].map(getRunningHorseFrame);
+    const widths = new Set(frames.map(frame => stringWidth(`${frame.horse} ${frame.dust}`)));
+
+    expect(widths.size).toBe(1);
+    expect(new Set(frames.map(frame => frame.dust)).size).toBeGreaterThan(1);
   });
 
   it('recognizes rich markdown blocks for Ink transcript rendering', () => {
@@ -116,6 +542,49 @@ describe('Ink UI helpers', () => {
     expect(blocks).toEqual(expect.arrayContaining(['heading', 'list', 'code', 'table']));
   });
 
+  it('decodes html entities in assistant markdown text', () => {
+    expect(decodeHtmlEntities('I see you&#39;ve entered &quot;111&quot; &amp; more.')).toBe('I see you\'ve entered "111" & more.');
+    expect(decodeHtmlEntities('numeric: &#8226; &#x2022;')).toBe('numeric: • •');
+  });
+
+  it('parses tool activity transcript entries into stable UI summaries', () => {
+    expect(parseToolActivity('Running read_file src/index.ts')).toEqual({
+      state: 'running',
+      name: 'read_file',
+      detail: 'src/index.ts',
+    });
+    expect(parseToolActivity('✓ read_file src/index.ts (12ms)')).toEqual({
+      state: 'success',
+      name: 'read_file',
+      detail: 'src/index.ts',
+      duration: '12ms',
+    });
+    expect(parseToolActivity('✗ web_search agent trends (345ms)\nError: fetch failed')).toEqual({
+      state: 'error',
+      name: 'web_search',
+      detail: 'agent trends',
+      duration: '345ms',
+      error: 'fetch failed',
+    });
+    expect(parseToolActivity('Requested list_files /tmp/project')).toEqual({
+      state: 'requested',
+      name: 'list_files',
+      detail: '/tmp/project',
+    });
+  });
+
+  it('formats tool activity lines within the available transcript width', () => {
+    const line = formatToolActivityLine({
+      state: 'success',
+      name: 'read_file',
+      detail: '/Users/hope/ai-project/openhorse/src/ink-ui/screens/ReplScreen.tsx',
+      duration: '12ms',
+    }, 32);
+
+    expect(stringWidth(line)).toBeLessThanOrEqual(32);
+    expect(line).toContain('read_file');
+  });
+
   it('keeps tool events between assistant stream segments', () => {
     const entries: TranscriptEntry[] = [];
     const events: UiEventSink = {
@@ -130,6 +599,9 @@ describe('Ink UI helpers', () => {
           entries[index] = { ...entries[index], ...patch };
         }
       },
+      finalize: jest.fn(),
+      remove: jest.fn(),
+      replaceTranscript: jest.fn(),
       clearTranscript: jest.fn(),
       setStatus: jest.fn(),
       showSessionPicker: jest.fn(),
@@ -141,13 +613,70 @@ describe('Ink UI helpers', () => {
     presenter.closeSegment();
     events.append({ role: 'tool', content: 'Running read_file src/index.ts' });
     presenter.appendChunk('再给结论');
+    presenter.closeSegment();
 
     expect(entries.map(entry => entry.role)).toEqual(['assistant', 'tool', 'assistant']);
     expect(entries.map(entry => entry.content)).toEqual(['先说明', 'Running read_file src/index.ts', '再给结论']);
+    expect(events.finalize).toHaveBeenCalledWith('entry-1');
+  });
+
+  it('updates one live assistant entry while streaming chunks', () => {
+    const entries: TranscriptEntry[] = [];
+    const events: UiEventSink = {
+      append: entry => {
+        const id = `entry-${entries.length + 1}`;
+        entries.push({ id, ...entry });
+        return id;
+      },
+      update: (id, patch) => {
+        const index = entries.findIndex(entry => entry.id === id);
+        if (index >= 0) entries[index] = { ...entries[index], ...patch };
+      },
+      finalize: jest.fn(),
+      remove: jest.fn(),
+      replaceTranscript: jest.fn(),
+      clearTranscript: jest.fn(),
+      setStatus: jest.fn(),
+      showSessionPicker: jest.fn(),
+      setProcessing: jest.fn(),
+    };
+
+    const presenter = createAssistantStreamPresenter(events);
+    presenter.appendChunk('hello');
+    presenter.appendChunk(' world');
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0].content).toBe('hello world');
+
+    presenter.closeSegment();
+    expect(events.finalize).toHaveBeenCalledWith('entry-1');
+  });
+
+  it('removes an unfinished assistant stream when discarded', () => {
+    const events: UiEventSink = {
+      append: jest.fn(() => 'entry-1'),
+      update: jest.fn(),
+      finalize: jest.fn(),
+      remove: jest.fn(),
+      replaceTranscript: jest.fn(),
+      clearTranscript: jest.fn(),
+      setStatus: jest.fn(),
+      showSessionPicker: jest.fn(),
+      setProcessing: jest.fn(),
+    };
+
+    const presenter = createAssistantStreamPresenter(events);
+    presenter.appendChunk('partial output');
+    presenter.discardSegment();
+
+    expect(events.append).toHaveBeenCalledWith(expect.objectContaining({ role: 'assistant', live: true }));
+    expect(events.remove).toHaveBeenCalledWith('entry-1');
+    expect(events.finalize).not.toHaveBeenCalled();
   });
 
   it('updates a running tool entry when the matching result arrives', () => {
     const entries: TranscriptEntry[] = [];
+    const finalized: Array<{ id: string; patch?: Partial<Omit<TranscriptEntry, 'id'>> }> = [];
     const events: UiEventSink = {
       append: entry => {
         const id = `entry-${entries.length + 1}`;
@@ -160,6 +689,16 @@ describe('Ink UI helpers', () => {
           entries[index] = { ...entries[index], ...patch };
         }
       },
+      finalize: (id, patch) => {
+        finalized.push({ id, patch });
+        if (!patch) return;
+        const index = entries.findIndex(entry => entry.id === id);
+        if (index >= 0) {
+          entries[index] = { ...entries[index], ...patch };
+        }
+      },
+      remove: jest.fn(),
+      replaceTranscript: jest.fn(),
       clearTranscript: jest.fn(),
       setStatus: jest.fn(),
       showSessionPicker: jest.fn(),
@@ -186,5 +725,164 @@ describe('Ink UI helpers', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].role).toBe('tool');
     expect(entries[0].content).toContain('✓ read_file src/index.ts (12ms)');
+    expect(finalized).toHaveLength(1);
+    expect(finalized[0].id).toBe('entry-1');
+  });
+
+  it('uses common tool argument keys in activity summaries', () => {
+    const entries: TranscriptEntry[] = [];
+    const events: UiEventSink = {
+      append: entry => {
+        const id = `entry-${entries.length + 1}`;
+        entries.push({ id, ...entry });
+        return id;
+      },
+      update: jest.fn(),
+      finalize: jest.fn(),
+      remove: jest.fn(),
+      replaceTranscript: jest.fn(),
+      clearTranscript: jest.fn(),
+      setStatus: jest.fn(),
+      showSessionPicker: jest.fn(),
+      setProcessing: jest.fn(),
+    };
+
+    const presenter = createToolEventPresenter(events);
+    presenter.start({
+      type: 'tool_call',
+      name: 'read_file',
+      args: { file_path: 'src/ink-ui/components/ToolActivity.tsx' },
+      callId: 'call-file-path',
+    });
+    presenter.start({
+      type: 'tool_call',
+      name: 'web_search',
+      args: { query: 'codex tui tool activity' },
+      callId: 'call-query',
+    });
+
+    expect(entries.map(entry => entry.content)).toEqual([
+      'Running read_file src/ink-ui/components/ToolActivity.tsx',
+      'Running web_search codex tui tool activity',
+    ]);
+  });
+
+  it('keeps transcript order while a tool is running between assistant segments', () => {
+    let state = initialTranscriptState;
+    state = transcriptReducer(state, { type: 'append', entry: { id: 'assistant-1', role: 'assistant', content: 'before tool' } });
+    state = transcriptReducer(state, { type: 'append', entry: { id: 'tool-1', role: 'tool', content: 'Running read_file src/index.ts' } });
+    state = transcriptReducer(state, { type: 'append', entry: { id: 'assistant-2', role: 'assistant', content: 'after tool' } });
+
+    expect(staticTranscriptEntries(state).map(entry => entry.id)).toEqual(['assistant-1']);
+    expect(liveTranscriptEntries(state).map(entry => entry.id)).toEqual(['tool-1', 'assistant-2']);
+
+    state = transcriptReducer(state, {
+      type: 'finalize',
+      id: 'tool-1',
+      patch: { role: 'tool', content: '✓ read_file src/index.ts (3ms)' },
+    });
+
+    expect(staticTranscriptEntries(state).map(entry => entry.id)).toEqual(['assistant-1', 'tool-1', 'assistant-2']);
+    expect(liveTranscriptEntries(state)).toEqual([]);
+  });
+
+  it('rebuilds resumed transcript and hides messages before compact boundary', () => {
+    const configDir = mkdtempSync(join(tmpdir(), 'openhorse-ink-session-'));
+    const originalConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+    process.env.OPENHORSE_CONFIG_DIR = configDir;
+
+    try {
+      const session = createSession('/tmp/openhorse-ink-resume', 'glm-5');
+      appendSessionMessage(session.id, { role: 'user', content: 'before compact', timestamp: 1000 });
+      appendSessionMessage(session.id, { role: 'assistant', content: 'old answer', timestamp: 1001 });
+      markSessionTranscriptDisplayStart(session.id, 2000);
+      appendSessionMessage(session.id, { role: 'user', content: 'after compact', timestamp: 2001 });
+      appendSessionMessage(session.id, { role: 'assistant', content: 'new answer', timestamp: 2002 });
+
+      const entries = sessionMessagesToTranscriptEntries(session.id);
+
+      expect(entries.map(entry => entry.content)).toEqual(['after compact', 'new answer']);
+    } finally {
+      if (originalConfigDir === undefined) {
+        delete process.env.OPENHORSE_CONFIG_DIR;
+      } else {
+        process.env.OPENHORSE_CONFIG_DIR = originalConfigDir;
+      }
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rebuilds full resumed transcript when there is no compact boundary', () => {
+    const configDir = mkdtempSync(join(tmpdir(), 'openhorse-ink-session-'));
+    const originalConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+    process.env.OPENHORSE_CONFIG_DIR = configDir;
+
+    try {
+      const session = createSession('/tmp/openhorse-ink-full-resume', 'glm-5');
+      appendSessionMessage(session.id, { role: 'user', content: 'first question', timestamp: 1000 });
+      appendSessionMessage(session.id, { role: 'assistant', content: 'first answer', timestamp: 1001 });
+      appendSessionMessage(session.id, { role: 'user', content: 'second question', timestamp: 1002 });
+      appendSessionMessage(session.id, { role: 'assistant', content: 'second answer', timestamp: 1003 });
+
+      const entries = sessionMessagesToTranscriptEntries(session.id);
+
+      expect(entries.map(entry => entry.content)).toEqual([
+        'first question',
+        'first answer',
+        'second question',
+        'second answer',
+      ]);
+    } finally {
+      if (originalConfigDir === undefined) {
+        delete process.env.OPENHORSE_CONFIG_DIR;
+      } else {
+        process.env.OPENHORSE_CONFIG_DIR = originalConfigDir;
+      }
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rebuilds completed tool calls in resumed transcript as tool activity rows', () => {
+    const configDir = mkdtempSync(join(tmpdir(), 'openhorse-ink-session-tools-'));
+    const originalConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+    process.env.OPENHORSE_CONFIG_DIR = configDir;
+
+    try {
+      const session = createSession('/tmp/openhorse-ink-tool-resume', 'glm-5');
+      appendSessionMessage(session.id, { role: 'user', content: 'inspect files', timestamp: 1000 });
+      appendSessionMessage(session.id, {
+        role: 'assistant',
+        content: 'I will inspect files first.',
+        timestamp: 1001,
+        tool_calls: [{
+          id: 'call-list-files',
+          type: 'function',
+          function: { name: 'list_files', arguments: '{"path":".","maxDepth":0}' },
+        }],
+      });
+      appendSessionMessage(session.id, {
+        role: 'tool',
+        content: '{"success":true,"output":"package.json"}',
+        timestamp: 1002,
+        toolCallId: 'call-list-files',
+      });
+      appendSessionMessage(session.id, { role: 'assistant', content: 'Done.', timestamp: 1003 });
+
+      const entries = sessionMessagesToTranscriptEntries(session.id);
+
+      expect(entries.map(entry => entry.content)).toEqual([
+        'inspect files',
+        'I will inspect files first.',
+        '✓ list_files .',
+        'Done.',
+      ]);
+    } finally {
+      if (originalConfigDir === undefined) {
+        delete process.env.OPENHORSE_CONFIG_DIR;
+      } else {
+        process.env.OPENHORSE_CONFIG_DIR = originalConfigDir;
+      }
+      rmSync(configDir, { recursive: true, force: true });
+    }
   });
 });

@@ -21,8 +21,12 @@ export interface PromptContext {
   memoryContent?: string;
   /** Pre-rendered skills section (e.g. from SkillsRegistry.generateSystemPromptInjection) */
   skillsContent?: string;
+  /** Repository guidance loaded from files such as AGENTS.md / CLAUDE.md */
+  projectInstructionsContent?: string;
   /** Full SKILL.md prompts activated for the current turn. */
   activeSkillsContent?: string;
+  /** Files explicitly referenced by the user with @path in the current turn. */
+  referencedFilesContent?: string;
 }
 
 /** A named prompt section */
@@ -75,6 +79,14 @@ Use tools when they help complete the task. Prefer the right tool for the job.`;
 - Node.js: ${ctx.nodeVersion}`,
   },
   {
+    name: 'project_instructions',
+    dynamic: true,
+    render: (ctx) => {
+      if (!ctx.projectInstructionsContent) return '';
+      return ctx.projectInstructionsContent;
+    },
+  },
+  {
     name: 'memory',
     dynamic: true,
     render: (ctx) => {
@@ -96,6 +108,14 @@ Use tools when they help complete the task. Prefer the right tool for the job.`;
     render: (ctx) => {
       if (!ctx.activeSkillsContent) return '';
       return ctx.activeSkillsContent;
+    },
+  },
+  {
+    name: 'referenced_files',
+    dynamic: true,
+    render: (ctx) => {
+      if (!ctx.referencedFilesContent) return '';
+      return ctx.referencedFilesContent;
     },
   },
 ];
