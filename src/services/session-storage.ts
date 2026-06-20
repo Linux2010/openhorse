@@ -671,6 +671,74 @@ export function appendSessionMessages(sessionId: string, messages: SessionMessag
   }
 }
 
+function isFinalAssistantMessage(message: SessionMessage): boolean {
+  return message.role === 'assistant' && (!message.tool_calls || message.tool_calls.length === 0);
+}
+
+function findLastCompleteBoundary(messages: SessionMessage[]): number {
+  const lastUserIndex = messages.map(message => message.role).lastIndexOf('user');
+  if (lastUserIndex < 0) {
+    return messages.length;
+  }
+
+  const tail = messages.slice(lastUserIndex + 1);
+  return tail.some(isFinalAssistantMessage) ? messages.length : lastUserIndex;
+}
+
+function overwriteSessionMessages(sessionId: string, messages: SessionMessage[]): void {
+  ensureConfigDir();
+  const session = loadSessionMeta(sessionId);
+  const content = messages.length > 0 ? messages.map(message => JSON.stringify(message)).join('\n') + '\n' : '';
+
+  const paths = session
+    ? [getProjectSessionMessagesPath(session.projectPath, sessionId)]
+    : [getSessionMessagesPath(sessionId)];
+
+  if (session) {
+    ensureProjectDir(session.projectPath);
+  }
+
+  for (const path of uniquePaths(paths)) {
+    atomicWriteFileSync(path, content, { mode: 0o600 });
+  }
+
+  if (session) {
+    deleteSessionIndex(sessionId, session.projectPath);
+    for (const message of messages) {
+      updateSessionIndex(sessionId, session.projectPath, message);
+    }
+    session.messageCount = messages.length;
+    session.updatedAt = Date.now();
+    session.updatedAtIso = new Date(session.updatedAt).toISOString();
+    saveSessionMeta(session);
+  }
+}
+
+/**
+ * Remove a trailing incomplete turn from the persisted session transcript.
+ *
+ * A complete turn ends with a final assistant message without tool calls. If an
+ * abort happens after the user message, or after assistant/tool intermediates
+ * but before the final assistant answer, the tail is removed so resume does not
+ * resurrect partial state.
+ */
+export function truncateSessionToLastComplete(sessionId: string): SessionMessage[] {
+  const messages = readSessionMessages(sessionId);
+  const boundary = findLastCompleteBoundary(messages);
+
+  if (boundary === messages.length) {
+    return messages;
+  }
+
+  const truncated = messages.slice(0, boundary);
+  overwriteSessionMessages(sessionId, truncated);
+  return truncated;
+}
+
+export function removeLastIncompleteAssistantMessage(sessionId: string): SessionMessage[] {
+  return truncateSessionToLastComplete(sessionId);
+}
+
 /**
  * 读取会话消息
  */

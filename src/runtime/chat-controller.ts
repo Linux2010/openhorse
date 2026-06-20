@@ -10,13 +10,14 @@ import {
   loadSessionHarnessState,
   loadSessionHistory,
   loadSessionMeta,
+  removeLastIncompleteAssistantMessage,
   readSessionMessages,
   updateSessionHarnessState,
   updateSessionSkills,
   updateSessionSummary,
 } from '../services/session-storage';
 import { isConfigured } from '../services/config';
-import { query, getSystemPrompt, type PromptContext, type QueryEvent } from '../framework';
+import { query, buildSystemPrompt, type PromptContext, type QueryEvent } from '../framework';
 import { createContextHarness } from '../harness';
 import { executeTool, getRuntimeTools } from '../tools';
 import { resolveSkillsForTurn, hasMatchingSkill } from '../skills';
@@ -94,6 +95,16 @@ function parseSessionToolResult(content: string): { success: boolean; error?: st
     };
   } catch {
     return { success: false, error: 'Invalid JSON result' };
+  }
+}
+
+function removeTrailingUserMessage(runtime: OpenHorseUiRuntime): void {
+  const history = runtime.store.getSnapshot().conversationHistory;
+  if (history.length === 0) return;
+
+  const lastMsg = history[history.length - 1];
+  if (lastMsg?.role === 'user') {
+    runtime.store.setState({ conversationHistory: history.slice(0, -1) });
   }
 }
 
@@ -490,8 +501,12 @@ export class AgentChatController {
       activeSkillsContent: skillResolution.promptInjection,
       referencedFilesContent: buildReferencedFilesPrompt(input, this.runtime.cwd),
     };
-    const systemPrompt = getSystemPrompt(promptCtx);
-    const messages: Message[] = [{ role: 'system', content: systemPrompt }, ...snapshot.conversationHistory];
+    const systemPrompt = buildSystemPrompt(promptCtx);
+    const messages: Message[] = [
+      { role: 'system', content: systemPrompt.static },
+      ...(systemPrompt.dynamic ? [{ role: 'system' as const, content: systemPrompt.dynamic }] : []),
+      ...snapshot.conversationHistory,
+    ];
 
     let finalContent = '';
     let finalUsage: { promptTokens: number; completionTokens: number } | undefined;
@@ -595,14 +610,9 @@ export class AgentChatController {
       if (wasAborted) {
         assistantStream.discardSegment();
         this.events.setStatus('Interrupted.');
-        // Clean up: remove the incomplete user+assistant pair from store
-        const history = this.runtime.store.getSnapshot().conversationHistory;
-        if (history.length >= 1) {
-          const lastMsg = history[history.length - 1];
-          // Remove user message if the last assistant was already completed
-          if (lastMsg?.role === 'user') {
-            this.runtime.store.setState({ conversationHistory: history.slice(0, -1) });
-          }
+        removeTrailingUserMessage(this.runtime);
+        if (sessionId) {
+          removeLastIncompleteAssistantMessage(sessionId);
         }
         return;
       }
@@ -642,6 +652,10 @@ export class AgentChatController {
       if (isAbortError(error, abortSignal)) {
         assistantStream.discardSegment();
         this.events.setStatus('Interrupted.');
+        removeTrailingUserMessage(this.runtime);
+        if (sessionId) {
+          removeLastIncompleteAssistantMessage(sessionId);
+        }
         return;
       }
 

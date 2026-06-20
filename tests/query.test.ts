@@ -163,6 +163,57 @@ describe('query generator', () => {
     expect(toolResult.outputBytes).toBe(12);
   });
 
+  test('runs concurrency-safe tool calls in parallel and preserves result order', async () => {
+    const safeTools = ['glob', 'grep'].map(name => buildTool({
+      name,
+      description: `Run ${name}`,
+      parameters: {
+        type: 'object',
+        properties: { pattern: { type: 'string', description: 'Pattern' } },
+        required: ['pattern'],
+      },
+      execute: async () => ({ success: true, output: 'ok' }),
+      isConcurrencySafe: () => true,
+      isReadOnly: () => true,
+    }));
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          { id: 'call-1', type: 'function', function: { name: 'glob', arguments: '{"pattern":"*.ts"}' } },
+          { id: 'call-2', type: 'function', function: { name: 'grep', arguments: '{"pattern":"needle"}' } },
+        ],
+      },
+      { content: 'Done', model: 'test-model' },
+    ]);
+    let active = 0;
+    let maxActive = 0;
+    const events: QueryEvent[] = [];
+
+    for await (const event of query({
+      messages: [
+        { role: 'system', content: 'You are a bot.' },
+        { role: 'user', content: 'Search' },
+      ],
+      tools: safeTools,
+      toolExecutor: async (name) => {
+        active++;
+        maxActive = Math.max(maxActive, active);
+        await new Promise(resolve => setTimeout(resolve, name === 'glob' ? 30 : 10));
+        active--;
+        return JSON.stringify({ success: true, output: name });
+      },
+      llm,
+    })) {
+      events.push(event);
+    }
+
+    expect(maxActive).toBe(2);
+    expect(events.filter(event => event.type === 'tool_result').map(event => (event as Extract<QueryEvent, { type: 'tool_result' }>).name))
+      .toEqual(['glob', 'grep']);
+  });
+
   test('respects abort signal', async () => {
     const controller = new AbortController();
     controller.abort();

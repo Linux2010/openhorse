@@ -355,6 +355,34 @@ describe('edit_file tool', () => {
     expect(result.error).toContain('Fuzzy match found');
   });
 
+  test('previews ambiguous fuzzy matches without writing', async () => {
+    const testFile = path.join(testDir, 'test-edit-fuzzy-preview.txt');
+    const original = [
+      'function foo() {',
+      '  return 1;',
+      '}',
+      'function foo() {',
+      '  return 2;',
+      '}',
+      '',
+    ].join('\n');
+    fs.writeFileSync(testFile, original, 'utf-8');
+
+    const result = await tool.execute({
+      path: testFile,
+      old_string: 'function foo() { return',
+      new_string: 'function bar() { return',
+      fuzzy_match: true,
+      replace_all: true,
+      preview: true,
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('Fuzzy');
+    expect(result.output).toContain('candidates (2)');
+    expect(fs.readFileSync(testFile, 'utf-8')).toBe(original);
+  });
+
   test('rejects multiple matches without replace_all', async () => {
     const testFile = path.join(testDir, 'test-edit-multi.txt');
     fs.writeFileSync(testFile, 'hello hello hello', 'utf-8');
@@ -362,6 +390,22 @@ describe('edit_file tool', () => {
     const result = await tool.execute({ path: testFile, old_string: 'hello', new_string: 'hi' }, ctx);
     expect(result.success).toBe(false);
     expect(result.error).toContain('3 times');
+  });
+
+  test('previews exact multiple matches without writing', async () => {
+    const testFile = path.join(testDir, 'test-edit-preview-multi.txt');
+    fs.writeFileSync(testFile, 'hello hello hello', 'utf-8');
+
+    const result = await tool.execute({
+      path: testFile,
+      old_string: 'hello',
+      new_string: 'hi',
+      preview: true,
+    }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('Exact match candidates (3)');
+    expect(fs.readFileSync(testFile, 'utf-8')).toBe('hello hello hello');
   });
 
   test('replaces all with replace_all=true', async () => {

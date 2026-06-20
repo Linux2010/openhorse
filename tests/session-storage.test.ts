@@ -11,6 +11,7 @@ import {
   appendSessionMessage,
   appendSessionMessages,
   readSessionMessages,
+  truncateSessionToLastComplete,
   listProjectSessions,
   findSession,
   lookupSessionRef,
@@ -24,7 +25,7 @@ import {
   type HistoryEntry,
   type SessionMessage,
 } from '../src/services/session-storage';
-import { loadSessionIndex } from '../src/services/session-index';
+import { loadSessionIndex, searchSessions } from '../src/services/session-index';
 import { createContextHarness } from '../src/harness';
 import { existsSync, readFileSync, rmSync, realpathSync, writeFileSync } from 'fs';
 import { join } from 'path';
@@ -429,6 +430,60 @@ describe('session-storage', () => {
       expect(index?.topics).toContain('batch topic');
       expect(index?.tools.read_file).toBe(1);
       expect(index?.files).toContain('src/index.ts');
+    });
+
+    test('truncateSessionToLastComplete removes trailing aborted turn and rebuilds index', () => {
+      const session = createSession('/tmp/project-truncate-abort', 'gpt-4o');
+      appendSessionMessages(session.id, [
+        {
+          role: 'user',
+          content: 'complete topic',
+          timestamp: Date.now(),
+        },
+        {
+          role: 'assistant',
+          content: 'complete answer',
+          timestamp: Date.now(),
+        },
+        {
+          role: 'user',
+          content: 'aborted topic',
+          timestamp: Date.now(),
+        },
+      ]);
+
+      const truncated = truncateSessionToLastComplete(session.id);
+      const persisted = readSessionMessages(session.id);
+      const meta = loadSessionMeta(session.id);
+      const index = loadSessionIndex(session.id, '/tmp/project-truncate-abort');
+
+      expect(truncated.map(message => message.content)).toEqual(['complete topic', 'complete answer']);
+      expect(persisted).toHaveLength(2);
+      expect(meta?.messageCount).toBe(2);
+      expect(index?.topics).toContain('complete topic');
+      expect(index?.topics).not.toContain('aborted topic');
+    });
+
+    test('searchSessions can search candidates across project indexes', () => {
+      const authSession = createSession('/tmp/project-search-auth', 'gpt-4o');
+      const billingSession = createSession('/tmp/project-search-billing', 'gpt-4o');
+      appendSessionMessage(authSession.id, {
+        role: 'user',
+        content: 'fix auth flow',
+        timestamp: Date.now(),
+      });
+      appendSessionMessage(billingSession.id, {
+        role: 'user',
+        content: 'fix billing flow',
+        timestamp: Date.now(),
+      });
+
+      const matches = searchSessions('billing', [
+        { id: authSession.id, projectPath: authSession.projectPath },
+        { id: billingSession.id, projectPath: billingSession.projectPath },
+      ]);
+
+      expect(matches).toEqual([billingSession.id]);
     });
 
     test('lookupSessionRef reports ambiguous id prefixes', () => {

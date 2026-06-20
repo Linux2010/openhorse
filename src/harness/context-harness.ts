@@ -118,18 +118,15 @@ export class ContextHarness {
 
     const cloned = messages.map(message => ({ ...message }));
 
-    // Inject harness context as a user/assistant pair AFTER the system message
-    // This keeps the system message stable across turns for prompt caching
-    const systemIndex = cloned.findIndex(message => message.role === 'system');
-    const insertIndex = systemIndex >= 0 ? systemIndex + 1 : 0;
+    // Inject dynamic harness context after the stable system prefix. Keeping
+    // the first system message stable allows provider-side prompt caching
+    // without polluting the durable user/assistant transcript.
+    const firstNonSystemIndex = cloned.findIndex(message => message.role !== 'system');
+    const insertIndex = firstNonSystemIndex >= 0 ? firstNonSystemIndex : cloned.length;
 
     cloned.splice(insertIndex, 0, {
-      role: 'user',
+      role: 'system',
       content: built.text,
-    });
-    cloned.splice(insertIndex + 1, 0, {
-      role: 'assistant',
-      content: 'I will continue with the current context harness state.',
     });
 
     return cloned;

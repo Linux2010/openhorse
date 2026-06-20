@@ -16,12 +16,20 @@ export interface ToolState {
   todos: TodoItem[];
   planMode: boolean;
   currentPlan: string | null;
+  lastEditFileArgs: {
+    path: string;
+    old_string: string;
+    new_string: string;
+    replace_all?: boolean;
+    fuzzy_match?: boolean;
+  } | null;
 }
 
 const initialState: ToolState = {
   todos: [],
   planMode: false,
   currentPlan: null,
+  lastEditFileArgs: null,
 };
 
 let state: ToolState = { ...initialState };

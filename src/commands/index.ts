@@ -24,7 +24,7 @@ import { createStreamRenderer, type StreamMarkdownRenderer } from '../ui/stream-
 import { showProgress, hideProgress, showToolProgress } from '../ui/progress';
 import { renderSessionPicker } from '../ui-v2';
 import { formatBytes } from '../ui-v2/state/sessions';
-import { query, getSystemPrompt, resetToolState, type QueryEvent, type PromptContext } from '../framework';
+import { query, getSystemPrompt, resetToolState, getToolState, type QueryEvent, type PromptContext } from '../framework';
 import { executeTool, getRuntimeTools, getToolNames } from '../tools';
 import { mcpManager } from '../tools/mcp';
 import type { Message, StreamCallbacks } from '../services/llm';
@@ -49,7 +49,7 @@ import {
   type SessionMeta,
   type SessionMessage,
 } from '../services/session-storage';
-import { searchSessions } from '../services/session-index';
+import { loadSessionIndex, searchSessions } from '../services/session-index';
 import { getAutoCompact } from '../services/compact/auto-compact';
 import { createContextHarness } from '../harness';
 import { resolveSkillsForTurn } from '../skills';
@@ -1478,7 +1478,7 @@ function truncateText(text: string, max: number): string {
   return text.length > max ? text.slice(0, max - 3) + '...' : text;
 }
 
-function printSessionRows(sessions: SessionMeta[], options: { showProject?: boolean; indexed?: boolean } = {}): void {
+function printSessionRows(sessions: SessionMeta[], options: { showProject?: boolean; indexed?: boolean; showIndexSummary?: boolean } = {}): void {
   for (let i = 0; i < sessions.length; i++) {
     const session = sessions[i];
     const startTime = new Date(session.startTime).toLocaleString();
@@ -1494,6 +1494,15 @@ function printSessionRows(sessions: SessionMeta[], options: { showProject?: bool
     console.log(`    ${truncateText(sessionTitle(session), 96)}`);
     console.log(`    ${DIM(`Started: ${startTime}`)} ${DIM(`Updated: ${updatedTime}`)} ${DIM(`Duration: ${duration}`)}`);
     console.log(`    ${DIM(`Messages: ${session.messageCount ?? 0}`)} ${DIM(`Size: ${formatBytes(session.historySizeBytes ?? 0)}`)} ${DIM(`Tokens: ${session.tokenCount}`)} ${DIM(`Cost: $${session.cost.toFixed(4)}`)}`);
+    if (options.showIndexSummary) {
+      const indexSummary = loadSessionIndex(session.id, session.projectPath);
+      if (indexSummary) {
+        const toolCount = Object.values(indexSummary.tools).reduce((total, count) => total + count, 0);
+        console.log(`    ${DIM(`Index: ${indexSummary.files.length} files, ${toolCount} tool calls, ${indexSummary.topics.length} topics`)}`);
+      } else {
+        console.log(`    ${DIM('Index: not built')}`);
+      }
+    }
     if (options.showProject) {
       console.log(`    ${DIM(`Project: ${session.projectPath}`)}`);
     }
@@ -1547,10 +1556,12 @@ function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
   // If there's a search query, use the session index
   if (query && !query.startsWith('--')) {
     const allSessions = scope.allProjects
-      ? listSessions(50)
-      : listProjectSessions(scope.projectPath, 50);
-    const sessionIds = allSessions.map(s => s.id);
-    const matchedIds = searchSessions(query, scope.projectPath, sessionIds);
+      ? listSessions()
+      : listProjectSessions(scope.projectPath);
+    const matchedIds = searchSessions(query, allSessions.map(session => ({
+      id: session.id,
+      projectPath: session.projectPath,
+    })));
 
     if (matchedIds.length === 0) {
       console.log();
@@ -1571,7 +1582,7 @@ function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
     console.log(HEADER(`Sessions (search: "${query}") — ${matchedSessions.length} matches`));
     console.log(DIM('─'.repeat(40)));
     console.log();
-    printSessionRows(matchedSessions, { indexed: true, showProject: scope.allProjects });
+    printSessionRows(matchedSessions, { indexed: true, showProject: scope.allProjects, showIndexSummary: true });
     console.log();
     console.log(DIM(`Searched ${allSessions.length} sessions, found ${matchedSessions.length} matches`));
     console.log(DIM('Use /resume <number|session-id|name> to restore a session'));
@@ -1752,6 +1763,41 @@ function handleSessionRename(ctx: CommandContext, args: string): CommandResult {
   }
   console.log();
   return { success: true };
+}
+
+async function handleEditPreview(_ctx: CommandContext): Promise<CommandResult> {
+  const lastEdit = getToolState().lastEditFileArgs;
+
+  if (!lastEdit) {
+    console.log(ERROR('No previous edit_file call found for preview'));
+    console.log(DIM('Run an edit_file tool call first, then use /edit-preview to inspect the match candidates.'));
+    console.log();
+    return { success: false };
+  }
+
+  const rawResult = await executeTool('edit_file', {
+    ...lastEdit,
+    preview: true,
+  });
+
+  let parsed: { success?: boolean; output?: string; error?: string };
+  try {
+    parsed = JSON.parse(rawResult);
+  } catch {
+    parsed = { success: false, error: rawResult };
+  }
+
+  console.log();
+  console.log(HEADER('Edit Preview'));
+  console.log(DIM('─'.repeat(40)));
+  if (parsed.success) {
+    console.log(parsed.output || DIM('No preview output'));
+  } else {
+    console.log(ERROR(parsed.error || 'Preview failed'));
+  }
+  console.log();
+
+  return { success: parsed.success === true };
 }
 
 /** Generate a brief summary of conversation history */
@@ -1946,6 +1992,14 @@ const COMMANDS: SlashCommand[] = [
     priority: 10,
     type: 'builtin',
     execute: (ctx) => handleTools(ctx),
+  },
+  {
+    name: 'edit-preview',
+    description: 'Preview the last edit_file match candidates without writing',
+    category: 'tools',
+    priority: 15,
+    type: 'builtin',
+    execute: (ctx) => handleEditPreview(ctx),
   },
   {
     name: 'mcp',

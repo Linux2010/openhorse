@@ -15,6 +15,7 @@ import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, createR
 import { join, resolve, relative, extname } from 'path';
 import { createInterface } from 'readline';
 import { buildTool, type OpenHorseTool, type ToolResult, type ToolContext } from '../framework/tool';
+import { setToolState } from '../framework/tool-state';
 import {
   saveMemory,
   loadMemory,
@@ -299,6 +300,16 @@ export const TOOLS: OpenHorseTool[] = [
       if (typeof new_string !== 'string') {
         return { success: false, output: '', error: 'edit_file requires a new_string parameter' };
       }
+      const lastEditFileArgs: {
+        path: string;
+        old_string: string;
+        new_string: string;
+        replace_all?: boolean;
+        fuzzy_match?: boolean;
+      } = { path, old_string, new_string };
+      if (typeof args.replace_all === 'boolean') lastEditFileArgs.replace_all = args.replace_all;
+      if (typeof args.fuzzy_match === 'boolean') lastEditFileArgs.fuzzy_match = args.fuzzy_match;
+      setToolState({ lastEditFileArgs });
       return editFile_(
         path,
         old_string,
@@ -1024,6 +1035,53 @@ interface FuzzyMatchResult {
   strategy: 'whitespace' | 'line';
 }
 
+function lineNumberForIndex(content: string, index: number): number {
+  return content.slice(0, Math.max(0, index)).split('\n').length;
+}
+
+function findAllMatchIndexes(content: string, needle: string, limit = 20): number[] {
+  const indexes: number[] = [];
+  let cursor = 0;
+  while (indexes.length < limit) {
+    const index = content.indexOf(needle, cursor);
+    if (index < 0) break;
+    indexes.push(index);
+    cursor = index + Math.max(needle.length, 1);
+  }
+  return indexes;
+}
+
+function previewLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, 120);
+}
+
+function formatEditPreview(params: {
+  kind: 'exact' | 'fuzzy';
+  content: string;
+  matches: string[];
+  newString: string;
+  strategy?: string;
+}): string {
+  const cursorByMatch = new Map<string, number>();
+  const lines = [
+    `Preview: ${params.kind === 'fuzzy' ? `Fuzzy ${params.strategy ?? 'match'}` : 'Exact match'} candidates (${params.matches.length})`,
+  ];
+
+  params.matches.slice(0, 20).forEach((match, index) => {
+    const cursor = cursorByMatch.get(match) ?? 0;
+    const matchIndex = params.content.indexOf(match, cursor);
+    cursorByMatch.set(match, matchIndex >= 0 ? matchIndex + Math.max(match.length, 1) : cursor);
+    const lineNum = matchIndex >= 0 ? lineNumberForIndex(params.content, matchIndex) : '?';
+    lines.push(`${index + 1}. line ${lineNum}: "${previewLine(match)}"`);
+  });
+
+  if (params.matches.length > 20) {
+    lines.push(`... ${params.matches.length - 20} more candidates omitted`);
+  }
+  lines.push(`Would replace with: "${previewLine(params.newString)}"`);
+  return lines.join('\n');
+}
+
 /**
  * Attempt to find old_string in content using fuzzy matching strategies.
  * Returns null if no match found, or the matched strings.
@@ -1091,6 +1149,20 @@ async function editFile_(path: string, old_string: string, new_string: string, r
     // Check if old_string exists exactly
     const count = (content.match(new RegExp(escapeRegExp(old_string), 'g')) || []).length;
 
+    if (count > 0 && preview) {
+      const matchIndexes = findAllMatchIndexes(content, old_string);
+      const matches = matchIndexes.map(() => old_string);
+      return {
+        success: true,
+        output: formatEditPreview({
+          kind: 'exact',
+          content,
+          matches,
+          newString: new_string,
+        }),
+      };
+    }
+
     if (count === 0) {
       if (!fuzzy_match) {
         return {
@@ -1107,6 +1179,19 @@ async function editFile_(path: string, old_string: string, new_string: string, r
         return { success: false, output: '', error: `old_string not found in file: ${old_string.slice(0, 100)}...` };
       }
 
+      if (preview) {
+        return {
+          success: true,
+          output: formatEditPreview({
+            kind: 'fuzzy',
+            content,
+            matches: fuzzyResult.matches,
+            newString: new_string,
+            strategy: fuzzyResult.strategy,
+          }),
+        };
+      }
+
       if (fuzzyResult.matches.length > 1) {
         return {
           success: false,
@@ -1117,14 +1202,6 @@ async function editFile_(path: string, old_string: string, new_string: string, r
 
       // Use the single fuzzy match only.
       const match = fuzzyResult.matches[0];
-
-      if (preview) {
-        const lineNum = content.slice(0, content.indexOf(match)).split('\n').length;
-        return {
-          success: true,
-          output: `Preview: Fuzzy match found at line ${lineNum} (${fuzzyResult.strategy})\nMatched: "${match.slice(0, 100)}"\nWould replace with: "${new_string.slice(0, 100)}"`,
-        };
-      }
 
       const idx = content.indexOf(match);
       const newContent = content.slice(0, idx) + new_string + content.slice(idx + match.length);
@@ -1142,15 +1219,6 @@ async function editFile_(path: string, old_string: string, new_string: string, r
         success: false,
         output: '',
         error: `old_string found ${count} times in file. Use replace_all=true to replace all occurrences, or provide a more specific string that matches exactly once.`,
-      };
-    }
-
-    // Preview mode
-    if (preview) {
-      const lineNum = content.slice(0, content.indexOf(old_string)).split('\n').length;
-      return {
-        success: true,
-        output: `Preview: Match found at line ${lineNum} (${count} occurrence(s))\nMatched: "${old_string.slice(0, 100)}"\nWould replace with: "${new_string.slice(0, 100)}"`,
       };
     }
 
