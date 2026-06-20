@@ -1181,7 +1181,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, a
     cwd: process.cwd(),
     config: {
       name: 'openhorse',
-      mode: 'development',
+      mode: process.env.OPENHORSE_MODE || 'development',
     },
     abortSignal,  // Issue #32 #3.2: 透传 abortSignal
   };
