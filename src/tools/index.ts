@@ -278,6 +278,10 @@ export const TOOLS: OpenHorseTool[] = [
           type: 'boolean',
           description: '精确匹配失败时是否允许宽松空白匹配（可选，默认 false；多候选时总是拒绝）',
         },
+        preview: {
+          type: 'boolean',
+          description: '预览匹配结果而不写入文件（可选，默认 false）',
+        },
       },
       required: ['path', 'old_string', 'new_string'],
     },
@@ -300,7 +304,8 @@ export const TOOLS: OpenHorseTool[] = [
         old_string,
         new_string,
         args.replace_all as boolean | undefined,
-        args.fuzzy_match as boolean | undefined
+        args.fuzzy_match as boolean | undefined,
+        args.preview as boolean | undefined
       );
     },
     isDestructive: () => true,
@@ -1071,7 +1076,7 @@ function fuzzyMatch(content: string, oldString: string): FuzzyMatchResult | null
   return null;
 }
 
-async function editFile_(path: string, old_string: string, new_string: string, replace_all?: boolean, fuzzy_match?: boolean): Promise<ToolResult> {
+async function editFile_(path: string, old_string: string, new_string: string, replace_all?: boolean, fuzzy_match?: boolean, preview?: boolean): Promise<ToolResult> {
   try {
     const resolved = safePath(path);
     if (!existsSync(resolved)) {
@@ -1112,6 +1117,15 @@ async function editFile_(path: string, old_string: string, new_string: string, r
 
       // Use the single fuzzy match only.
       const match = fuzzyResult.matches[0];
+
+      if (preview) {
+        const lineNum = content.slice(0, content.indexOf(match)).split('\n').length;
+        return {
+          success: true,
+          output: `Preview: Fuzzy match found at line ${lineNum} (${fuzzyResult.strategy})\nMatched: "${match.slice(0, 100)}"\nWould replace with: "${new_string.slice(0, 100)}"`,
+        };
+      }
+
       const idx = content.indexOf(match);
       const newContent = content.slice(0, idx) + new_string + content.slice(idx + match.length);
 
@@ -1128,6 +1142,15 @@ async function editFile_(path: string, old_string: string, new_string: string, r
         success: false,
         output: '',
         error: `old_string found ${count} times in file. Use replace_all=true to replace all occurrences, or provide a more specific string that matches exactly once.`,
+      };
+    }
+
+    // Preview mode
+    if (preview) {
+      const lineNum = content.slice(0, content.indexOf(old_string)).split('\n').length;
+      return {
+        success: true,
+        output: `Preview: Match found at line ${lineNum} (${count} occurrence(s))\nMatched: "${old_string.slice(0, 100)}"\nWould replace with: "${new_string.slice(0, 100)}"`,
       };
     }
 

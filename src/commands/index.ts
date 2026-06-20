@@ -49,6 +49,7 @@ import {
   type SessionMeta,
   type SessionMessage,
 } from '../services/session-storage';
+import { searchSessions } from '../services/session-index';
 import { getAutoCompact } from '../services/compact/auto-compact';
 import { createContextHarness } from '../harness';
 import { resolveSkillsForTurn } from '../skills';
@@ -1541,6 +1542,43 @@ function printSessionPicker(sessions: SessionMeta[], options: { title: string; s
 
 function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
   const scope = parseSessionScopeArgs(args, ctx.cwd);
+  const query = scope.query?.trim();
+
+  // If there's a search query, use the session index
+  if (query && !query.startsWith('--')) {
+    const allSessions = scope.allProjects
+      ? listSessions(50)
+      : listProjectSessions(scope.projectPath, 50);
+    const sessionIds = allSessions.map(s => s.id);
+    const matchedIds = searchSessions(query, scope.projectPath, sessionIds);
+
+    if (matchedIds.length === 0) {
+      console.log();
+      console.log(HEADER(`Sessions (search: "${query}")`));
+      console.log(DIM('─'.repeat(40)));
+      console.log(DIM('  No matching sessions found'));
+      console.log();
+      console.log(DIM('Tip: search by file path, tool name, or topic keyword'));
+      console.log();
+      return { success: true };
+    }
+
+    // Rebuild session list in matched order
+    const sessionMap = new Map(allSessions.map(s => [s.id, s]));
+    const matchedSessions = matchedIds.map(id => sessionMap.get(id)).filter(Boolean) as SessionMeta[];
+
+    console.log();
+    console.log(HEADER(`Sessions (search: "${query}") — ${matchedSessions.length} matches`));
+    console.log(DIM('─'.repeat(40)));
+    console.log();
+    printSessionRows(matchedSessions, { indexed: true, showProject: scope.allProjects });
+    console.log();
+    console.log(DIM(`Searched ${allSessions.length} sessions, found ${matchedSessions.length} matches`));
+    console.log(DIM('Use /resume <number|session-id|name> to restore a session'));
+    console.log();
+    return { success: true };
+  }
+
   console.log();
   console.log(HEADER(scope.allProjects ? 'Sessions (all projects)' : 'Sessions'));
   console.log(DIM('─'.repeat(40)));
@@ -1561,6 +1599,7 @@ function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
   console.log(DIM('Use /resume <number|session-id|name> to restore a session'));
   console.log(DIM('Use /session-rename <number|session-id|name> <new name> to rename'));
   console.log(DIM('Use /sessions --all to list sessions from every project'));
+  console.log(DIM('Use /sessions <query> to search by file, tool, or keyword'));
   console.log();
   return { success: true };
 }
@@ -1834,7 +1873,8 @@ const COMMANDS: SlashCommand[] = [
   },
   {
     name: 'sessions',
-    description: 'List recent sessions',
+    description: 'List recent sessions, or search by file/tool/keyword',
+    argumentHint: '[<query>|--all]',
     category: 'session',
     priority: 20,
     type: 'builtin',
