@@ -188,3 +188,74 @@ function buildStructuredSummary(
 // ============================================================================
 
 export { summaryGenerator as generateSummary };
+
+// ============================================================================
+// LLM-driven Summary (生产级摘要)
+// ============================================================================
+
+import type { LLMService } from '../llm';
+
+/**
+ * Generate a summary using the LLM for high-quality context compaction.
+ * Falls back to heuristic summary if LLM call fails or times out.
+ *
+ * @param messages - Messages to summarize
+ * @param llm - LLM service instance
+ * @param options - Summary options
+ * @returns Structured summary string
+ */
+export async function generateLLMSummary(
+  messages: Message[],
+  llm: LLMService,
+  options?: SummaryOptions
+): Promise<string> {
+  const opts = { ...DEFAULT_OPTIONS, ...options };
+
+  if (messages.length === 0) return '';
+
+  // Build a condensed representation of the messages for the LLM
+  const condensed = messages
+    .map(msg => {
+      if (msg.role === 'user') {
+        return `[User]: ${msg.content?.slice(0, 200) || ''}`;
+      }
+      if (msg.role === 'assistant') {
+        const toolCalls = msg.tool_calls
+          ? ` (tools: ${msg.tool_calls.map(tc => tc.function.name).join(', ')})`
+          : '';
+        return `[Assistant]: ${msg.content?.slice(0, 300) || ''}${toolCalls}`;
+      }
+      if (msg.role === 'tool') {
+        return `[Tool]: ${(msg.content || '').slice(0, 150)}`;
+      }
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n');
+
+  const prompt = `Summarize the following coding agent conversation compactly. Focus on:
+1. User's main goal/objective
+2. Key actions taken (files modified, commands run)
+3. Current state (what's done, what's pending)
+4. Any important decisions or constraints mentioned
+
+Keep the summary under ${opts.maxLength || 500} characters. Use bullet points.
+
+Conversation:
+${condensed.slice(0, 8000)}
+
+Summary:`;
+
+  try {
+    const response = await llm.chat([{ role: 'user', content: prompt }]);
+
+    if (response.content) {
+      return response.content.trim().slice(0, opts.maxLength || 500);
+    }
+  } catch {
+    // LLM call failed or timed out — fall through to heuristic
+  }
+
+  // Fallback to heuristic summary
+  return summaryGenerator(messages, options);
+}
