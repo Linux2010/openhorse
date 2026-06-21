@@ -889,7 +889,15 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           : `Tool ${name} is not available.`,
       });
     }
-    const result = await executeTool(name, args, abortSignal);
+    const result = await executeTool(name, args, abortSignal, {
+      cwd: ctx.cwd,
+      config: {
+        name: ctx.config.name,
+        mode: ctx.config.mode,
+      },
+      sessionId,
+      turnId: ctx.turnId,
+    });
     // 不在这里打印，让 tool_result 事件处理
     return result;
   };
@@ -938,6 +946,8 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           name: ctx.config.name,
           mode: ctx.config.mode,
         },
+        sessionId,
+        turnId: ctx.turnId,
       },
       abortSignal: ctx.abortSignal,
       harness,
@@ -1765,7 +1775,7 @@ function handleSessionRename(ctx: CommandContext, args: string): CommandResult {
   return { success: true };
 }
 
-async function handleEditPreview(_ctx: CommandContext): Promise<CommandResult> {
+async function handleEditPreview(ctx: CommandContext): Promise<CommandResult> {
   const lastEdit = getToolState().lastEditFileArgs;
 
   if (!lastEdit) {
@@ -1775,12 +1785,42 @@ async function handleEditPreview(_ctx: CommandContext): Promise<CommandResult> {
     return { success: false };
   }
 
+  const hasMetadata = Boolean(lastEdit.sessionId || lastEdit.turnId);
+  if (!hasMetadata) {
+    console.log(WARN('Using legacy edit-preview state without session/turn tags. Running preview as best-effort.'));
+  }
+
+  const staleBySession = Boolean(lastEdit.sessionId && ctx.sessionId && lastEdit.sessionId !== ctx.sessionId);
+  const staleByTurn = Boolean(lastEdit.turnId != null && ctx.turnId != null && String(lastEdit.turnId) !== String(ctx.turnId));
+  if (staleBySession || staleByTurn) {
+    const mismatch = [];
+    if (staleBySession) mismatch.push(`session ${lastEdit.sessionId} vs ${ctx.sessionId}`);
+    if (staleByTurn) mismatch.push(`turn ${String(lastEdit.turnId)} vs ${String(ctx.turnId)}`);
+    console.log(ERROR('Edit preview target does not match current context.'));
+    console.log(DIM(`Stale edit target: ${mismatch.join(', ')}.`));
+    console.log();
+    return { success: false };
+  }
+
+  if (hasMetadata && !(ctx.sessionId || ctx.turnId)) {
+    console.log(WARN('Edit preview context is available, but current command context is missing session/turn metadata.'));
+    console.log(DIM('Preview is allowed, but stale checks cannot be fully validated.'));
+  }
+
   const rawResult = await executeTool('edit_file', {
     ...lastEdit,
     preview: true,
+  }, ctx.abortSignal, {
+    cwd: ctx.cwd,
+    config: {
+      name: ctx.config.name,
+      mode: ctx.config.mode,
+    },
+    sessionId: ctx.sessionId,
+    turnId: ctx.turnId,
   });
 
-  let parsed: { success?: boolean; output?: string; error?: string };
+  let parsed: { success?: boolean; output?: string; error?: string; metadata?: { candidates?: unknown[] } };
   try {
     parsed = JSON.parse(rawResult);
   } catch {
@@ -1796,6 +1836,19 @@ async function handleEditPreview(_ctx: CommandContext): Promise<CommandResult> {
     console.log(ERROR(parsed.error || 'Preview failed'));
   }
   console.log();
+
+  // Return structured data for v2/TUI/Ink picker rendering
+  if (parsed.success && parsed.metadata?.candidates && Array.isArray(parsed.metadata.candidates)) {
+    return {
+      success: true,
+      editPreview: {
+        path: lastEdit.path as string,
+        newString: lastEdit.new_string as string,
+        kind: (lastEdit.fuzzy_match ? 'fuzzy' : 'exact') as 'exact' | 'fuzzy',
+        candidates: parsed.metadata.candidates as Array<{ index: number; line: number; match: string; contextBefore: string; contextAfter: string; isReplaceAll: boolean }>,
+      },
+    };
+  }
 
   return { success: parsed.success === true };
 }

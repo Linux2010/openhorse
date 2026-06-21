@@ -7,6 +7,7 @@ import { applyTerminalTabCompletion } from './completion';
 import { openExternalEditor } from './editor';
 import { RawTerminalEditor } from './raw-editor';
 import type {
+  EditPreviewRequest,
   OpenHorseInkRuntime,
   SessionPickerRequest,
   TranscriptAppendEntry,
@@ -111,6 +112,7 @@ class TerminalEventSink implements UiEventSink {
   private readonly pendingAssistantOutput = new Map<string, string>();
   private idCounter = 0;
   private pendingPicker: SessionPickerRequest | null = null;
+  private pendingEditPreview: EditPreviewRequest | null = null;
 
   constructor(
     private readonly runtime: OpenHorseInkRuntime,
@@ -195,34 +197,58 @@ class TerminalEventSink implements UiEventSink {
     this.writer.write(`${DIM('Type a number, session id/name, or /resume --last. Empty input cancels.')}\n`);
   }
 
+  showEditPreview(request: EditPreviewRequest): void {
+    this.pendingEditPreview = request;
+    const kindLabel = request.kind === 'fuzzy' ? `fuzzy (${request.strategy ?? 'match'})` : 'exact';
+    this.writer.write(`\n${ACCENT(`Edit Preview: ${request.path} (${kindLabel})`)}\n`);
+    this.writer.write(`${BORDER('─'.repeat(Math.min(process.stdout.columns || 80, 96)))}\n`);
+    request.candidates.slice(0, 10).forEach(c => {
+      const matchPreview = c.match.length > 60 ? c.match.slice(0, 57) + '...' : c.match;
+      const newPreview = request.newString.length > 40 ? request.newString.slice(0, 37) + '...' : request.newString;
+      this.writer.write(`  line ${String(c.line).padStart(3, ' ')}  "${matchPreview}"  → "${newPreview}"\n`);
+    });
+    if (request.candidates.length > 10) {
+      this.writer.write(`${DIM(`  ... ${request.candidates.length - 10} more candidates`)}\n`);
+    }
+    this.writer.write(`${DIM('Press Enter to dismiss.')}\n`);
+  }
+
   setProcessing(_processing: boolean): void {
     // The stable terminal UI is append-only, so there is no live spinner state.
   }
 
   consumePendingSelection(input: string): string | AgentRuntimeInput | null {
     const picker = this.pendingPicker;
-    if (!picker) return null;
-
-    const trimmed = input.trim();
-    this.pendingPicker = null;
-    if (!trimmed) {
-      this.writer.write(`${DIM('Session picker cancelled.')}\n`);
-      return '';
-    }
-    if (trimmed.startsWith('/')) return trimmed;
-
-    const numeric = trimmed.match(/^#?(\d+)$/);
-    if (numeric) {
-      const index = Number(numeric[1]) - 1;
-      const selected = picker.sessions[index];
-      if (!selected) {
-        this.writer.write(`${ERROR(`No session at index ${numeric[1]}.`)}\n`);
+    if (picker) {
+      const trimmed = input.trim();
+      this.pendingPicker = null;
+      if (!trimmed) {
+        this.writer.write(`${DIM('Session picker cancelled.')}\n`);
         return '';
       }
-      return { type: 'select_session', sessionId: selected.id, allProjects: picker.allProjects, source: 'picker' };
+      if (trimmed.startsWith('/')) return trimmed;
+
+      const numeric = trimmed.match(/^#?(\d+)$/);
+      if (numeric) {
+        const index = Number(numeric[1]) - 1;
+        const selected = picker.sessions[index];
+        if (!selected) {
+          this.writer.write(`${ERROR(`No session at index ${numeric[1]}.`)}\n`);
+          return '';
+        }
+        return { type: 'select_session', sessionId: selected.id, allProjects: picker.allProjects, source: 'picker' };
+      }
+
+      return { type: 'select_session', sessionId: trimmed, allProjects: picker.allProjects, source: 'picker' };
     }
 
-    return { type: 'select_session', sessionId: trimmed, allProjects: picker.allProjects, source: 'picker' };
+    // Dismiss pending edit preview on any input
+    if (this.pendingEditPreview) {
+      this.pendingEditPreview = null;
+      return '';
+    }
+
+    return null;
   }
 
   private printEntry(entry: TranscriptEntry, finalized: boolean): void {

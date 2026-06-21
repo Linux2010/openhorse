@@ -40,6 +40,7 @@ function createEvents() {
     clearTranscript: jest.fn(),
     setStatus: jest.fn(message => statuses.push(message)),
     showSessionPicker: jest.fn(),
+    showEditPreview: jest.fn(),
     setProcessing: jest.fn(value => processing.push(value)),
   };
 

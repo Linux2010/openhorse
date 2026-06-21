@@ -7,11 +7,30 @@
 
 import type { WebSearchMcpConfig } from './config';
 import { BAILIAN_WEBSEARCH_MCP_ENDPOINT } from './web-search-provider';
+import { readFileSync } from 'fs';
+import { resolve as resolvePath } from 'path';
 
 export const DEFAULT_WEBSEARCH_MCP_ENDPOINT = BAILIAN_WEBSEARCH_MCP_ENDPOINT;
 
 const MCP_PROTOCOL_VERSION = '2025-03-26';
 const DEFAULT_TIMEOUT_MS = 30_000;
+const CLIENT_VERSION_FALLBACK = '0.2.6';
+
+function getPackageVersion(): string {
+  if (process.env.npm_package_version) return process.env.npm_package_version;
+
+  try {
+    const pkgPath = resolvePath(__dirname, '../../package.json');
+    const pkgText = readFileSync(pkgPath, 'utf8');
+    const payload = JSON.parse(pkgText);
+    if (typeof payload?.version === 'string' && payload.version) return payload.version;
+  } catch {
+    // ignore and fall back below
+  }
+  return CLIENT_VERSION_FALLBACK;
+}
+
+const CLIENT_VERSION = getPackageVersion();
 
 interface JsonRpcMessage {
   jsonrpc: '2.0';
@@ -229,7 +248,7 @@ export class WebSearchMcpClient {
     await this.request('initialize', {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: { name: 'openhorse', version: '0.1.18' },
+      clientInfo: { name: 'openhorse', version: CLIENT_VERSION },
     });
 
     await this.notification('notifications/initialized', {});

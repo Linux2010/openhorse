@@ -25,6 +25,24 @@ export interface SessionPickerRequest {
   maxVisibleItems?: number;
 }
 
+export interface EditPreviewCandidate {
+  index: number;
+  line: number;
+  match: string;
+  contextBefore: string;
+  contextAfter: string;
+  isReplaceAll: boolean;
+}
+
+export interface EditPreviewRequest {
+  path: string;
+  newString: string;
+  kind: 'exact' | 'fuzzy';
+  strategy?: string;
+  candidates: EditPreviewCandidate[];
+  width?: number;
+}
+
 export interface ToolPermissionRequest {
   id: string;
   name: string;
@@ -62,6 +80,7 @@ export interface UiEventSink {
   clearTranscript: () => void;
   setStatus: (message: string) => void;
   showSessionPicker: (request: SessionPickerRequest) => void;
+  showEditPreview: (request: EditPreviewRequest) => void;
   showPermissionRequest?: (request: ToolPermissionRequest) => void;
   setProcessing: (processing: boolean) => void;
 }

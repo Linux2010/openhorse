@@ -11,7 +11,8 @@ export type SuggestionKind =
   | 'session'
   | 'model'
   | 'mcp-resource'
-  | 'skill';
+  | 'skill'
+  | 'edit';
 
 export interface SuggestionItem {
   id: string;

@@ -104,6 +104,34 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
     return;
   }
 
+  if (state.overlay.type === 'edit') {
+    const overlay = state.overlay;
+    const req = overlay.request;
+    const visibleCount = Math.max(0, Math.min(
+      maxRows - 1,
+      10,
+      req.candidates.length,
+    ));
+    const start = pickerStartIndex(overlay.selectedIndex, visibleCount, req.candidates.length);
+    const visible = req.candidates.slice(start, start + visibleCount);
+    const kindLabel = req.kind === 'fuzzy' ? `fuzzy (${req.strategy ?? 'match'})` : 'exact';
+    const rows = [
+      `Edit Preview: ${req.path} (${kindLabel}, ${req.candidates.length} candidate${req.candidates.length === 1 ? '' : 's'})`,
+      ...visible.map((c, offset) => {
+        const index = start + offset;
+        const marker = index === overlay.selectedIndex ? '›' : ' ';
+        const matchPreview = c.match.length > 60 ? c.match.slice(0, 57) + '...' : c.match;
+        const newPreview = req.newString.length > 40 ? req.newString.slice(0, 37) + '...' : req.newString;
+        return `${marker} line ${String(c.line).padStart(3, ' ')}  "${matchPreview}"  → "${newPreview}"`;
+      }),
+    ].map(row => truncateCells(row, frame.width));
+
+    rows.slice(0, maxRows).forEach((line, index) => {
+      writeFrameText(frame, index, 0, line);
+    });
+    return;
+  }
+
   if (state.overlay.type === 'commands' || state.overlay.type === 'files') {
     const overlay = state.overlay;
     const visibleCount = Math.max(0, Math.min(maxRows - 2, 10, overlay.items.length || 1));

@@ -1,4 +1,5 @@
 import type {
+  EditPreviewRequest,
   SessionPickerRequest,
   ToolPermissionRequest,
   TranscriptAppendEntry,
@@ -65,6 +66,7 @@ export type AgentRuntimeEvent =
   | { type: 'transcript_clear' }
   | { type: 'status_changed'; message: string }
   | { type: 'session_picker_requested'; request: SessionPickerRequest }
+  | { type: 'edit_preview_requested'; request: EditPreviewRequest }
   | { type: 'permission_requested'; request: ToolPermissionRequest }
   | { type: 'processing_changed'; processing: boolean };
 
@@ -96,6 +98,9 @@ export function emitToUiEventSink(events: UiEventSink, event: AgentRuntimeEvent)
       return undefined;
     case 'session_picker_requested':
       events.showSessionPicker(event.request);
+      return undefined;
+    case 'edit_preview_requested':
+      events.showEditPreview(event.request);
       return undefined;
     case 'permission_requested':
       events.showPermissionRequest?.(event.request);
@@ -134,6 +139,9 @@ export function createUiEventSinkFromAgentRuntimeEvents(sink: AgentRuntimeEventS
     },
     showSessionPicker: request => {
       sink.emit({ type: 'session_picker_requested', request });
+    },
+    showEditPreview: request => {
+      sink.emit({ type: 'edit_preview_requested', request });
     },
     showPermissionRequest: request => {
       sink.emit({ type: 'permission_requested', request });

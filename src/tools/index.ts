@@ -17,6 +17,11 @@ import { createInterface } from 'readline';
 import { buildTool, type OpenHorseTool, type ToolResult, type ToolContext } from '../framework/tool';
 import { setToolState } from '../framework/tool-state';
 import {
+  ARTIFACT_THRESHOLD,
+  storeArtifact,
+  truncateForContext,
+} from '../core/tool-artifacts';
+import {
   saveMemory,
   loadMemory,
   loadAllMemories,
@@ -286,7 +291,7 @@ export const TOOLS: OpenHorseTool[] = [
       },
       required: ['path', 'old_string', 'new_string'],
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
       // Ensure required parameters are valid strings
       const path = args.path;
       const old_string = args.old_string;
@@ -306,9 +311,15 @@ export const TOOLS: OpenHorseTool[] = [
         new_string: string;
         replace_all?: boolean;
         fuzzy_match?: boolean;
-      } = { path, old_string, new_string };
+        sessionId?: string;
+        turnId?: number | string;
+        updatedAt: number;
+      } = { path, old_string, new_string, updatedAt: Date.now() };
       if (typeof args.replace_all === 'boolean') lastEditFileArgs.replace_all = args.replace_all;
       if (typeof args.fuzzy_match === 'boolean') lastEditFileArgs.fuzzy_match = args.fuzzy_match;
+      if (context?.sessionId) lastEditFileArgs.sessionId = context.sessionId;
+      if (context?.turnId) lastEditFileArgs.turnId = context.turnId;
+      lastEditFileArgs.updatedAt = Date.now();
       setToolState({ lastEditFileArgs });
       return editFile_(
         path,
@@ -1055,6 +1066,46 @@ function previewLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim().slice(0, 120);
 }
 
+export interface EditPreviewCandidate {
+  index: number;
+  line: number;
+  match: string;
+  contextBefore: string;
+  contextAfter: string;
+  isReplaceAll: boolean;
+}
+
+function buildEditCandidates(params: {
+  kind: 'exact' | 'fuzzy';
+  content: string;
+  matches: string[];
+  newString: string;
+  strategy?: string;
+  count?: number;
+}): EditPreviewCandidate[] {
+  const cursorByMatch = new Map<string, number>();
+  return params.matches.slice(0, 20).map((match, index) => {
+    const cursor = cursorByMatch.get(match) ?? 0;
+    const matchIndex = params.content.indexOf(match, cursor);
+    cursorByMatch.set(match, matchIndex >= 0 ? matchIndex + Math.max(match.length, 1) : cursor);
+    const lineNum = matchIndex >= 0 ? lineNumberForIndex(params.content, matchIndex) : 0;
+
+    // Get context lines (3 before, 3 after)
+    const allLines = params.content.split('\n');
+    const contextBefore = allLines.slice(Math.max(0, lineNum - 4), lineNum).join('\n');
+    const contextAfter = allLines.slice(lineNum + 1, lineNum + 4).join('\n');
+
+    return {
+      index,
+      line: lineNum,
+      match,
+      contextBefore,
+      contextAfter,
+      isReplaceAll: (params.count ?? 1) > 1,
+    };
+  });
+}
+
 function formatEditPreview(params: {
   kind: 'exact' | 'fuzzy';
   content: string;
@@ -1160,6 +1211,15 @@ async function editFile_(path: string, old_string: string, new_string: string, r
           matches,
           newString: new_string,
         }),
+        metadata: {
+          candidates: buildEditCandidates({
+            kind: 'exact',
+            content,
+            matches,
+            newString: new_string,
+            count,
+          }),
+        },
       };
     }
 
@@ -1189,6 +1249,15 @@ async function editFile_(path: string, old_string: string, new_string: string, r
             newString: new_string,
             strategy: fuzzyResult.strategy,
           }),
+          metadata: {
+            candidates: buildEditCandidates({
+              kind: 'fuzzy',
+              content,
+              matches: fuzzyResult.matches,
+              newString: new_string,
+              strategy: fuzzyResult.strategy,
+            }),
+          },
         };
       }
 
@@ -1457,7 +1526,12 @@ async function grep_(pattern: string, basePath?: string, globPattern?: string, c
  * 执行一个工具调用，返回结构化结果字符串
  * Issue #32 #3.2: 支持 abortSignal
  */
-export async function executeTool(name: string, args: Record<string, unknown>, abortSignal?: AbortSignal): Promise<string> {
+export async function executeTool(
+  name: string,
+  args: Record<string, unknown>,
+  abortSignal?: AbortSignal,
+  toolContext?: ToolContext
+): Promise<string> {
   const runtimeTools = getRuntimeTools();
   const tool = runtimeTools.find(t => t.name === name);
   if (!tool) {
@@ -1468,34 +1542,46 @@ export async function executeTool(name: string, args: Record<string, unknown>, a
   }
 
   const context: ToolContext = {
-    cwd: process.cwd(),
-    config: {
-      name: 'openhorse',
+    cwd: toolContext?.cwd || process.cwd(),
+    config: toolContext?.config || {
+      name: process.env.OPENHORSE_NAME || 'openhorse',
       mode: process.env.OPENHORSE_MODE || 'development',
     },
     abortSignal,  // Issue #32 #3.2: 透传 abortSignal
+    sessionId: toolContext?.sessionId,
+    turnId: toolContext?.turnId,
   };
 
   const result = await tool.execute(args, context);
   const summary = summarizeToolResult(tool, args, result);
   const outputBytes = Buffer.byteLength(result.output || '', 'utf8');
 
-  if (!result.success) {
-    return JSON.stringify({
-      success: false,
-      error: result.error,
-      output: result.output,
-      summary,
-      outputBytes,
-    });
+  let output = result.output || '';
+  let artifactRef: { id: string; outputBytes: number } | undefined;
+
+  if (outputBytes > ARTIFACT_THRESHOLD) {
+    const artifact = storeArtifact(context.cwd, name, output, outputBytes);
+    if (artifact) {
+      artifactRef = { id: artifact.id, outputBytes: artifact.outputBytes };
+      output = truncateForContext(output);
+    }
   }
 
-  return JSON.stringify({
-    success: true,
-    output: result.output,
+  const payload: Record<string, unknown> = {
+    success: result.success,
+    output,
     summary,
     outputBytes,
-  });
+  };
+
+  if (!result.success) {
+    payload.error = result.error;
+  }
+  if (artifactRef) {
+    payload.artifactRef = artifactRef;
+  }
+
+  return JSON.stringify(payload);
 }
 
 function summarizeToolResult(tool: OpenHorseTool, args: Record<string, unknown>, result: ToolResult): string | undefined {

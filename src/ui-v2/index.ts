@@ -7,3 +7,4 @@ export * from './state/input-reducer';
 export * from './components/command-palette';
 export * from './components/session-picker';
 export * from './components/shell';
+export * from './components/edit-preview-picker';

@@ -10,7 +10,7 @@
  */
 
 import type { LLMService, Message, StreamCallbacks, Tool } from '../services/llm';
-import type { OpenHorseTool, ToolContext, PermissionResult } from './tool';
+import type { OpenHorseTool, ToolContext } from './tool';
 import type { PermissionMode } from '../commands/types';
 import type { CostTracker } from '../core/cost-tracker';
 import type { ToolConfirmationPolicy } from '../services/config';
@@ -18,6 +18,7 @@ import { toOpenAITools } from './tool';
 import { createStrategyTracker, type StrategyTracker, type StrategyResult } from '../core/strategy-tracker';
 import { getAutoCompact } from '../services/compact/auto-compact';
 import type { ContextHarness } from '../harness';
+import { prepareToolCalls, executeToolCalls, type PreparedToolCall, type ExecutedToolCall } from './tool-scheduler';
 
 function isAborted(signal?: AbortSignal): boolean {
   return signal?.aborted === true;
@@ -47,6 +48,7 @@ export type QueryEvent =
       result: string;
       duration: number;
       success: boolean;
+      artifactRef?: { id: string; outputBytes: number };
       error?: string;
       summary?: string;
       outputBytes?: number;
@@ -192,144 +194,47 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         toolCalls,
       };
 
-      type ToolCallRecord = NonNullable<Message['tool_calls']>[number];
-      type DriftResult = ReturnType<ContextHarness['beforeToolUse']>;
-      type PreparedToolCall = {
-        index: number;
-        tc: ToolCallRecord;
-        args: Record<string, unknown>;
-        tool: OpenHorseTool | undefined;
-        attemptId: string;
-        drift: DriftResult | undefined;
-        permission: PermissionResult | undefined;
-        canRunConcurrently: boolean;
-      };
-      type ExecutedToolCall = {
-        prepared: PreparedToolCall;
-        result: string;
-        duration: number;
-        success: boolean;
-        error?: string;
-        summary?: string;
-        outputBytes?: number;
-        strategyResult: StrategyResult;
-        strategyError?: string;
-      };
+      const preparedCalls = prepareToolCalls({
+        toolCalls,
+        tools,
+        toolExecutor,
+        permissionMode: params.permissionMode,
+        toolConfirmation: params.toolConfirmation,
+        confirmToolUse: params.confirmToolUse,
+        toolContext: params.toolContext,
+        abortSignal,
+        startApproach: (toolName: string) => strategyTracker.startApproach(toolName),
+        addToolToTracker: (attemptId: string, toolName: string) => strategyTracker.addTool(attemptId, toolName),
+        harnessDriftCheck: harness ? ({ name, args }) => harness.beforeToolUse({ name, args }) : undefined,
+        harnessBlockedResult: harness ? (drift) => harness.asToolBlockedResult(drift) : undefined,
+      });
 
-      const parseToolArgs = (tc: ToolCallRecord): Record<string, unknown> => {
-        const rawArgs = tc.function.arguments || '';
-        if (!rawArgs) return {};
-        try {
-          return JSON.parse(rawArgs) as Record<string, unknown>;
-        } catch {
-          return {};
-        }
-      };
-
-      const parseToolResult = (
-        result: string
-      ): Pick<ExecutedToolCall, 'success' | 'error' | 'summary' | 'outputBytes' | 'strategyResult' | 'strategyError'> => {
-        try {
-          const parsed = JSON.parse(result);
-          const success = parsed.success === true;
-          return {
-            success,
-            error: typeof parsed.error === 'string' ? parsed.error : undefined,
-            summary: typeof parsed.summary === 'string' ? parsed.summary : undefined,
-            outputBytes: typeof parsed.outputBytes === 'number' ? parsed.outputBytes : undefined,
-            strategyResult: success ? 'success' : 'failed',
-            strategyError: success ? undefined : parsed.error || 'Unknown error',
-          };
-        } catch {
-          return {
-            success: false,
-            error: 'Invalid JSON result',
-            strategyResult: 'failed',
-            strategyError: 'Invalid result',
-          };
-        }
-      };
-
-      const executePreparedTool = async (prepared: PreparedToolCall): Promise<ExecutedToolCall> => {
-        const start = Date.now();
-        const { tc, args, tool, drift, permission } = prepared;
-        const executeToolCall = async (): Promise<string> => {
-          try {
-            return await toolExecutor(tc.function.name, args, abortSignal);
-          } catch (err: any) {
-            return JSON.stringify({
-              success: false,
-              error: `Tool execution error: ${err.message}`,
-            });
-          }
+      for (const prepared of preparedCalls) {
+        yield {
+          type: 'tool_call',
+          name: prepared.tc.function.name,
+          args: prepared.args,
+          callId: prepared.tc.id,
+          batchCount: toolCalls.length,
+          batchIndex: prepared.index,
         };
+      }
 
-        let result: string;
-        if (drift?.status === 'block') {
-          result = harness!.asToolBlockedResult(drift);
-        } else if (permission?.behavior === 'deny') {
-          result = JSON.stringify({
-            success: false,
-            error: permission.reason || 'Permission denied',
-          });
-        } else if (permission?.behavior === 'ask' && params.permissionMode === 'default') {
-          const confirmation = params.toolConfirmation ?? 'ask';
-          if (confirmation === 'allow') {
-            result = await executeToolCall();
-          } else if (params.confirmToolUse && confirmation === 'ask') {
-            const approved = await params.confirmToolUse({
-              name: tc.function.name,
-              args,
-              reason: permission.reason,
-              abortSignal,
-            });
-            result = approved
-              ? await executeToolCall()
-              : JSON.stringify({
-                success: false,
-                error: `Tool ${tc.function.name} requires user confirmation and was denied by user.`,
-              });
-          } else {
-            result = JSON.stringify({
-              success: false,
-              error: confirmation === 'deny'
-                ? `Tool ${tc.function.name} requires user confirmation and was denied by toolConfirmation=deny.`
-                : `Tool ${tc.function.name} requires user confirmation.`,
-            });
-          }
-        } else {
-          result = await executeToolCall();
+      for await (const executed of executeToolCalls(preparedCalls, {
+        toolExecutor,
+        abortSignal,
+        confirmToolUse: params.confirmToolUse,
+        permissionMode: params.permissionMode,
+        toolConfirmation: params.toolConfirmation,
+        harnessBlockedResult: harness ? (drift) => harness.asToolBlockedResult(drift) : undefined,
+      })) {
+        if (isAborted(abortSignal)) {
+          yield cancelledEvent(llm);
+          return;
         }
 
-        const duration = Date.now() - start;
-        return {
-          prepared,
-          result,
-          duration,
-          ...parseToolResult(result),
-        };
-      };
-
-      const failedExecution = (prepared: PreparedToolCall, err: unknown): ExecutedToolCall => {
-        const message = err instanceof Error ? err.message : String(err);
-        const result = JSON.stringify({
-          success: false,
-          error: `Tool execution error: ${message}`,
-        });
-        return {
-          prepared,
-          result,
-          duration: 0,
-          success: false,
-          error: `Tool execution error: ${message}`,
-          strategyResult: 'failed',
-          strategyError: message,
-        };
-      };
-
-      const applyExecutedTool = (executed: ExecutedToolCall): QueryEvent[] => {
         const { prepared } = executed;
-        const { tc, args, attemptId, index } = prepared;
+        const { tc, args, attemptId } = prepared;
 
         strategyTracker.recordResult(attemptId, executed.strategyResult, executed.strategyError, executed.duration);
         harness?.recordToolResult({
@@ -342,7 +247,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           summary: executed.summary,
         });
 
-        const events: QueryEvent[] = [{
+        yield {
           type: 'tool_result',
           name: tc.function.name,
           args,
@@ -350,12 +255,13 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           result: executed.result,
           duration: executed.duration,
           success: executed.success,
+          artifactRef: executed.artifactRef,
           error: executed.error,
           summary: executed.summary,
           outputBytes: executed.outputBytes,
           batchCount: toolCalls.length,
-          batchIndex: index,
-        }];
+          batchIndex: prepared.index,
+        };
 
         messages.push({
           role: 'tool',
@@ -373,117 +279,12 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         if (strategyTracker.isExhausted()) {
           const suggestion = strategyTracker.suggestAlternative();
           if (suggestion) {
-            events.push({ type: 'strategy_exhausted', suggestion });
+            yield { type: 'strategy_exhausted', suggestion };
             messages.push({
               role: 'user',
               content: suggestion,
             });
             strategyTracker.reset();
-          }
-        }
-
-        return events;
-      };
-
-      const preparedCalls: PreparedToolCall[] = [];
-
-      for (let i = 0; i < toolCalls.length; i++) {
-        if (isAborted(abortSignal)) {
-          yield cancelledEvent(llm);
-          return;
-        }
-
-        const tc = toolCalls[i];
-        const args = parseToolArgs(tc);
-        // Re-serialize arguments to ensure valid JSON for next API call
-        tc.function.arguments = JSON.stringify(args);
-
-        const attemptId = strategyTracker.startApproach(tc.function.name);
-        strategyTracker.addTool(attemptId, tc.function.name);
-        const tool = tools.find(t => t.name === tc.function.name);
-        const drift = harness?.beforeToolUse({ name: tc.function.name, args });
-        const permission = tool?.checkPermissions && params.toolContext
-          ? tool.checkPermissions(args, params.toolContext)
-          : undefined;
-        const confirmation = params.toolConfirmation ?? 'ask';
-        const needsInteractiveConfirmation = permission?.behavior === 'ask'
-          && params.permissionMode === 'default'
-          && confirmation === 'ask'
-          && Boolean(params.confirmToolUse);
-        const canRunConcurrently = tool?.isConcurrencySafe?.(args) === true
-          && drift?.status !== 'block'
-          && permission?.behavior !== 'deny'
-          && !needsInteractiveConfirmation;
-
-        yield {
-          type: 'tool_call',
-          name: tc.function.name,
-          args,
-          callId: tc.id,
-          batchCount: toolCalls.length,
-          batchIndex: i,
-        };
-
-        preparedCalls.push({
-          index: i,
-          tc,
-          args,
-          tool,
-          attemptId,
-          drift,
-          permission,
-          canRunConcurrently,
-        });
-      }
-
-      let parallelGroup: PreparedToolCall[] = [];
-
-      const runParallelGroup = async (group: PreparedToolCall[]): Promise<ExecutedToolCall[]> => {
-        const settled = await Promise.allSettled(group.map(call => executePreparedTool(call)));
-        return settled.map((result, index) =>
-          result.status === 'fulfilled' ? result.value : failedExecution(group[index], result.reason)
-        );
-      };
-
-      for (const prepared of preparedCalls) {
-        if (prepared.canRunConcurrently) {
-          parallelGroup.push(prepared);
-          continue;
-        }
-
-        if (parallelGroup.length > 0) {
-          const executedGroup = await runParallelGroup(parallelGroup);
-          for (const executed of executedGroup) {
-            for (const event of applyExecutedTool(executed)) {
-              yield event;
-            }
-            if (isAborted(abortSignal)) {
-              yield cancelledEvent(llm);
-              return;
-            }
-          }
-          parallelGroup = [];
-        }
-
-        const executed = await executePreparedTool(prepared).catch(err => failedExecution(prepared, err));
-        for (const event of applyExecutedTool(executed)) {
-          yield event;
-        }
-        if (isAborted(abortSignal)) {
-          yield cancelledEvent(llm);
-          return;
-        }
-      }
-
-      if (parallelGroup.length > 0) {
-        const executedGroup = await runParallelGroup(parallelGroup);
-        for (const executed of executedGroup) {
-          for (const event of applyExecutedTool(executed)) {
-            yield event;
-          }
-          if (isAborted(abortSignal)) {
-            yield cancelledEvent(llm);
-            return;
           }
         }
       }

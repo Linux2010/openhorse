@@ -149,7 +149,7 @@ export function searchSessions(
   sessionIds: string[] = []
 ): string[] {
   const q = query.toLowerCase();
-  const scored: Array<{ id: string; score: number }> = [];
+  const scored: Array<{ id: string; score: number; updatedAt: number }> = [];
   const candidates = Array.isArray(projectPathOrCandidates)
     ? projectPathOrCandidates
     : sessionIds.map(id => ({ id, projectPath: projectPathOrCandidates }));
@@ -176,12 +176,20 @@ export function searchSessions(
     }
 
     if (score > 0) {
-      scored.push({ id: candidate.id, score });
+      scored.push({
+        id: candidate.id,
+        score,
+        updatedAt: index.updatedAt,
+      });
     }
   }
 
-  // Sort by score descending
-  scored.sort((a, b) => b.score - a.score);
+  // Sort by score descending, then latest update, then stable id tie-breaker
+  scored.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (b.updatedAt !== a.updatedAt) return b.updatedAt - a.updatedAt;
+    return a.id.localeCompare(b.id);
+  });
   return scored.map(s => s.id);
 }
 

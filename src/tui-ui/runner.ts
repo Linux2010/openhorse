@@ -142,6 +142,28 @@ export class TuiRunner {
       }
     }
 
+    if (overlay?.type === 'edit') {
+      switch (key) {
+        case 'up':
+          this.dispatch({ type: 'moveOverlaySelection', delta: -1 });
+          return;
+        case 'down':
+        case 'tab':
+          this.dispatch({ type: 'moveOverlaySelection', delta: 1 });
+          return;
+        case 'pageup':
+          this.dispatch({ type: 'moveOverlaySelection', delta: -10 });
+          return;
+        case 'pagedown':
+          this.dispatch({ type: 'moveOverlaySelection', delta: 10 });
+          return;
+        case 'enter':
+        case 'escape':
+          this.dispatch({ type: 'closeOverlay' });
+          return;
+      }
+    }
+
     if (overlay?.type === 'commands') {
       switch (key) {
         case 'up':

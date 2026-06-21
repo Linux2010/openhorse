@@ -22,6 +22,12 @@ export interface ToolState {
     new_string: string;
     replace_all?: boolean;
     fuzzy_match?: boolean;
+    /** Session id where this edit call happened */
+    sessionId?: string;
+    /** Turn id where this edit call happened */
+    turnId?: number | string;
+    /** Timestamp for stale edit-preview prevention */
+    updatedAt: number;
   } | null;
 }
 

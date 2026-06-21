@@ -6,6 +6,252 @@
  */
 
 import * as openhorse from '../src/index';
+import type {
+  QueryEvent,
+  QueryParams,
+  OpenHorseTool,
+  ToolResult,
+  ToolContext,
+  PermissionResult,
+  ContextCapsule,
+  EvidenceRecord,
+  HarnessState,
+  IntentUpdate,
+  IntentKind,
+  TurnSummary,
+  TaskContract,
+  PromptAssemblyStats,
+  AppState,
+  PromptContext,
+  PromptSection,
+} from '../src/index';
+import type { PreparedToolCall, ExecutedToolCall, ToolSchedule } from '../src/framework/tool-scheduler';
+import type { ToolState, TodoItem } from '../src/framework/tool-state';
+import type { Message, LLMResponse, CacheControl } from '../src/services/llm';
+import type { SessionMeta, SessionMessage } from '../src/services/session-storage';
+import type { SessionIndex } from '../src/services/session-index';
+import type { DriftCheckResult, CompletionGateResult } from '../src/harness/types';
+
+// ============================================================================
+// Compile-time type assertions (TypeScript-level)
+//
+// These use `satisfies`, `as`, and conditional types to verify API contracts
+// at compile time. If a type changes incompatibly, these lines will error.
+// ============================================================================
+
+// QueryEvent union members
+const _requestStart: QueryEvent = { type: 'request_start', model: 'gpt-4o', turn: 1 };
+const _assistantToolCalls: QueryEvent = {
+  type: 'assistant_tool_calls',
+  content: '',
+  toolCalls: [{ id: '1', type: 'function', function: { name: 'x', arguments: '{}' } }],
+};
+const _toolCall: QueryEvent = { type: 'tool_call', name: 'x', args: {}, callId: '1' };
+const _toolResult: QueryEvent = {
+  type: 'tool_result',
+  name: 'x',
+  args: {},
+  callId: '1',
+  result: 'ok',
+  duration: 10,
+  success: true,
+};
+const _strategyExhausted: QueryEvent = { type: 'strategy_exhausted', suggestion: 'try another way' };
+const _message: QueryEvent = { type: 'message', role: 'assistant', content: 'hello' };
+const _complete: QueryEvent = { type: 'complete', content: 'done', model: 'gpt-4o' };
+
+// QueryEvent satisfies union (all 7 variants accepted)
+const _events: QueryEvent[] = [_requestStart, _assistantToolCalls, _toolCall, _toolResult, _strategyExhausted, _message, _complete];
+
+// Message interface
+const _sysMsg: Message = { role: 'system', content: 'hi', cacheControl: { type: 'ephemeral' } };
+const _toolMsg: Message = { role: 'tool', content: 'result', tool_call_id: 'call-1' };
+const _assistantMsg: Message = {
+  role: 'assistant',
+  content: '',
+  tool_calls: [{ id: '1', type: 'function', function: { name: 'x', arguments: '{}' } }],
+};
+
+// CacheControl interface
+const _cacheControl: CacheControl = { type: 'ephemeral' };
+
+// LLMResponse interface
+const _llmResponse: LLMResponse = {
+  content: 'hello',
+  model: 'gpt-4o',
+  usage: { promptTokens: 10, completionTokens: 5 },
+};
+
+// ToolResult interface (with artifactRef)
+const _toolResultShape: ToolResult = {
+  success: true,
+  output: 'result',
+  summary: 'done',
+  outputBytes: 42,
+  artifactRef: { id: 'tool-1-abc', outputBytes: 50000 },
+};
+
+// PermissionResult interface
+const _permAllow: PermissionResult = { behavior: 'allow' };
+const _permAsk: PermissionResult = { behavior: 'ask', reason: 'Confirmation needed' };
+const _permDeny: PermissionResult = { behavior: 'deny', reason: 'Dangerous' };
+
+// IntentUpdate (complex — verify type exists and key fields compile)
+const _intentKind: IntentKind = 'new_task';
+
+const _driftOk: DriftCheckResult = { status: 'ok' };
+const _driftWarn: DriftCheckResult = { status: 'warn', reason: 'slight drift' };
+const _driftBlock: DriftCheckResult = { status: 'block', reason: 'off track', correction: 'do X instead' };
+
+const _completionGate: CompletionGateResult = {
+  canComplete: true,
+  missing: [],
+  evidence: ['test passed'],
+};
+
+const _capsule: ContextCapsule = {
+  currentPlan: [],
+  completed: ['step 1'],
+  openTodos: ['step 2'],
+  keyFacts: [],
+  changedFiles: ['a.ts'],
+  verification: { commandsRun: [], passed: [], failed: [], warnings: [] },
+  nextAction: 'continue',
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+};
+
+const _evidence: EvidenceRecord = {
+  id: 'e1',
+  kind: 'tool_result',
+  content: 'evidence',
+  source: 'ledger',
+  importance: 3,
+  createdAt: Date.now(),
+  tokenEstimate: 10,
+  tags: [],
+  toolName: 'read_file',
+  path: 'a.ts',
+};
+
+const _turnSummary = null as unknown as TurnSummary;
+const _taskContract = null as unknown as TaskContract;
+const _intentUpdate = null as unknown as IntentUpdate;
+
+const _promptStats: PromptAssemblyStats = {
+  createdAt: Date.now(),
+  modelId: 'gpt-4o',
+  budgetTokens: 1000,
+  estimatedTokens: 500,
+  coreTokens: 200,
+  evidenceBudgetTokens: 300,
+  recentTurnBudgetTokens: 100,
+  includedEvidence: [],
+  omittedEvidence: [],
+  sections: ['core'],
+};
+
+const _harnessState: HarnessState = {
+  version: 2,
+  contract: _taskContract,
+  ledger: [],
+  capsule: _capsule,
+  completionBlockCount: 0,
+  taskEpoch: 1,
+  rootObjective: 'do X',
+  activeInstruction: 'do X',
+  intentHistory: [_intentUpdate],
+  activeConstraints: [],
+  nonGoals: [],
+  openQuestions: [],
+  evidenceIndex: [_evidence],
+  turnSummaries: [_turnSummary],
+  updatedAt: Date.now(),
+};
+
+// Session types
+const _sessionMeta: SessionMeta = {
+  id: 'sess-1',
+  projectPath: '/tmp',
+  model: 'gpt-4o',
+  startTime: Date.now(),
+  updatedAt: Date.now(),
+  messageCount: 5,
+  tokenCount: 0,
+  cost: 0,
+};
+
+const _sessionMessage: SessionMessage = {
+  role: 'user',
+  content: 'hello',
+  timestamp: Date.now(),
+};
+
+const _sessionIndex: SessionIndex = {
+  sessionId: 'sess-1',
+  files: ['a.ts'],
+  tools: { read_file: 2 },
+  topics: ['topic'],
+  updatedAt: Date.now(),
+};
+
+// Scheduler types
+const _preparedToolCall: PreparedToolCall = {
+  index: 0,
+  tc: { id: '1', type: 'function', function: { name: 'x', arguments: '{}' } },
+  args: {},
+  tool: undefined,
+  attemptId: 'a1',
+  drift: undefined,
+  permission: undefined,
+  canRunConcurrently: true,
+};
+
+const _executedToolCall: ExecutedToolCall = {
+  prepared: _preparedToolCall,
+  result: 'ok',
+  duration: 10,
+  success: true,
+  strategyResult: 'success',
+};
+
+const _toolSchedule: ToolSchedule = { parallel: [], serial: [] };
+
+// Store types (AppState is a complex interface; verify it exists as a type)
+const _appState = null as unknown as AppState;
+const _permissionMode: import('../src/commands/types').PermissionMode = 'default';
+
+// ============================================================================
+// Runtime tests
+// ============================================================================
+
+// Tool state types
+const _toolState: ToolState = {
+  todos: [{ content: 'do X', status: 'pending', activeForm: 'doing X' }],
+  planMode: false,
+  currentPlan: null,
+  lastEditFileArgs: null,
+};
+
+const _todoItem: TodoItem = { content: 'do X', status: 'pending', activeForm: 'doing X' };
+
+// Prompt types
+const _promptCtx: PromptContext = {
+  cwd: '/tmp',
+  platform: 'darwin',
+  nodeVersion: 'v20',
+  tools: [],
+};
+
+const _promptSection: PromptSection = {
+  name: 'intro',
+  dynamic: false,
+  render: () => 'intro',
+};
+
+// ============================================================================
+// Runtime tests
+// ============================================================================
 
 describe('Public API', () => {
   describe('Core exports', () => {

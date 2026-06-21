@@ -7,7 +7,7 @@
  * - 工具调用处理
  */
 
-import { LLMService, type Message, type Tool } from '../src/services/llm';
+import { LLMService, type Message, type Tool, type CacheControlContentPart } from '../src/services/llm';
 
 // Skip real API tests if no API key is available
 const hasApiKey = Boolean(process.env.OPENHORSE_API_KEY);
@@ -187,5 +187,143 @@ describe('LLMService', () => {
       expect(response.usage!.promptTokens).toBeGreaterThan(0);
       expect(response.usage!.completionTokens).toBeGreaterThan(0);
     }, 30000);
+  });
+
+  describe('Prompt cache control', () => {
+    test('cacheControl: ephemeral converts to content array with cache_control block', async () => {
+      const llm = new LLMService({
+        apiKey: 'test-key',
+        model: 'gpt-4o',
+      });
+
+      (llm as any).client = {
+        chat: {
+          completions: {
+            create: jest.fn(async (params: any) => ({
+              choices: [{ message: { content: 'ok', tool_calls: [] } }],
+              model: 'gpt-4o',
+            })),
+          },
+        },
+      };
+
+      const messages: Message[] = [
+        { role: 'system', content: 'You are OpenHorse.', cacheControl: { type: 'ephemeral' } },
+        { role: 'user', content: 'Hello' },
+      ];
+
+      await llm.chat(messages);
+
+      const callArgs = ((llm as any).client.chat.completions.create as jest.Mock).mock.calls[0];
+      const capturedMessages = callArgs[0].messages;
+
+      // Static system message should have content array with cache_control
+      const sysMsg = capturedMessages[0];
+      expect(Array.isArray(sysMsg.content)).toBe(true);
+      expect(sysMsg.content[0]).toEqual({ type: 'text', text: 'You are OpenHorse.' });
+      expect(sysMsg.content[1]).toHaveProperty('cache_control', { type: 'ephemeral' });
+
+      // User message should remain plain string
+      expect(capturedMessages[1].content).toBe('Hello');
+    });
+
+    test('messages without cacheControl remain plain strings', async () => {
+      const llm = new LLMService({
+        apiKey: 'test-key',
+        model: 'gpt-4o',
+      });
+
+      (llm as any).client = {
+        chat: {
+          completions: {
+            create: jest.fn(async () => ({
+              choices: [{ message: { content: 'ok', tool_calls: [] } }],
+              model: 'gpt-4o',
+            })),
+          },
+        },
+      };
+
+      await llm.chat([
+        { role: 'system', content: 'No cache.' },
+        { role: 'user', content: 'Hi' },
+      ]);
+
+      const callArgs = ((llm as any).client.chat.completions.create as jest.Mock).mock.calls[0];
+      const messages = callArgs[0].messages;
+
+      // No cacheControl → plain string content
+      expect(typeof messages[0].content).toBe('string');
+      expect(typeof messages[1].content).toBe('string');
+    });
+
+    test('cacheControl on assistant/tool messages works correctly', async () => {
+      const llm = new LLMService({
+        apiKey: 'test-key',
+        model: 'gpt-4o',
+      });
+
+      (llm as any).client = {
+        chat: {
+          completions: {
+            create: jest.fn(async () => ({
+              choices: [{ message: { content: 'ok', tool_calls: [] } }],
+              model: 'gpt-4o',
+            })),
+          },
+        },
+      };
+
+      // Cache control should NOT affect messages with tool_calls (those use their own format)
+      await llm.chat([
+        { role: 'system', content: 'System.', cacheControl: { type: 'ephemeral' } },
+        { role: 'assistant', content: '', tool_calls: [{
+          id: 'call-1',
+          type: 'function',
+          function: { name: 'read_file', arguments: '{"path":"x.ts"}' },
+        }] },
+      ]);
+
+      const callArgs = ((llm as any).client.chat.completions.create as jest.Mock).mock.calls[0];
+      const messages = callArgs[0].messages;
+
+      // System: content array with cache_control
+      expect(Array.isArray(messages[0].content)).toBe(true);
+      // Assistant with tool_calls: object format, not content array
+      expect(messages[0].role).toBe('system');
+      expect(messages[1].role).toBe('assistant');
+      expect(messages[1].tool_calls).toBeDefined();
+    });
+
+    test('cache_control content part matches CacheControlContentPart shape', async () => {
+      const llm = new LLMService({
+        apiKey: 'test-key',
+        model: 'gpt-4o',
+      });
+
+      (llm as any).client = {
+        chat: {
+          completions: {
+            create: jest.fn(async () => ({
+              choices: [{ message: { content: 'ok', tool_calls: [] } }],
+              model: 'gpt-4o',
+            })),
+          },
+        },
+      };
+
+      await llm.chat([
+        { role: 'system', content: 'static prefix', cacheControl: { type: 'ephemeral' } },
+      ]);
+
+      const callArgs = ((llm as any).client.chat.completions.create as jest.Mock).mock.calls[0];
+      const cachePart = callArgs[0].messages[0].content[1] as CacheControlContentPart;
+
+      // Verify the part matches the CacheControlContentPart interface exactly
+      expect(cachePart.type).toBe('text');
+      expect(cachePart.text).toBe('');
+      expect(cachePart.cache_control.type).toBe('ephemeral');
+      // No 'as any' — this is a properly typed object
+    });
   });
 });

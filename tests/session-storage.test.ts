@@ -25,7 +25,7 @@ import {
   type HistoryEntry,
   type SessionMessage,
 } from '../src/services/session-storage';
-import { loadSessionIndex, searchSessions } from '../src/services/session-index';
+import { loadSessionIndex, saveSessionIndex, searchSessions } from '../src/services/session-index';
 import { createContextHarness } from '../src/harness';
 import { existsSync, readFileSync, rmSync, realpathSync, writeFileSync } from 'fs';
 import { join } from 'path';
@@ -464,6 +464,105 @@ describe('session-storage', () => {
       expect(index?.topics).not.toContain('aborted topic');
     });
 
+    test('truncate: abort mid-tool-call (assistant has tool_calls, no tool result yet)', () => {
+      const session = createSession('/tmp/project-abort-mid-tool', 'gpt-4o');
+      appendSessionMessages(session.id, [
+        { role: 'user', content: 'first question', timestamp: Date.now() },
+        { role: 'assistant', content: 'done', timestamp: Date.now() },
+        { role: 'user', content: 'fix this bug', timestamp: Date.now() },
+        {
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"bug.ts"}' } }],
+        },
+      ]);
+
+      const truncated = truncateSessionToLastComplete(session.id);
+      expect(truncated.map(message => message.content)).toEqual(['first question', 'done']);
+      expect(readSessionMessages(session.id)).toHaveLength(2);
+    });
+
+    test('truncate: abort after tool result but before final assistant answer', () => {
+      const session = createSession('/tmp/project-abort-after-tool-result', 'gpt-4o');
+      appendSessionMessages(session.id, [
+        { role: 'user', content: 'start', timestamp: Date.now() },
+        { role: 'assistant', content: 'ok', timestamp: Date.now() },
+        { role: 'user', content: 'search for foo', timestamp: Date.now() },
+        {
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'grep', arguments: '{"pattern":"foo"}' } }],
+        },
+        { role: 'tool', content: 'found foo in src/a.ts', timestamp: Date.now(), toolCallId: 'call-1' },
+      ]);
+
+      const truncated = truncateSessionToLastComplete(session.id);
+      expect(truncated.map(message => message.content)).toEqual(['start', 'ok']);
+      expect(readSessionMessages(session.id)).toHaveLength(2);
+    });
+
+    test('truncate: abort with only user message (no assistant response at all)', () => {
+      const session = createSession('/tmp/project-abort-only-user', 'gpt-4o');
+      appendSessionMessages(session.id, [
+        { role: 'user', content: 'hello', timestamp: Date.now() },
+      ]);
+
+      const truncated = truncateSessionToLastComplete(session.id);
+      expect(truncated).toHaveLength(0);
+      expect(readSessionMessages(session.id)).toHaveLength(0);
+    });
+
+    test('truncate: complete final answer is NOT removed', () => {
+      const session = createSession('/tmp/project-complete-not-truncated', 'gpt-4o');
+      appendSessionMessages(session.id, [
+        { role: 'user', content: 'question', timestamp: Date.now() },
+        { role: 'assistant', content: 'Here is the answer with details.', timestamp: Date.now() },
+      ]);
+
+      const truncated = truncateSessionToLastComplete(session.id);
+      expect(truncated.map(message => message.content)).toEqual(['question', 'Here is the answer with details.']);
+      expect(readSessionMessages(session.id)).toHaveLength(2);
+    });
+
+    test('truncate: multiple complete turns, no truncation needed', () => {
+      const session = createSession('/tmp/project-multi-complete', 'gpt-4o');
+      appendSessionMessages(session.id, [
+        { role: 'user', content: 'q1', timestamp: Date.now() },
+        { role: 'assistant', content: 'a1', timestamp: Date.now() },
+        { role: 'user', content: 'q2', timestamp: Date.now() },
+        { role: 'assistant', content: 'a2', timestamp: Date.now() },
+        { role: 'user', content: 'q3', timestamp: Date.now() },
+        { role: 'assistant', content: 'a3', timestamp: Date.now() },
+      ]);
+
+      const truncated = truncateSessionToLastComplete(session.id);
+      expect(truncated).toHaveLength(6);
+    });
+
+    test('truncate: tool result with no following assistant still truncates back to last complete', () => {
+      const session = createSession('/tmp/project-tool-result-no-assistant', 'gpt-4o');
+      appendSessionMessages(session.id, [
+        { role: 'user', content: 'task 1', timestamp: Date.now() },
+        { role: 'assistant', content: 'done 1', timestamp: Date.now() },
+        { role: 'user', content: 'task 2', timestamp: Date.now() },
+        { role: 'assistant', content: '', timestamp: Date.now(), tool_calls: [
+          { id: 'call-a', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } },
+          { id: 'call-b', type: 'function', function: { name: 'read_file', arguments: '{"path":"b.ts"}' } },
+        ] },
+        { role: 'tool', content: 'content a', timestamp: Date.now(), toolCallId: 'call-a' },
+        { role: 'tool', content: 'content b', timestamp: Date.now(), toolCallId: 'call-b' },
+        { role: 'assistant', content: 'processing...', timestamp: Date.now(), tool_calls: [
+          { id: 'call-c', type: 'function', function: { name: 'edit_file', arguments: '{"path":"a.ts","old_string":"x","new_string":"y"}' } },
+        ] },
+      ]);
+
+      const truncated = truncateSessionToLastComplete(session.id);
+      expect(truncated.map(message => message.content)).toEqual(['task 1', 'done 1']);
+      expect(readSessionMessages(session.id)).toHaveLength(2);
+    });
+
     test('searchSessions can search candidates across project indexes', () => {
       const authSession = createSession('/tmp/project-search-auth', 'gpt-4o');
       const billingSession = createSession('/tmp/project-search-billing', 'gpt-4o');
@@ -484,6 +583,37 @@ describe('session-storage', () => {
       ]);
 
       expect(matches).toEqual([billingSession.id]);
+    });
+
+    test('searchSessions sorts ties by updatedAt then session id', () => {
+      const project = '/tmp/project-search-sort';
+      const sessionA = createSession(project, 'gpt-4o');
+      const sessionB = createSession(project, 'gpt-4o');
+      appendSessionMessage(sessionA.id, { role: 'user', content: 'billing query', timestamp: Date.now() + 1 });
+      appendSessionMessage(sessionB.id, { role: 'user', content: 'billing query', timestamp: Date.now() + 2 });
+
+      const candidates = [
+        { id: sessionA.id, projectPath: sessionA.projectPath },
+        { id: sessionB.id, projectPath: sessionB.projectPath },
+      ];
+      const indexA = loadSessionIndex(sessionA.id, sessionA.projectPath);
+      const indexB = loadSessionIndex(sessionB.id, sessionB.projectPath);
+      if (!indexA || !indexB) {
+        throw new Error('Indexes not generated');
+      }
+
+      // Same score, same updatedAt => stable by id.
+      saveSessionIndex(sessionA.id, sessionA.projectPath, { ...indexA, updatedAt: 1000 });
+      saveSessionIndex(sessionB.id, sessionB.projectPath, { ...indexB, updatedAt: 1000 });
+      const tieResult = searchSessions('billing', candidates);
+      expect(tieResult).toEqual([sessionA.id < sessionB.id ? sessionA.id : sessionB.id, sessionA.id < sessionB.id ? sessionB.id : sessionA.id]);
+
+      // same score, updatedAt changed => recent first.
+      saveSessionIndex(sessionA.id, sessionA.projectPath, { ...indexA, updatedAt: 2000 });
+      saveSessionIndex(sessionB.id, sessionB.projectPath, { ...indexB, updatedAt: 1500 });
+      const recentFirst = searchSessions('billing', candidates);
+      expect(recentFirst[0]).toBe(sessionA.id);
+      expect(recentFirst[1]).toBe(sessionB.id);
     });
 
     test('lookupSessionRef reports ambiguous id prefixes', () => {

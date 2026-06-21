@@ -129,3 +129,35 @@ describe('getSystemPrompt', () => {
     expect(prompt).toContain('\n\n---\n');
   });
 });
+
+describe('Stable prefix cache invariance', () => {
+  test('static part is identical across 5 consecutive turns with varying dynamic context', () => {
+    // Simulate 5 turns where user input changes (affecting dynamic context)
+    // but the static system prefix should remain identical
+    const staticPrefixes: string[] = [];
+    const dynamicParts: string[] = [];
+
+    for (let turn = 1; turn <= 5; turn++) {
+      const ctx: PromptContext = {
+        ...baseContext,
+        cwd: `/test/dir/turn${turn}`, // Varies per turn
+        memoryContent: turn > 1 ? `Previous turn ${turn - 1} result` : undefined,
+        referencedFilesContent: turn === 3
+          ? 'User-referenced files:\n### @src/index.ts\n~~~\n...\n~~~'
+          : undefined,
+      };
+      const result = buildSystemPrompt(ctx);
+      staticPrefixes.push(result.static);
+      dynamicParts.push(result.dynamic);
+    }
+
+    // All static prefixes should be identical (same tools, same identity)
+    for (let i = 1; i < staticPrefixes.length; i++) {
+      expect(staticPrefixes[i]).toBe(staticPrefixes[0]);
+    }
+
+    // Dynamic parts should vary (cwd, memory, referenced files change)
+    const uniqueDynamic = new Set(dynamicParts);
+    expect(uniqueDynamic.size).toBeGreaterThan(1);
+  });
+});

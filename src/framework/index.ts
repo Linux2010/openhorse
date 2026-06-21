@@ -22,6 +22,9 @@ export type {
 export { query } from './query';
 export type { QueryEvent, QueryParams } from './query';
 
+export { prepareToolCalls, executeToolCalls, inspectSchedule } from './tool-scheduler';
+export type { PreparedToolCall, ExecutedToolCall, ToolSchedule, ToolSchedulerOptions } from './tool-scheduler';
+
 export { buildSystemPrompt, getSystemPrompt } from './prompt';
 export type { PromptContext, PromptSection } from './prompt';
 

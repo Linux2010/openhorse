@@ -320,6 +320,7 @@ async function captureConsoleOutput(fn: () => Promise<CommandResult> | CommandRe
 
 export interface RunInputOptions {
   abortSignal?: AbortSignal;
+  turnId?: number | string;
 }
 
 export interface AgentChatControllerOptions {
@@ -341,7 +342,7 @@ export class AgentChatController {
 
     const parsed = parseInput(text);
     if (!parsed.isCommand) {
-      await this.runChat(text, options.abortSignal);
+      await this.runChat(text, options);
       return;
     }
 
@@ -359,7 +360,7 @@ export class AgentChatController {
     const command = findCommand(parsed.name);
     if (!command) {
       if (hasMatchingSkill(text)) {
-        await this.runChat(text, options.abortSignal);
+        await this.runChat(text, options);
         return;
       }
 
@@ -374,7 +375,7 @@ export class AgentChatController {
       return;
     }
 
-    const ctx = this.createCommandContext(options.abortSignal);
+    const ctx = this.createCommandContext(options.abortSignal, options.turnId);
     const { result, output } = await captureConsoleOutput(() => command.execute(ctx, parsed.args));
 
     if (output) {
@@ -406,12 +407,17 @@ export class AgentChatController {
       return;
     }
 
+    if (result.editPreview) {
+      this.events.showEditPreview(result.editPreview);
+      return;
+    }
+
     if (result.continueAsChat) {
-      await this.runChat(result.chatInput ?? parsed.args, options.abortSignal);
+      await this.runChat(result.chatInput ?? parsed.args, options);
     }
   }
 
-  private createCommandContext(abortSignal?: AbortSignal): CommandContext {
+  private createCommandContext(abortSignal?: AbortSignal, turnId?: number | string): CommandContext {
     return {
       cwd: this.runtime.cwd,
       config: this.runtime.config,
@@ -419,6 +425,7 @@ export class AgentChatController {
       llm: this.runtime.llm,
       runtime: this.runtime.runtime,
       sessionId: this.runtime.getSession()?.id,
+      turnId,
       ensureSession: this.runtime.ensureSession,
       setSession: session => {
         this.runtime.setSession(session);
@@ -439,7 +446,10 @@ export class AgentChatController {
     };
   }
 
-  private async runChat(input: string, abortSignal?: AbortSignal): Promise<void> {
+  private async runChat(
+    input: string,
+    options: { abortSignal?: AbortSignal; turnId?: number | string } = {}
+  ): Promise<void> {
     if (!input) {
       this.events.append({ role: 'error', content: 'Usage: /chat <message>' });
       return;
@@ -453,6 +463,8 @@ export class AgentChatController {
       return;
     }
 
+    const abortSignal = options.abortSignal;
+    const turnId = options.turnId;
     const activeSession = this.runtime.getSession() ?? this.runtime.ensureSession() ?? loadSessionMeta(this.runtime.getSession()?.id ?? '');
     const sessionId = activeSession?.id;
     const runtimeTools = getRuntimeTools();
@@ -503,7 +515,7 @@ export class AgentChatController {
     };
     const systemPrompt = buildSystemPrompt(promptCtx);
     const messages: Message[] = [
-      { role: 'system', content: systemPrompt.static },
+      { role: 'system', content: systemPrompt.static, cacheControl: { type: 'ephemeral' } },
       ...(systemPrompt.dynamic ? [{ role: 'system' as const, content: systemPrompt.dynamic }] : []),
       ...snapshot.conversationHistory,
     ];
@@ -530,7 +542,15 @@ export class AgentChatController {
             : `Tool ${name} is not available.`,
         });
       }
-      return executeTool(name, args, signal);
+      return executeTool(name, args, signal, {
+        cwd: this.runtime.cwd,
+        config: {
+          name: this.runtime.config.name,
+          mode: this.runtime.config.mode,
+        },
+        sessionId,
+        turnId,
+      });
     };
 
     try {
@@ -550,6 +570,8 @@ export class AgentChatController {
             name: this.runtime.config.name,
             mode: this.runtime.config.mode,
           },
+          sessionId,
+          turnId,
         },
         abortSignal,
         harness,
