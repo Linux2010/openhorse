@@ -19,8 +19,12 @@ export interface ToolInputJSONSchema {
   required?: string[];
 }
 
-/** Tool execution result */
+/** Tool execution result — unified envelope serialized as JSON
+ *  into LLM tool result messages. Backward compatible: non-JSON outputs
+ *  are auto-wrapped by executeTool. */
 export interface ToolResult {
+  /** Envelope schema version. 1 = current. Future versions may add fields. */
+  schemaVersion?: number;
   success: boolean;
   output: string;
   error?: string;

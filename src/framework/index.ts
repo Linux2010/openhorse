@@ -9,6 +9,7 @@
  */
 
 export { buildTool, toOpenAITool, toOpenAITools } from './tool';
+export { serializeToolResult, parseToolResultEnvelope, TOOL_RESULT_SCHEMA_VERSION } from './tool-serializer';
 export type {
   OpenHorseTool,
   ToolResult,

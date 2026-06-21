@@ -1,5 +1,6 @@
-import { existsSync } from 'fs';
-import { getConfigHome, getGlobalConfigPath } from './config-dir';
+import { existsSync, readdirSync, statSync } from 'fs';
+import { join } from 'path';
+import { getConfigHome, getGlobalConfigPath, getProjectSessionsDir } from './config-dir';
 import { isConfigured, type OpenHorseCLIConfig } from './config';
 import { getMcpConfigPath, mcpManager } from '../tools/mcp';
 import { getRuntimeTools } from '../tools';
@@ -10,6 +11,7 @@ import { getSkillsRegistry } from '../skills';
 import type { Store } from '../framework/store';
 import type { LLMService } from './llm';
 import type { OpenHorseRuntime } from '../init';
+import { getWarningState } from '../core/warn-dedup';
 
 export type DoctorStatus = 'ok' | 'warn' | 'fail';
 
@@ -161,6 +163,58 @@ function summarizeHarness(ctx: DoctorContext): DoctorCheck {
   };
 }
 
+function summarizeArtifacts(projectPath: string): DoctorCheck {
+  const sessionsDir = getProjectSessionsDir(projectPath);
+  const artifactDir = join(sessionsDir, '_artifacts');
+  if (!existsSync(artifactDir)) {
+    return { id: 'artifacts', status: 'ok', label: 'Artifacts', summary: 'No artifacts directory' };
+  }
+  const entries = readdirSync(artifactDir);
+  let totalBytes = 0;
+  for (const entry of entries) {
+    try { totalBytes += statSync(join(artifactDir, entry)).size; } catch { /* skip */ }
+  }
+  const status = entries.length > 100 || totalBytes > 50_000_000 ? 'warn' : 'ok';
+  return {
+    id: 'artifacts',
+    status,
+    label: 'Artifacts',
+    summary: `${entries.length} files, ${(totalBytes / 1024).toFixed(0)}KB`,
+    detail: status === 'warn' ? 'Consider running cleanupArtifacts()' : undefined,
+  };
+}
+
+function summarizePromptCache(ctx: DoctorContext): DoctorCheck {
+  const snapshot = ctx.store.getSnapshot();
+  const history = snapshot.conversationHistory;
+  const hasCacheMarked = history.some(m => m.role === 'system' && (m as any).cacheControl);
+  return {
+    id: 'prompt-cache',
+    status: hasCacheMarked ? 'ok' : 'warn',
+    label: 'Prompt Cache',
+    summary: hasCacheMarked ? 'Static system prefix marked for caching' : 'No cache-marked messages yet (starts on first turn)',
+  };
+}
+
+function summarizeWarningDedup(): DoctorCheck {
+  const state = getWarningState();
+  if (state.size === 0) {
+    return { id: 'warn-dedup', status: 'ok', label: 'Warning Dedup', summary: 'No warnings recorded' };
+  }
+  let suppressed = 0;
+  for (const [, wc] of state) {
+    if (wc.count > 1) suppressed += wc.count - 1;
+  }
+  const status = suppressed > 10 ? 'warn' : 'ok';
+  return {
+    id: 'warn-dedup',
+    status,
+    label: 'Warning Dedup',
+    summary: `${state.size} unique warnings, ${suppressed} duplicates suppressed`,
+    detail: suppressed > 0 ? [...state.values()].map(wc => `[x${wc.count}] ${wc.message}`).join('\n') : undefined,
+  };
+}
+
 export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
   const projectPath = resolveProjectPath(ctx.cwd);
   const snapshot = ctx.store.getSnapshot();
@@ -205,6 +259,9 @@ export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
     summarizeProjectInstructions(ctx),
     summarizeSessions(ctx, projectPath),
     summarizeHarness(ctx),
+    summarizeArtifacts(projectPath),
+    summarizePromptCache(ctx),
+    summarizeWarningDedup(),
     {
       id: 'context-size',
       status: snapshot.projectInstructionsContent.length > 120_000 || snapshot.skillsContent.length > 120_000 ? 'warn' : 'ok',

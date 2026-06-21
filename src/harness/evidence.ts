@@ -131,13 +131,32 @@ export function buildEvidenceIndex(params: {
   }
   for (const entry of params.ledger ?? []) {
     const record = evidenceFromLedger(entry);
+    // Preserve includedCount from existing record
+    const existing = byId.get(record.id);
+    if (existing) record.includedCount = existing.includedCount;
     byId.set(record.id, record);
   }
   for (const summary of params.turnSummaries ?? []) {
     const record = evidenceFromTurnSummary(summary);
+    const existing = byId.get(record.id);
+    if (existing) record.includedCount = existing.includedCount;
     byId.set(record.id, record);
   }
   return [...byId.values()].sort((a, b) => b.importance - a.importance || b.createdAt - a.createdAt);
+}
+
+/**
+ * Bump the includedCount for evidence that was selected into the prompt.
+ * Call this after assembleMessages() with the included evidence IDs.
+ */
+export function bumpIncludedEvidence(
+  records: EvidenceRecord[],
+  includedIds: string[],
+): EvidenceRecord[] {
+  const idSet = new Set(includedIds);
+  return records.map(r =>
+    idSet.has(r.id) ? { ...r, includedCount: (r.includedCount ?? 0) + 1 } : r
+  );
 }
 
 export function rankEvidence(
@@ -200,6 +219,14 @@ export function rankEvidence(
     if (record.kind === 'risk' || record.kind === 'todo') {
       score += 8;
       reasons.push('open risk or todo');
+    }
+
+    // Learning signal: evidence that was frequently included in past prompts
+    // gets a small boost — "if it was useful before, it's likely useful again"
+    if (record.includedCount && record.includedCount > 0) {
+      const boost = Math.min(record.includedCount, 10) * record.importance * 0.5;
+      score += boost;
+      reasons.push(`included ${record.includedCount}x before`);
     }
 
     return { ...record, score, reasons };

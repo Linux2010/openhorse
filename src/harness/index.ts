@@ -6,7 +6,7 @@ export type { AddLedgerEntryInput } from './ledger';
 export { createContextCapsule, renderContextCapsule, renderHarnessStateForCompact } from './capsule';
 export { assembleHarnessMessages, buildHarnessContext, renderHarnessContext } from './assembler';
 export type { HarnessContextBuildResult, PromptAssemblyOptions } from './assembler';
-export { buildEvidenceIndex, estimateTokens, rankEvidence } from './evidence';
+export { buildEvidenceIndex, bumpIncludedEvidence, estimateTokens, rankEvidence } from './evidence';
 export { classifyIntent, shouldReplaceActiveInstruction } from './intent';
 export { summarizeHarnessStateForMeta, upgradeHarnessState } from './state';
 export { createTurnSummary } from './turn-summary';

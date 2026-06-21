@@ -3,7 +3,7 @@ import { buildHarnessContext, type PromptAssemblyOptions } from './assembler';
 import { createContextCapsule } from './capsule';
 import { createTaskContract, updateTaskContract } from './contract';
 import { checkToolDrift, evaluateCompletionGate } from './drift-guard';
-import { buildEvidenceIndex } from './evidence';
+import { buildEvidenceIndex, bumpIncludedEvidence } from './evidence';
 import { classifyIntent, shouldReplaceActiveInstruction } from './intent';
 import { ContextLedger } from './ledger';
 import { upgradeHarnessState } from './state';
@@ -114,6 +114,13 @@ export class ContextHarness {
 
     const built = buildHarnessContext(this.toJSON(), this.modelId, this.config, options);
     this.promptAssemblyStats = built.stats;
+
+    // Bump includedCount for evidence that was selected — learning signal
+    if (built.stats.includedEvidence.length > 0) {
+      const includedIds = built.stats.includedEvidence.map(e => e.id);
+      this.evidenceIndex = bumpIncludedEvidence(this.evidenceIndex, includedIds);
+    }
+
     if (!built.text.trim()) return messages;
 
     const cloned = messages.map(message => ({ ...message }));
