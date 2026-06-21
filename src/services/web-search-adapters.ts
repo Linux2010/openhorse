@@ -1,5 +1,7 @@
 import type { OpenHorseCLIConfig } from './config';
 import axios from 'axios';
+import { readFileSync } from 'fs';
+import { resolve as resolvePath } from 'path';
 
 export interface WebSearchAdapterInput {
   query: string;
@@ -46,6 +48,23 @@ export type WebSearchMode =
 
 const ADAPTER_MODES = new Set(['ddg', 'duckduckgo', 'tavily', 'brave', 'custom']);
 const MCP_ONLY_MODES = new Set(['native', 'mcp', 'bailian', 'zhipu', 'tavily-mcp']);
+const CLIENT_VERSION_FALLBACK = '0.2.6';
+
+function getPackageVersion(): string {
+  if (process.env.npm_package_version) return process.env.npm_package_version;
+
+  try {
+    const pkgPath = resolvePath(__dirname, '../../package.json');
+    const pkgText = readFileSync(pkgPath, 'utf8');
+    const payload = JSON.parse(pkgText);
+    if (typeof payload?.version === 'string' && payload.version) return payload.version;
+  } catch {
+    // ignore and use fallback
+  }
+  return CLIENT_VERSION_FALLBACK;
+}
+
+const DUCKDUCKGO_UA = `Mozilla/5.0 OpenHorse/${getPackageVersion()}`;
 
 function hasProxyEnv(): boolean {
   return Boolean(process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy);
@@ -317,7 +336,7 @@ const duckDuckGoAdapter: WebSearchAdapter = {
 
     const response = await adapterFetch(url.toString(), {
       headers: {
-        'User-Agent': 'Mozilla/5.0 OpenHorse/0.1.18',
+        'User-Agent': DUCKDUCKGO_UA,
         Accept: 'text/html,application/xhtml+xml,text/html;q=0.9,*/*;q=0.8',
       },
     });

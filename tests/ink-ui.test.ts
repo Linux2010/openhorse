@@ -605,6 +605,7 @@ describe('Ink UI helpers', () => {
       clearTranscript: jest.fn(),
       setStatus: jest.fn(),
       showSessionPicker: jest.fn(),
+      showEditPreview: jest.fn(),
       setProcessing: jest.fn(),
     };
 
@@ -638,6 +639,7 @@ describe('Ink UI helpers', () => {
       clearTranscript: jest.fn(),
       setStatus: jest.fn(),
       showSessionPicker: jest.fn(),
+      showEditPreview: jest.fn(),
       setProcessing: jest.fn(),
     };
 
@@ -662,6 +664,7 @@ describe('Ink UI helpers', () => {
       clearTranscript: jest.fn(),
       setStatus: jest.fn(),
       showSessionPicker: jest.fn(),
+      showEditPreview: jest.fn(),
       setProcessing: jest.fn(),
     };
 
@@ -702,6 +705,7 @@ describe('Ink UI helpers', () => {
       clearTranscript: jest.fn(),
       setStatus: jest.fn(),
       showSessionPicker: jest.fn(),
+      showEditPreview: jest.fn(),
       setProcessing: jest.fn(),
     };
 
@@ -744,6 +748,7 @@ describe('Ink UI helpers', () => {
       clearTranscript: jest.fn(),
       setStatus: jest.fn(),
       showSessionPicker: jest.fn(),
+      showEditPreview: jest.fn(),
       setProcessing: jest.fn(),
     };
 

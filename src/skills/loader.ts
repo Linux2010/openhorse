@@ -7,6 +7,7 @@
 import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
 import { join, basename } from 'path';
 import { load as loadYaml } from 'js-yaml';
+import { warnOnce } from '../core/warn-dedup';
 import {
   type SkillDefinition,
   type SkillSource,
@@ -30,7 +31,7 @@ export function parseSkillFile(content: string, sourcePath: string): SkillDefini
     const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
 
     if (!frontmatterMatch) {
-      console.warn(`[SkillsLoader] No frontmatter in ${sourcePath}`);
+      warnOnce(`skill-frontmatter:${sourcePath}`, `No frontmatter in ${sourcePath}`);
       return null;
     }
 
@@ -55,7 +56,7 @@ export function parseSkillFile(content: string, sourcePath: string): SkillDefini
 
     return skill;
   } catch (err: any) {
-    console.warn(`[SkillsLoader] Failed to parse ${sourcePath}: ${err.message}`);
+    warnOnce(`skill-parse-fail:${sourcePath}`, `Failed to parse ${sourcePath}: ${err.message}`);
     return null;
   }
 }
@@ -97,7 +98,7 @@ export function scanSkillsDirectory(dirPath: string, type: 'user' | 'project' | 
       }
     }
   } catch (err: any) {
-    console.warn(`[SkillsLoader] Failed to scan ${dirPath}: ${err.message}`);
+    warnOnce(`skill-scan-fail:${dirPath}`, `Failed to scan ${dirPath}: ${err.message}`);
   }
 
   return skills;

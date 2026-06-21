@@ -198,7 +198,7 @@ export class AgentRuntimeController {
       if (runningStatus) this.emitStatus(runningStatus);
 
       try {
-        await this.runner.runInput(nextInput, { abortSignal: turn.abortSignal });
+        await this.runner.runInput(nextInput, { abortSignal: turn.abortSignal, turnId: turn.id });
       } catch (error) {
         if (!turn.abortSignal.aborted) {
           if (this.options.onTurnError) {

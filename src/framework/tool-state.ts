@@ -16,12 +16,26 @@ export interface ToolState {
   todos: TodoItem[];
   planMode: boolean;
   currentPlan: string | null;
+  lastEditFileArgs: {
+    path: string;
+    old_string: string;
+    new_string: string;
+    replace_all?: boolean;
+    fuzzy_match?: boolean;
+    /** Session id where this edit call happened */
+    sessionId?: string;
+    /** Turn id where this edit call happened */
+    turnId?: number | string;
+    /** Timestamp for stale edit-preview prevention */
+    updatedAt: number;
+  } | null;
 }
 
 const initialState: ToolState = {
   todos: [],
   planMode: false,
   currentPlan: null,
+  lastEditFileArgs: null,
 };
 
 let state: ToolState = { ...initialState };

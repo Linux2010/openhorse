@@ -24,6 +24,12 @@ export interface ToolResult {
   success: boolean;
   output: string;
   error?: string;
+  /** Compact summary for harness evidence and UI display (optional, falls back to output truncation) */
+  summary?: string;
+  /** Output size in bytes. Set at runtime by executeTool. */
+  outputBytes?: number;
+  /** Reference to a disk artifact for large outputs (set by executeTool when output > threshold) */
+  artifactRef?: { id: string; outputBytes: number };
   metadata?: Record<string, unknown>;
 }
 
@@ -33,6 +39,10 @@ export interface ToolContext {
   cwd: string;
   config: ToolConfig;
   abortSignal?: AbortSignal;
+  /** Optional current session id for turn-level tool state tracking */
+  sessionId?: string;
+  /** Optional turn identifier for per-turn tool bookkeeping */
+  turnId?: number | string;
 }
 
 /** Minimal config needed by tools */

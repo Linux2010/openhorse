@@ -117,15 +117,17 @@ export class ContextHarness {
     if (!built.text.trim()) return messages;
 
     const cloned = messages.map(message => ({ ...message }));
-    const systemIndex = cloned.findIndex(message => message.role === 'system');
-    if (systemIndex >= 0) {
-      cloned[systemIndex] = {
-        ...cloned[systemIndex],
-        content: `${cloned[systemIndex].content}\n\n---\n${built.text}`,
-      };
-    } else {
-      cloned.unshift({ role: 'system', content: built.text });
-    }
+
+    // Inject dynamic harness context after the stable system prefix. Keeping
+    // the first system message stable allows provider-side prompt caching
+    // without polluting the durable user/assistant transcript.
+    const firstNonSystemIndex = cloned.findIndex(message => message.role !== 'system');
+    const insertIndex = firstNonSystemIndex >= 0 ? firstNonSystemIndex : cloned.length;
+
+    cloned.splice(insertIndex, 0, {
+      role: 'system',
+      content: built.text,
+    });
 
     return cloned;
   }
@@ -186,6 +188,7 @@ export class ContextHarness {
     duration: number;
     success: boolean;
     error?: string;
+    summary?: string;
   }): void {
     if (this.config.enabled === false) return;
     this.ledger.recordToolResult(params);

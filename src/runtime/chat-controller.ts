@@ -10,13 +10,14 @@ import {
   loadSessionHarnessState,
   loadSessionHistory,
   loadSessionMeta,
+  removeLastIncompleteAssistantMessage,
   readSessionMessages,
   updateSessionHarnessState,
   updateSessionSkills,
   updateSessionSummary,
 } from '../services/session-storage';
 import { isConfigured } from '../services/config';
-import { query, getSystemPrompt, type PromptContext, type QueryEvent } from '../framework';
+import { query, buildSystemPrompt, type PromptContext, type QueryEvent } from '../framework';
 import { createContextHarness } from '../harness';
 import { executeTool, getRuntimeTools } from '../tools';
 import { resolveSkillsForTurn, hasMatchingSkill } from '../skills';
@@ -94,6 +95,16 @@ function parseSessionToolResult(content: string): { success: boolean; error?: st
     };
   } catch {
     return { success: false, error: 'Invalid JSON result' };
+  }
+}
+
+function removeTrailingUserMessage(runtime: OpenHorseUiRuntime): void {
+  const history = runtime.store.getSnapshot().conversationHistory;
+  if (history.length === 0) return;
+
+  const lastMsg = history[history.length - 1];
+  if (lastMsg?.role === 'user') {
+    runtime.store.setState({ conversationHistory: history.slice(0, -1) });
   }
 }
 
@@ -309,6 +320,7 @@ async function captureConsoleOutput(fn: () => Promise<CommandResult> | CommandRe
 
 export interface RunInputOptions {
   abortSignal?: AbortSignal;
+  turnId?: number | string;
 }
 
 export interface AgentChatControllerOptions {
@@ -330,7 +342,7 @@ export class AgentChatController {
 
     const parsed = parseInput(text);
     if (!parsed.isCommand) {
-      await this.runChat(text, options.abortSignal);
+      await this.runChat(text, options);
       return;
     }
 
@@ -348,7 +360,7 @@ export class AgentChatController {
     const command = findCommand(parsed.name);
     if (!command) {
       if (hasMatchingSkill(text)) {
-        await this.runChat(text, options.abortSignal);
+        await this.runChat(text, options);
         return;
       }
 
@@ -363,7 +375,7 @@ export class AgentChatController {
       return;
     }
 
-    const ctx = this.createCommandContext(options.abortSignal);
+    const ctx = this.createCommandContext(options.abortSignal, options.turnId);
     const { result, output } = await captureConsoleOutput(() => command.execute(ctx, parsed.args));
 
     if (output) {
@@ -395,12 +407,17 @@ export class AgentChatController {
       return;
     }
 
+    if (result.editPreview) {
+      this.events.showEditPreview(result.editPreview);
+      return;
+    }
+
     if (result.continueAsChat) {
-      await this.runChat(result.chatInput ?? parsed.args, options.abortSignal);
+      await this.runChat(result.chatInput ?? parsed.args, options);
     }
   }
 
-  private createCommandContext(abortSignal?: AbortSignal): CommandContext {
+  private createCommandContext(abortSignal?: AbortSignal, turnId?: number | string): CommandContext {
     return {
       cwd: this.runtime.cwd,
       config: this.runtime.config,
@@ -408,6 +425,7 @@ export class AgentChatController {
       llm: this.runtime.llm,
       runtime: this.runtime.runtime,
       sessionId: this.runtime.getSession()?.id,
+      turnId,
       ensureSession: this.runtime.ensureSession,
       setSession: session => {
         this.runtime.setSession(session);
@@ -428,7 +446,10 @@ export class AgentChatController {
     };
   }
 
-  private async runChat(input: string, abortSignal?: AbortSignal): Promise<void> {
+  private async runChat(
+    input: string,
+    options: { abortSignal?: AbortSignal; turnId?: number | string } = {}
+  ): Promise<void> {
     if (!input) {
       this.events.append({ role: 'error', content: 'Usage: /chat <message>' });
       return;
@@ -442,6 +463,8 @@ export class AgentChatController {
       return;
     }
 
+    const abortSignal = options.abortSignal;
+    const turnId = options.turnId;
     const activeSession = this.runtime.getSession() ?? this.runtime.ensureSession() ?? loadSessionMeta(this.runtime.getSession()?.id ?? '');
     const sessionId = activeSession?.id;
     const runtimeTools = getRuntimeTools();
@@ -490,8 +513,12 @@ export class AgentChatController {
       activeSkillsContent: skillResolution.promptInjection,
       referencedFilesContent: buildReferencedFilesPrompt(input, this.runtime.cwd),
     };
-    const systemPrompt = getSystemPrompt(promptCtx);
-    const messages: Message[] = [{ role: 'system', content: systemPrompt }, ...snapshot.conversationHistory];
+    const systemPrompt = buildSystemPrompt(promptCtx);
+    const messages: Message[] = [
+      { role: 'system', content: systemPrompt.static, cacheControl: { type: 'ephemeral' } },
+      ...(systemPrompt.dynamic ? [{ role: 'system' as const, content: systemPrompt.dynamic }] : []),
+      ...snapshot.conversationHistory,
+    ];
 
     let finalContent = '';
     let finalUsage: { promptTokens: number; completionTokens: number } | undefined;
@@ -515,7 +542,15 @@ export class AgentChatController {
             : `Tool ${name} is not available.`,
         });
       }
-      return executeTool(name, args, signal);
+      return executeTool(name, args, signal, {
+        cwd: this.runtime.cwd,
+        config: {
+          name: this.runtime.config.name,
+          mode: this.runtime.config.mode,
+        },
+        sessionId,
+        turnId,
+      });
     };
 
     try {
@@ -535,6 +570,8 @@ export class AgentChatController {
             name: this.runtime.config.name,
             mode: this.runtime.config.mode,
           },
+          sessionId,
+          turnId,
         },
         abortSignal,
         harness,
@@ -595,6 +632,10 @@ export class AgentChatController {
       if (wasAborted) {
         assistantStream.discardSegment();
         this.events.setStatus('Interrupted.');
+        removeTrailingUserMessage(this.runtime);
+        if (sessionId) {
+          removeLastIncompleteAssistantMessage(sessionId);
+        }
         return;
       }
 
@@ -633,6 +674,10 @@ export class AgentChatController {
       if (isAbortError(error, abortSignal)) {
         assistantStream.discardSegment();
         this.events.setStatus('Interrupted.');
+        removeTrailingUserMessage(this.runtime);
+        if (sessionId) {
+          removeLastIncompleteAssistantMessage(sessionId);
+        }
         return;
       }
 

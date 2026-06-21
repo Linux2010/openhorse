@@ -72,7 +72,7 @@ describe('Context Harness', () => {
     expect(renderContextCapsule(capsule!)).toContain('Context Capsule');
   });
 
-  test('assembler injects harness context into cloned system prompt', () => {
+  test('assembler injects harness context after stable system prompt', () => {
     const harness = createContextHarness({ cwd: '/repo', modelId: 'gpt-4o' });
     harness.updateContractFromUserInput('修复 CLI 输入背景，要求不要改 provider');
 
@@ -83,8 +83,11 @@ describe('Context Harness', () => {
     const assembled = harness.assembleMessages(original);
 
     expect(assembled).not.toBe(original);
-    expect(assembled[0].content).toContain('OpenHorse Context Harness');
-    expect(assembled[0].content).toContain('修复 CLI 输入背景');
+    expect(assembled[0]).toEqual({ role: 'system', content: 'base system' });
+    expect(assembled[1].role).toBe('system');
+    expect(assembled[1].content).toContain('OpenHorse Context Harness');
+    expect(assembled[1].content).toContain('修复 CLI 输入背景');
+    expect(assembled[2]).toEqual({ role: 'user', content: 'hello' });
     expect(original[0].content).toBe('base system');
   });
 
@@ -119,7 +122,9 @@ describe('Context Harness', () => {
       // consume
     }
 
-    expect(seenRequests[0][0].content).toContain('OpenHorse Context Harness');
+    expect(seenRequests[0][0].content).toBe('base');
+    expect(seenRequests[0][1].role).toBe('system');
+    expect(seenRequests[0][1].content).toContain('OpenHorse Context Harness');
     expect(harness.getCapsule()?.verification.passed.length).toBe(1);
   });
 
@@ -149,4 +154,3 @@ describe('Context Harness', () => {
     expect(joined).toContain('完成 Context Harness');
   });
 });
-

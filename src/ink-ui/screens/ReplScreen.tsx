@@ -27,12 +27,13 @@ import {
   staticTranscriptEntries,
   transcriptReducer,
 } from '../runtime/transcript-state';
-import type { OpenHorseInkRuntime, SessionPickerRequest, ToolPermissionRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink } from '../types';
+import type { OpenHorseInkRuntime, SessionPickerRequest, ToolPermissionRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink, EditPreviewRequest } from '../types';
 
 type Overlay =
   | { type: 'commands'; selectedIndex: number }
   | { type: 'files'; selectedIndex: number }
   | { type: 'sessions'; selectedIndex: number; request: SessionPickerRequest }
+  | { type: 'edit'; selectedIndex: number; request: EditPreviewRequest }
   | { type: 'permission'; selectedIndex: number; request: ToolPermissionRequest }
   | { type: 'shortcuts' }
   | null;
@@ -246,6 +247,7 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
     },
     setStatus: setStatusMessage,
     showSessionPicker: request => setOverlay({ type: 'sessions', selectedIndex: 0, request }),
+    showEditPreview: request => setOverlay({ type: 'edit', selectedIndex: 0, request }),
     showPermissionRequest: request => setOverlay({ type: 'permission', selectedIndex: 0, request }),
     setProcessing,
   }), [append, finalize, remove, stdout, update]);
@@ -464,6 +466,30 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
       }
     }
 
+    if (overlay?.type === 'edit') {
+      const total = overlay.request.candidates.length;
+      if (key?.escape || isReturn) {
+        setOverlay(null);
+        return;
+      }
+      if (key?.upArrow) {
+        setOverlay({ ...overlay, selectedIndex: Math.max(0, overlay.selectedIndex - 1) });
+        return;
+      }
+      if (key?.downArrow) {
+        setOverlay({ ...overlay, selectedIndex: Math.min(Math.max(0, total - 1), overlay.selectedIndex + 1) });
+        return;
+      }
+      if (key?.pageUp) {
+        setOverlay({ ...overlay, selectedIndex: Math.max(0, overlay.selectedIndex - 10) });
+        return;
+      }
+      if (key?.pageDown) {
+        setOverlay({ ...overlay, selectedIndex: Math.min(Math.max(0, total - 1), overlay.selectedIndex + 10) });
+        return;
+      }
+    }
+
     if (overlay?.type === 'permission') {
       const items = permissionItems(overlay.request);
       if (key?.escape || value?.toLowerCase() === 'n') {
@@ -649,6 +675,21 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
           selectedIndex={overlay.selectedIndex}
           maxVisibleItems={Math.min(overlay.request.maxVisibleItems ?? maxOverlayItems, maxOverlayItems)}
           footer="↑↓ scroll  PgUp/PgDn  Enter resume  Esc cancel"
+          width={layoutWidth}
+        />
+      ) : null}
+
+      {overlay?.type === 'edit' ? (
+        <SelectList
+          title={`Edit Preview: ${overlay.request.path}`}
+          items={overlay.request.candidates.map(c => ({
+            label: `line ${c.line}: ${c.match.slice(0, 50)}${c.match.length > 50 ? '...' : ''}`,
+            value: `${c.line}`,
+            description: `→ ${overlay.request.newString.slice(0, 40)}${overlay.request.newString.length > 40 ? '...' : ''}`,
+          }))}
+          selectedIndex={overlay.selectedIndex}
+          maxVisibleItems={maxOverlayItems}
+          footer="↑↓ scroll  PgUp/PgDn  Enter/Esc close"
           width={layoutWidth}
         />
       ) : null}

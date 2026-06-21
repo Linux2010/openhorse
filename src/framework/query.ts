@@ -10,7 +10,7 @@
  */
 
 import type { LLMService, Message, StreamCallbacks, Tool } from '../services/llm';
-import type { OpenHorseTool, ToolContext, PermissionResult } from './tool';
+import type { OpenHorseTool, ToolContext } from './tool';
 import type { PermissionMode } from '../commands/types';
 import type { CostTracker } from '../core/cost-tracker';
 import type { ToolConfirmationPolicy } from '../services/config';
@@ -18,6 +18,7 @@ import { toOpenAITools } from './tool';
 import { createStrategyTracker, type StrategyTracker, type StrategyResult } from '../core/strategy-tracker';
 import { getAutoCompact } from '../services/compact/auto-compact';
 import type { ContextHarness } from '../harness';
+import { prepareToolCalls, executeToolCalls, type PreparedToolCall, type ExecutedToolCall } from './tool-scheduler';
 
 function isAborted(signal?: AbortSignal): boolean {
   return signal?.aborted === true;
@@ -47,6 +48,7 @@ export type QueryEvent =
       result: string;
       duration: number;
       success: boolean;
+      artifactRef?: { id: string; outputBytes: number };
       error?: string;
       summary?: string;
       outputBytes?: number;
@@ -185,141 +187,64 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
     // Handle tool calls
     if (response.toolCalls && response.toolCalls.length > 0) {
+      const toolCalls = response.toolCalls;
       yield {
         type: 'assistant_tool_calls',
         content: response.content,
-        toolCalls: response.toolCalls,
+        toolCalls,
       };
 
-      for (let i = 0; i < response.toolCalls.length; i++) {
+      const preparedCalls = prepareToolCalls({
+        toolCalls,
+        tools,
+        toolExecutor,
+        permissionMode: params.permissionMode,
+        toolConfirmation: params.toolConfirmation,
+        confirmToolUse: params.confirmToolUse,
+        toolContext: params.toolContext,
+        abortSignal,
+        startApproach: (toolName: string) => strategyTracker.startApproach(toolName),
+        addToolToTracker: (attemptId: string, toolName: string) => strategyTracker.addTool(attemptId, toolName),
+        harnessDriftCheck: harness ? ({ name, args }) => harness.beforeToolUse({ name, args }) : undefined,
+        harnessBlockedResult: harness ? (drift) => harness.asToolBlockedResult(drift) : undefined,
+      });
+
+      for (const prepared of preparedCalls) {
+        yield {
+          type: 'tool_call',
+          name: prepared.tc.function.name,
+          args: prepared.args,
+          callId: prepared.tc.id,
+          batchCount: toolCalls.length,
+          batchIndex: prepared.index,
+        };
+      }
+
+      for await (const executed of executeToolCalls(preparedCalls, {
+        toolExecutor,
+        abortSignal,
+        confirmToolUse: params.confirmToolUse,
+        permissionMode: params.permissionMode,
+        toolConfirmation: params.toolConfirmation,
+        harnessBlockedResult: harness ? (drift) => harness.asToolBlockedResult(drift) : undefined,
+      })) {
         if (isAborted(abortSignal)) {
           yield cancelledEvent(llm);
           return;
         }
 
-        const tc = response.toolCalls[i];
-        // Ensure arguments is valid JSON (some APIs like DashScope require this)
-        let args: Record<string, unknown> = {};
-        const rawArgs = tc.function.arguments || '';
-        if (rawArgs) {
-          try {
-            args = JSON.parse(rawArgs);
-          } catch {
-            args = {};
-          }
-        }
+        const { prepared } = executed;
+        const { tc, args, attemptId } = prepared;
 
-        // Re-serialize arguments to ensure valid JSON for next API call
-        tc.function.arguments = JSON.stringify(args);
-
-        // Start tracking this approach
-        const attemptId = strategyTracker.startApproach(tc.function.name);
-        strategyTracker.addTool(attemptId, tc.function.name);
-
-        yield {
-          type: 'tool_call',
-          name: tc.function.name,
-          args,
-          callId: tc.id,
-          batchCount: response.toolCalls.length,
-          batchIndex: i,
-        };
-
-        const start = Date.now();
-
-        const drift = harness?.beforeToolUse({ name: tc.function.name, args });
-
-        // Permission check before execution
-        let result: string;
-        const tool = tools.find(t => t.name === tc.function.name);
-        const executeToolCall = async (): Promise<string> => {
-          try {
-            return await toolExecutor(tc.function.name, args, abortSignal);
-          } catch (err: any) {
-            return JSON.stringify({
-              success: false,
-              error: `Tool execution error: ${err.message}`,
-            });
-          }
-        };
-
-        if (drift?.status === 'block') {
-          result = harness!.asToolBlockedResult(drift);
-        } else if (tool?.checkPermissions && params.toolContext) {
-          const perm = tool.checkPermissions(args, params.toolContext);
-
-          if (perm.behavior === 'deny') {
-            result = JSON.stringify({
-              success: false,
-              error: perm.reason || 'Permission denied',
-            });
-          } else if (perm.behavior === 'ask' && params.permissionMode === 'default') {
-            const confirmation = params.toolConfirmation ?? 'ask';
-            if (confirmation === 'allow') {
-              result = await executeToolCall();
-            } else if (params.confirmToolUse && confirmation === 'ask') {
-              const approved = await params.confirmToolUse({
-                name: tc.function.name,
-                args,
-                reason: perm.reason,
-                abortSignal,
-              });
-              result = approved
-                ? await executeToolCall()
-                : JSON.stringify({
-                  success: false,
-                  error: `Tool ${tc.function.name} requires user confirmation and was denied by user.`,
-                });
-            } else {
-              result = JSON.stringify({
-                success: false,
-                error: confirmation === 'deny'
-                  ? `Tool ${tc.function.name} requires user confirmation and was denied by toolConfirmation=deny.`
-                  : `Tool ${tc.function.name} requires user confirmation.`,
-              });
-            }
-          } else {
-            // Issue #32 #3.2: 透传 abortSignal
-            result = await executeToolCall();
-          }
-        } else {
-          // Issue #32 #3.2: 透传 abortSignal
-          result = await executeToolCall();
-        }
-
-        const duration = Date.now() - start;
-
-        // Issue #21 修复：解析结果，提取 success/error 字段
-        let toolSuccess = true;
-        let toolError: string | undefined;
-        let toolSummary: string | undefined;
-        let toolOutputBytes: number | undefined;
-        let strategyResult: 'success' | 'failed' = 'success';
-        let errorMsg: string | undefined;
-        try {
-          const parsed = JSON.parse(result);
-          toolSuccess = parsed.success === true;
-          toolError = parsed.error;
-          toolSummary = typeof parsed.summary === 'string' ? parsed.summary : undefined;
-          toolOutputBytes = typeof parsed.outputBytes === 'number' ? parsed.outputBytes : undefined;
-          if (parsed.success === false) {
-            strategyResult = 'failed';
-            errorMsg = parsed.error || 'Unknown error';
-          }
-        } catch {
-          strategyResult = 'failed';
-          errorMsg = 'Invalid result';
-          toolSuccess = false;
-          toolError = 'Invalid JSON result';
-        }
-        strategyTracker.recordResult(attemptId, strategyResult, errorMsg, duration);
+        strategyTracker.recordResult(attemptId, executed.strategyResult, executed.strategyError, executed.duration);
         harness?.recordToolResult({
           name: tc.function.name,
           args,
-          result,
-          duration,
-          success: toolSuccess,
-          error: toolError,
+          result: executed.result,
+          duration: executed.duration,
+          success: executed.success,
+          error: executed.error,
+          summary: executed.summary,
         });
 
         yield {
@@ -327,41 +252,34 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           name: tc.function.name,
           args,
           callId: tc.id,
-          result,
-          duration,
-          success: toolSuccess,   // Issue #21: 添加 success 字段
-          error: toolError,       // Issue #21: 添加 error 字段
-          summary: toolSummary,
-          outputBytes: toolOutputBytes,
-          batchCount: response.toolCalls.length,
-          batchIndex: i,
+          result: executed.result,
+          duration: executed.duration,
+          success: executed.success,
+          artifactRef: executed.artifactRef,
+          error: executed.error,
+          summary: executed.summary,
+          outputBytes: executed.outputBytes,
+          batchCount: toolCalls.length,
+          batchIndex: prepared.index,
         };
-
-        if (isAborted(abortSignal)) {
-          yield cancelledEvent(llm);
-          return;
-        }
 
         messages.push({
           role: 'tool',
-          content: result,
+          content: executed.result,
           tool_call_id: tc.id,
         });
 
-        // Issue #21 修复：工具失败时添加系统提示消息
-        if (!toolSuccess) {
+        if (!executed.success) {
           messages.push({
             role: 'user',
-            content: `[System] Tool ${tc.function.name} failed: ${toolError}. Consider alternative approaches or inform the user.`,
+            content: `[System] Tool ${tc.function.name} failed: ${executed.error}. Consider alternative approaches or inform the user.`,
           });
         }
 
-        // Check if strategy exhausted - suggest alternatives
         if (strategyTracker.isExhausted()) {
           const suggestion = strategyTracker.suggestAlternative();
           if (suggestion) {
             yield { type: 'strategy_exhausted', suggestion };
-            // Add suggestion to messages for LLM to consider
             messages.push({
               role: 'user',
               content: suggestion,

@@ -15,6 +15,21 @@ import type { SessionMeta } from '../services/session-storage';
 // 类型定义
 // ============================================================================
 
+/** Minimal edit preview candidate shape for CommandResult.
+ *  The canonical type lives in ui-v2; this avoids circular deps. */
+export interface EditPreviewCandidate {
+  index: number;
+  line: number;
+  match: string;
+  contextBefore: string;
+  contextAfter: string;
+  isReplaceAll: boolean;
+}
+
+// ============================================================================
+// 类型定义 (continued)
+// ============================================================================
+
 /** 命令执行上下文 */
 export interface CommandContext {
   cwd: string;
@@ -32,6 +47,8 @@ export interface CommandContext {
   getSession?: () => SessionMeta | null;
   /** Abort signal for the current CLI turn. */
   abortSignal?: AbortSignal;
+  /** Optional current turn ID for per-turn command-side context checks. */
+  turnId?: number | string;
   /** Write output while preserving the live input frame, when supported by the UI. */
   writeOutput?: (text: string) => void;
   /** Write one line while preserving the live input frame, when supported by the UI. */
@@ -54,6 +71,15 @@ export interface CommandResult {
     moreCount?: number;
     allProjects?: boolean;
     maxVisibleItems?: number;
+  };
+  /** Structured edit preview candidates for rendering in v2/TUI/Ink pickers. */
+  editPreview?: {
+    path: string;
+    newString: string;
+    kind: 'exact' | 'fuzzy';
+    strategy?: string;
+    candidates: EditPreviewCandidate[];
+    width?: number;
   };
 }
 

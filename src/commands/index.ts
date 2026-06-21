@@ -24,7 +24,7 @@ import { createStreamRenderer, type StreamMarkdownRenderer } from '../ui/stream-
 import { showProgress, hideProgress, showToolProgress } from '../ui/progress';
 import { renderSessionPicker } from '../ui-v2';
 import { formatBytes } from '../ui-v2/state/sessions';
-import { query, getSystemPrompt, resetToolState, type QueryEvent, type PromptContext } from '../framework';
+import { query, getSystemPrompt, resetToolState, getToolState, type QueryEvent, type PromptContext } from '../framework';
 import { executeTool, getRuntimeTools, getToolNames } from '../tools';
 import { mcpManager } from '../tools/mcp';
 import type { Message, StreamCallbacks } from '../services/llm';
@@ -49,6 +49,7 @@ import {
   type SessionMeta,
   type SessionMessage,
 } from '../services/session-storage';
+import { loadSessionIndex, searchSessions } from '../services/session-index';
 import { getAutoCompact } from '../services/compact/auto-compact';
 import { createContextHarness } from '../harness';
 import { resolveSkillsForTurn } from '../skills';
@@ -888,7 +889,15 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           : `Tool ${name} is not available.`,
       });
     }
-    const result = await executeTool(name, args, abortSignal);
+    const result = await executeTool(name, args, abortSignal, {
+      cwd: ctx.cwd,
+      config: {
+        name: ctx.config.name,
+        mode: ctx.config.mode,
+      },
+      sessionId,
+      turnId: ctx.turnId,
+    });
     // 不在这里打印，让 tool_result 事件处理
     return result;
   };
@@ -937,6 +946,8 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           name: ctx.config.name,
           mode: ctx.config.mode,
         },
+        sessionId,
+        turnId: ctx.turnId,
       },
       abortSignal: ctx.abortSignal,
       harness,
@@ -1477,7 +1488,7 @@ function truncateText(text: string, max: number): string {
   return text.length > max ? text.slice(0, max - 3) + '...' : text;
 }
 
-function printSessionRows(sessions: SessionMeta[], options: { showProject?: boolean; indexed?: boolean } = {}): void {
+function printSessionRows(sessions: SessionMeta[], options: { showProject?: boolean; indexed?: boolean; showIndexSummary?: boolean } = {}): void {
   for (let i = 0; i < sessions.length; i++) {
     const session = sessions[i];
     const startTime = new Date(session.startTime).toLocaleString();
@@ -1493,6 +1504,15 @@ function printSessionRows(sessions: SessionMeta[], options: { showProject?: bool
     console.log(`    ${truncateText(sessionTitle(session), 96)}`);
     console.log(`    ${DIM(`Started: ${startTime}`)} ${DIM(`Updated: ${updatedTime}`)} ${DIM(`Duration: ${duration}`)}`);
     console.log(`    ${DIM(`Messages: ${session.messageCount ?? 0}`)} ${DIM(`Size: ${formatBytes(session.historySizeBytes ?? 0)}`)} ${DIM(`Tokens: ${session.tokenCount}`)} ${DIM(`Cost: $${session.cost.toFixed(4)}`)}`);
+    if (options.showIndexSummary) {
+      const indexSummary = loadSessionIndex(session.id, session.projectPath);
+      if (indexSummary) {
+        const toolCount = Object.values(indexSummary.tools).reduce((total, count) => total + count, 0);
+        console.log(`    ${DIM(`Index: ${indexSummary.files.length} files, ${toolCount} tool calls, ${indexSummary.topics.length} topics`)}`);
+      } else {
+        console.log(`    ${DIM('Index: not built')}`);
+      }
+    }
     if (options.showProject) {
       console.log(`    ${DIM(`Project: ${session.projectPath}`)}`);
     }
@@ -1541,6 +1561,45 @@ function printSessionPicker(sessions: SessionMeta[], options: { title: string; s
 
 function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
   const scope = parseSessionScopeArgs(args, ctx.cwd);
+  const query = scope.query?.trim();
+
+  // If there's a search query, use the session index
+  if (query && !query.startsWith('--')) {
+    const allSessions = scope.allProjects
+      ? listSessions()
+      : listProjectSessions(scope.projectPath);
+    const matchedIds = searchSessions(query, allSessions.map(session => ({
+      id: session.id,
+      projectPath: session.projectPath,
+    })));
+
+    if (matchedIds.length === 0) {
+      console.log();
+      console.log(HEADER(`Sessions (search: "${query}")`));
+      console.log(DIM('─'.repeat(40)));
+      console.log(DIM('  No matching sessions found'));
+      console.log();
+      console.log(DIM('Tip: search by file path, tool name, or topic keyword'));
+      console.log();
+      return { success: true };
+    }
+
+    // Rebuild session list in matched order
+    const sessionMap = new Map(allSessions.map(s => [s.id, s]));
+    const matchedSessions = matchedIds.map(id => sessionMap.get(id)).filter(Boolean) as SessionMeta[];
+
+    console.log();
+    console.log(HEADER(`Sessions (search: "${query}") — ${matchedSessions.length} matches`));
+    console.log(DIM('─'.repeat(40)));
+    console.log();
+    printSessionRows(matchedSessions, { indexed: true, showProject: scope.allProjects, showIndexSummary: true });
+    console.log();
+    console.log(DIM(`Searched ${allSessions.length} sessions, found ${matchedSessions.length} matches`));
+    console.log(DIM('Use /resume <number|session-id|name> to restore a session'));
+    console.log();
+    return { success: true };
+  }
+
   console.log();
   console.log(HEADER(scope.allProjects ? 'Sessions (all projects)' : 'Sessions'));
   console.log(DIM('─'.repeat(40)));
@@ -1561,6 +1620,7 @@ function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
   console.log(DIM('Use /resume <number|session-id|name> to restore a session'));
   console.log(DIM('Use /session-rename <number|session-id|name> <new name> to rename'));
   console.log(DIM('Use /sessions --all to list sessions from every project'));
+  console.log(DIM('Use /sessions <query> to search by file, tool, or keyword'));
   console.log();
   return { success: true };
 }
@@ -1715,6 +1775,84 @@ function handleSessionRename(ctx: CommandContext, args: string): CommandResult {
   return { success: true };
 }
 
+async function handleEditPreview(ctx: CommandContext): Promise<CommandResult> {
+  const lastEdit = getToolState().lastEditFileArgs;
+
+  if (!lastEdit) {
+    console.log(ERROR('No previous edit_file call found for preview'));
+    console.log(DIM('Run an edit_file tool call first, then use /edit-preview to inspect the match candidates.'));
+    console.log();
+    return { success: false };
+  }
+
+  const hasMetadata = Boolean(lastEdit.sessionId || lastEdit.turnId);
+  if (!hasMetadata) {
+    console.log(WARN('Using legacy edit-preview state without session/turn tags. Running preview as best-effort.'));
+  }
+
+  const staleBySession = Boolean(lastEdit.sessionId && ctx.sessionId && lastEdit.sessionId !== ctx.sessionId);
+  const staleByTurn = Boolean(lastEdit.turnId != null && ctx.turnId != null && String(lastEdit.turnId) !== String(ctx.turnId));
+  if (staleBySession || staleByTurn) {
+    const mismatch = [];
+    if (staleBySession) mismatch.push(`session ${lastEdit.sessionId} vs ${ctx.sessionId}`);
+    if (staleByTurn) mismatch.push(`turn ${String(lastEdit.turnId)} vs ${String(ctx.turnId)}`);
+    console.log(ERROR('Edit preview target does not match current context.'));
+    console.log(DIM(`Stale edit target: ${mismatch.join(', ')}.`));
+    console.log();
+    return { success: false };
+  }
+
+  if (hasMetadata && !(ctx.sessionId || ctx.turnId)) {
+    console.log(WARN('Edit preview context is available, but current command context is missing session/turn metadata.'));
+    console.log(DIM('Preview is allowed, but stale checks cannot be fully validated.'));
+  }
+
+  const rawResult = await executeTool('edit_file', {
+    ...lastEdit,
+    preview: true,
+  }, ctx.abortSignal, {
+    cwd: ctx.cwd,
+    config: {
+      name: ctx.config.name,
+      mode: ctx.config.mode,
+    },
+    sessionId: ctx.sessionId,
+    turnId: ctx.turnId,
+  });
+
+  let parsed: { success?: boolean; output?: string; error?: string; metadata?: { candidates?: unknown[] } };
+  try {
+    parsed = JSON.parse(rawResult);
+  } catch {
+    parsed = { success: false, error: rawResult };
+  }
+
+  console.log();
+  console.log(HEADER('Edit Preview'));
+  console.log(DIM('─'.repeat(40)));
+  if (parsed.success) {
+    console.log(parsed.output || DIM('No preview output'));
+  } else {
+    console.log(ERROR(parsed.error || 'Preview failed'));
+  }
+  console.log();
+
+  // Return structured data for v2/TUI/Ink picker rendering
+  if (parsed.success && parsed.metadata?.candidates && Array.isArray(parsed.metadata.candidates)) {
+    return {
+      success: true,
+      editPreview: {
+        path: lastEdit.path as string,
+        newString: lastEdit.new_string as string,
+        kind: (lastEdit.fuzzy_match ? 'fuzzy' : 'exact') as 'exact' | 'fuzzy',
+        candidates: parsed.metadata.candidates as Array<{ index: number; line: number; match: string; contextBefore: string; contextAfter: string; isReplaceAll: boolean }>,
+      },
+    };
+  }
+
+  return { success: parsed.success === true };
+}
+
 /** Generate a brief summary of conversation history */
 function generateHistorySummary(messages: Message[]): string {
   const userMsgs = messages.filter(m => m.role === 'user' && m.content);
@@ -1834,7 +1972,8 @@ const COMMANDS: SlashCommand[] = [
   },
   {
     name: 'sessions',
-    description: 'List recent sessions',
+    description: 'List recent sessions, or search by file/tool/keyword',
+    argumentHint: '[<query>|--all]',
     category: 'session',
     priority: 20,
     type: 'builtin',
@@ -1906,6 +2045,14 @@ const COMMANDS: SlashCommand[] = [
     priority: 10,
     type: 'builtin',
     execute: (ctx) => handleTools(ctx),
+  },
+  {
+    name: 'edit-preview',
+    description: 'Preview the last edit_file match candidates without writing',
+    category: 'tools',
+    priority: 15,
+    type: 'builtin',
+    execute: (ctx) => handleEditPreview(ctx),
   },
   {
     name: 'mcp',

@@ -15,6 +15,12 @@ import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, createR
 import { join, resolve, relative, extname } from 'path';
 import { createInterface } from 'readline';
 import { buildTool, type OpenHorseTool, type ToolResult, type ToolContext } from '../framework/tool';
+import { setToolState } from '../framework/tool-state';
+import {
+  ARTIFACT_THRESHOLD,
+  storeArtifact,
+  truncateForContext,
+} from '../core/tool-artifacts';
 import {
   saveMemory,
   loadMemory,
@@ -278,10 +284,14 @@ export const TOOLS: OpenHorseTool[] = [
           type: 'boolean',
           description: '精确匹配失败时是否允许宽松空白匹配（可选，默认 false；多候选时总是拒绝）',
         },
+        preview: {
+          type: 'boolean',
+          description: '预览匹配结果而不写入文件（可选，默认 false）',
+        },
       },
       required: ['path', 'old_string', 'new_string'],
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
       // Ensure required parameters are valid strings
       const path = args.path;
       const old_string = args.old_string;
@@ -295,12 +305,29 @@ export const TOOLS: OpenHorseTool[] = [
       if (typeof new_string !== 'string') {
         return { success: false, output: '', error: 'edit_file requires a new_string parameter' };
       }
+      const lastEditFileArgs: {
+        path: string;
+        old_string: string;
+        new_string: string;
+        replace_all?: boolean;
+        fuzzy_match?: boolean;
+        sessionId?: string;
+        turnId?: number | string;
+        updatedAt: number;
+      } = { path, old_string, new_string, updatedAt: Date.now() };
+      if (typeof args.replace_all === 'boolean') lastEditFileArgs.replace_all = args.replace_all;
+      if (typeof args.fuzzy_match === 'boolean') lastEditFileArgs.fuzzy_match = args.fuzzy_match;
+      if (context?.sessionId) lastEditFileArgs.sessionId = context.sessionId;
+      if (context?.turnId) lastEditFileArgs.turnId = context.turnId;
+      lastEditFileArgs.updatedAt = Date.now();
+      setToolState({ lastEditFileArgs });
       return editFile_(
         path,
         old_string,
         new_string,
         args.replace_all as boolean | undefined,
-        args.fuzzy_match as boolean | undefined
+        args.fuzzy_match as boolean | undefined,
+        args.preview as boolean | undefined
       );
     },
     isDestructive: () => true,
@@ -1019,6 +1046,93 @@ interface FuzzyMatchResult {
   strategy: 'whitespace' | 'line';
 }
 
+function lineNumberForIndex(content: string, index: number): number {
+  return content.slice(0, Math.max(0, index)).split('\n').length;
+}
+
+function findAllMatchIndexes(content: string, needle: string, limit = 20): number[] {
+  const indexes: number[] = [];
+  let cursor = 0;
+  while (indexes.length < limit) {
+    const index = content.indexOf(needle, cursor);
+    if (index < 0) break;
+    indexes.push(index);
+    cursor = index + Math.max(needle.length, 1);
+  }
+  return indexes;
+}
+
+function previewLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, 120);
+}
+
+export interface EditPreviewCandidate {
+  index: number;
+  line: number;
+  match: string;
+  contextBefore: string;
+  contextAfter: string;
+  isReplaceAll: boolean;
+}
+
+function buildEditCandidates(params: {
+  kind: 'exact' | 'fuzzy';
+  content: string;
+  matches: string[];
+  newString: string;
+  strategy?: string;
+  count?: number;
+}): EditPreviewCandidate[] {
+  const cursorByMatch = new Map<string, number>();
+  return params.matches.slice(0, 20).map((match, index) => {
+    const cursor = cursorByMatch.get(match) ?? 0;
+    const matchIndex = params.content.indexOf(match, cursor);
+    cursorByMatch.set(match, matchIndex >= 0 ? matchIndex + Math.max(match.length, 1) : cursor);
+    const lineNum = matchIndex >= 0 ? lineNumberForIndex(params.content, matchIndex) : 0;
+
+    // Get context lines (3 before, 3 after)
+    const allLines = params.content.split('\n');
+    const contextBefore = allLines.slice(Math.max(0, lineNum - 4), lineNum).join('\n');
+    const contextAfter = allLines.slice(lineNum + 1, lineNum + 4).join('\n');
+
+    return {
+      index,
+      line: lineNum,
+      match,
+      contextBefore,
+      contextAfter,
+      isReplaceAll: (params.count ?? 1) > 1,
+    };
+  });
+}
+
+function formatEditPreview(params: {
+  kind: 'exact' | 'fuzzy';
+  content: string;
+  matches: string[];
+  newString: string;
+  strategy?: string;
+}): string {
+  const cursorByMatch = new Map<string, number>();
+  const lines = [
+    `Preview: ${params.kind === 'fuzzy' ? `Fuzzy ${params.strategy ?? 'match'}` : 'Exact match'} candidates (${params.matches.length})`,
+  ];
+
+  params.matches.slice(0, 20).forEach((match, index) => {
+    const cursor = cursorByMatch.get(match) ?? 0;
+    const matchIndex = params.content.indexOf(match, cursor);
+    cursorByMatch.set(match, matchIndex >= 0 ? matchIndex + Math.max(match.length, 1) : cursor);
+    const lineNum = matchIndex >= 0 ? lineNumberForIndex(params.content, matchIndex) : '?';
+    lines.push(`${index + 1}. line ${lineNum}: "${previewLine(match)}"`);
+  });
+
+  if (params.matches.length > 20) {
+    lines.push(`... ${params.matches.length - 20} more candidates omitted`);
+  }
+  lines.push(`Would replace with: "${previewLine(params.newString)}"`);
+  return lines.join('\n');
+}
+
 /**
  * Attempt to find old_string in content using fuzzy matching strategies.
  * Returns null if no match found, or the matched strings.
@@ -1071,7 +1185,7 @@ function fuzzyMatch(content: string, oldString: string): FuzzyMatchResult | null
   return null;
 }
 
-async function editFile_(path: string, old_string: string, new_string: string, replace_all?: boolean, fuzzy_match?: boolean): Promise<ToolResult> {
+async function editFile_(path: string, old_string: string, new_string: string, replace_all?: boolean, fuzzy_match?: boolean, preview?: boolean): Promise<ToolResult> {
   try {
     const resolved = safePath(path);
     if (!existsSync(resolved)) {
@@ -1085,6 +1199,29 @@ async function editFile_(path: string, old_string: string, new_string: string, r
 
     // Check if old_string exists exactly
     const count = (content.match(new RegExp(escapeRegExp(old_string), 'g')) || []).length;
+
+    if (count > 0 && preview) {
+      const matchIndexes = findAllMatchIndexes(content, old_string);
+      const matches = matchIndexes.map(() => old_string);
+      return {
+        success: true,
+        output: formatEditPreview({
+          kind: 'exact',
+          content,
+          matches,
+          newString: new_string,
+        }),
+        metadata: {
+          candidates: buildEditCandidates({
+            kind: 'exact',
+            content,
+            matches,
+            newString: new_string,
+            count,
+          }),
+        },
+      };
+    }
 
     if (count === 0) {
       if (!fuzzy_match) {
@@ -1102,6 +1239,28 @@ async function editFile_(path: string, old_string: string, new_string: string, r
         return { success: false, output: '', error: `old_string not found in file: ${old_string.slice(0, 100)}...` };
       }
 
+      if (preview) {
+        return {
+          success: true,
+          output: formatEditPreview({
+            kind: 'fuzzy',
+            content,
+            matches: fuzzyResult.matches,
+            newString: new_string,
+            strategy: fuzzyResult.strategy,
+          }),
+          metadata: {
+            candidates: buildEditCandidates({
+              kind: 'fuzzy',
+              content,
+              matches: fuzzyResult.matches,
+              newString: new_string,
+              strategy: fuzzyResult.strategy,
+            }),
+          },
+        };
+      }
+
       if (fuzzyResult.matches.length > 1) {
         return {
           success: false,
@@ -1112,6 +1271,7 @@ async function editFile_(path: string, old_string: string, new_string: string, r
 
       // Use the single fuzzy match only.
       const match = fuzzyResult.matches[0];
+
       const idx = content.indexOf(match);
       const newContent = content.slice(0, idx) + new_string + content.slice(idx + match.length);
 
@@ -1366,7 +1526,12 @@ async function grep_(pattern: string, basePath?: string, globPattern?: string, c
  * 执行一个工具调用，返回结构化结果字符串
  * Issue #32 #3.2: 支持 abortSignal
  */
-export async function executeTool(name: string, args: Record<string, unknown>, abortSignal?: AbortSignal): Promise<string> {
+export async function executeTool(
+  name: string,
+  args: Record<string, unknown>,
+  abortSignal?: AbortSignal,
+  toolContext?: ToolContext
+): Promise<string> {
   const runtimeTools = getRuntimeTools();
   const tool = runtimeTools.find(t => t.name === name);
   if (!tool) {
@@ -1377,34 +1542,46 @@ export async function executeTool(name: string, args: Record<string, unknown>, a
   }
 
   const context: ToolContext = {
-    cwd: process.cwd(),
-    config: {
-      name: 'openhorse',
+    cwd: toolContext?.cwd || process.cwd(),
+    config: toolContext?.config || {
+      name: process.env.OPENHORSE_NAME || 'openhorse',
       mode: process.env.OPENHORSE_MODE || 'development',
     },
     abortSignal,  // Issue #32 #3.2: 透传 abortSignal
+    sessionId: toolContext?.sessionId,
+    turnId: toolContext?.turnId,
   };
 
   const result = await tool.execute(args, context);
   const summary = summarizeToolResult(tool, args, result);
   const outputBytes = Buffer.byteLength(result.output || '', 'utf8');
 
-  if (!result.success) {
-    return JSON.stringify({
-      success: false,
-      error: result.error,
-      output: result.output,
-      summary,
-      outputBytes,
-    });
+  let output = result.output || '';
+  let artifactRef: { id: string; outputBytes: number } | undefined;
+
+  if (outputBytes > ARTIFACT_THRESHOLD) {
+    const artifact = storeArtifact(context.cwd, name, output, outputBytes);
+    if (artifact) {
+      artifactRef = { id: artifact.id, outputBytes: artifact.outputBytes };
+      output = truncateForContext(output);
+    }
   }
 
-  return JSON.stringify({
-    success: true,
-    output: result.output,
+  const payload: Record<string, unknown> = {
+    success: result.success,
+    output,
     summary,
     outputBytes,
-  });
+  };
+
+  if (!result.success) {
+    payload.error = result.error;
+  }
+  if (artifactRef) {
+    payload.artifactRef = artifactRef;
+  }
+
+  return JSON.stringify(payload);
 }
 
 function summarizeToolResult(tool: OpenHorseTool, args: Record<string, unknown>, result: ToolResult): string | undefined {

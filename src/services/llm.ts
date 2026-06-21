@@ -55,6 +55,20 @@ export class FallbackTriggeredError extends Error {
   }
 }
 
+/** Cache control hint for provider-level prompt caching */
+export interface CacheControl {
+  type: 'ephemeral';
+}
+
+/** Provider-agnostic cache control content part.
+ *  Appended to content arrays when cacheControl is set on a message.
+ *  Supported by Anthropic (via OpenAI-compatible) — silently ignored by OpenAI. */
+export interface CacheControlContentPart {
+  type: 'text';
+  text: '';
+  cache_control: { type: 'ephemeral' };
+}
+
 /** 对话消息 */
 export interface Message {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -65,6 +79,9 @@ export interface Message {
     function: { name: string; arguments: string };
   }>;
   tool_call_id?: string;
+  /** Provider-level prompt caching hint. Set on messages expected to be identical
+   *  across consecutive requests (e.g. static system prompt prefix). */
+  cacheControl?: CacheControl;
 }
 
 /** 工具定义 */
@@ -599,6 +616,17 @@ export class LLMService {
             },
           })),
         } as ChatCompletionMessageParam;
+      }
+      // Apply cache control for providers that support it (Anthropic via OpenAI-compatible API).
+      // Converts content to content array format with cache_control block appended.
+      if (msg.cacheControl?.type === 'ephemeral' && msg.content) {
+        return {
+          role: msg.role,
+          content: [
+            { type: 'text', text: msg.content },
+            { type: 'text', text: '', cache_control: { type: 'ephemeral' } },
+          ],
+        } as unknown as ChatCompletionMessageParam;
       }
       return {
         role: msg.role,

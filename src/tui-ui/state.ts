@@ -1,4 +1,5 @@
 import type {
+  EditPreviewRequest,
   SessionPickerRequest,
   ToolPermissionRequest,
   TranscriptAppendEntry,
@@ -18,6 +19,7 @@ export interface TuiTranscriptRecord extends TranscriptEntry {
 
 export type TuiOverlayState =
   | { type: 'sessions'; request: SessionPickerRequest; selectedIndex: number }
+  | { type: 'edit'; request: EditPreviewRequest; selectedIndex: number }
   | { type: 'permission'; request: ToolPermissionRequest; selectedIndex: number }
   | { type: 'commands'; query: string; items: TuiPickerItem[]; selectedIndex: number }
   | { type: 'files'; base: string; query: string; items: TuiPickerItem[]; selectedIndex: number }
@@ -47,6 +49,7 @@ export type TuiUiAction =
   | { type: 'setStatus'; message: string }
   | { type: 'setProcessing'; processing: boolean }
   | { type: 'showSessionPicker'; request: SessionPickerRequest }
+  | { type: 'showEditPreview'; request: EditPreviewRequest }
   | { type: 'showPermissionRequest'; request: ToolPermissionRequest }
   | { type: 'showCommandPalette'; query: string; items: TuiPickerItem[] }
   | { type: 'showFilePicker'; base: string; query: string; items: TuiPickerItem[] }
@@ -158,6 +161,12 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
         overlay: { type: 'sessions', request: action.request, selectedIndex: 0 },
       };
 
+    case 'showEditPreview':
+      return {
+        ...state,
+        overlay: { type: 'edit', request: action.request, selectedIndex: 0 },
+      };
+
     case 'showPermissionRequest':
       return {
         ...state,
@@ -241,6 +250,7 @@ export function createTuiUiEventSink(
     clearTranscript: () => dispatch({ type: 'clearTranscript' }),
     setStatus: message => dispatch({ type: 'setStatus', message }),
     showSessionPicker: request => dispatch({ type: 'showSessionPicker', request }),
+    showEditPreview: request => dispatch({ type: 'showEditPreview', request }),
     showPermissionRequest: request => dispatch({ type: 'showPermissionRequest', request }),
     setProcessing: processing => dispatch({ type: 'setProcessing', processing }),
   };
@@ -282,6 +292,7 @@ function stripRecord(entry: TuiTranscriptRecord): TranscriptEntry {
 function overlayItemCount(overlay: Exclude<TuiOverlayState, null | { type: 'shortcuts' }>): number {
   if (overlay.type === 'sessions') return overlay.request.sessions.length;
   if (overlay.type === 'permission') return 2;
+  if (overlay.type === 'edit') return overlay.request.candidates.length;
   return overlay.items.length;
 }
 

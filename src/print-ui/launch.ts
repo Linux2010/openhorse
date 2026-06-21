@@ -1,6 +1,6 @@
 import { AgentRuntimeController } from '../runtime/agent-runtime-controller';
 import { emitToUiEventSink, type AgentRuntimeEventSink } from '../runtime/agent-runtime-protocol';
-import type { OpenHorseInkRuntime, SessionPickerRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink } from '../runtime/ui-events';
+import type { EditPreviewRequest, OpenHorseInkRuntime, SessionPickerRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink } from '../runtime/ui-events';
 
 export type PrintOutputFormat = 'text' | 'json';
 
@@ -95,6 +95,14 @@ class PrintEventSink implements UiEventSink {
 
   showSessionPicker(request: SessionPickerRequest): void {
     const message = `Session picker is not interactive in print mode. Use /resume <session-id> or /resume --last. (${request.sessions.length} sessions available)`;
+    this.errors.push(message);
+    if (this.outputFormat === 'text') {
+      stderrLine(message);
+    }
+  }
+
+  showEditPreview(_request: EditPreviewRequest): void {
+    const message = 'Edit preview rendering is not available in print mode.';
     this.errors.push(message);
     if (this.outputFormat === 'text') {
       stderrLine(message);
