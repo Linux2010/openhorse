@@ -75,7 +75,8 @@ export type IntentKind =
   | 'verify_or_test'
   | 'meta_configuration'
   | 'casual_or_feedback'
-  | 'continue_current_task';
+  | 'continue_current_task'
+  | 'clarification';
 
 export interface IntentUpdate {
   id: string;
@@ -122,6 +123,9 @@ export interface EvidenceRecord {
   toolName?: string;
   verificationStatus?: 'passed' | 'failed' | 'unknown';
   metadata?: Record<string, unknown>;
+  /** How many times this evidence was selected into the prompt.
+   *  Used as a simple learning signal to boost frequently-useful evidence. */
+  includedCount?: number;
 }
 
 export interface RankedEvidenceRecord extends EvidenceRecord {

@@ -112,6 +112,13 @@ function classifyKind(input: string, state?: HarnessState): { kind: IntentKind; 
     return { kind: 'new_task', confidence: hasRoot ? 0.76 : 0.86, reason: 'explicit task creation wording' };
   }
 
+  // Clarification: user is asking for explanation or asking about meaning
+  // Must be checked BEFORE refinement since clarification phrases may contain "这个"
+  if (matches(text, /(什么意思|解释一下|解释说明|clarify|explain to me|what does.*mean|what is.*for|can you explain|meaning of)/) ||
+      matches(lower, /^(what|why|how|explain|clarify|could you explain|can you explain)\b/)) {
+    return { kind: 'clarification', confidence: 0.7, reason: 'clarification or explanation request' };
+  }
+
   if (matches(text, /(补充|另外|同时|还有|希望|可以|顺便|完善|优化|灰色|填充|这个|这里|如图|也|继续)/) ||
       matches(lower, /\b(also|additionally|please also|refine|improve|continue)\b/)) {
     return { kind: 'refine_current_task', confidence: hasRoot ? 0.76 : 0.58, reason: 'refinement or addition wording' };
@@ -152,5 +159,6 @@ export function classifyIntent(input: string, state?: HarnessState): IntentUpdat
 export function shouldReplaceActiveInstruction(intent: IntentUpdate): boolean {
   if (intent.kind === 'continue_current_task') return false;
   if (intent.kind === 'casual_or_feedback' && intent.input.trim().length <= 18) return false;
+  if (intent.kind === 'clarification') return false;
   return true;
 }
