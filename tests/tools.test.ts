@@ -1,6 +1,8 @@
 import { TOOLS, executeTool, getToolNames } from '../src/tools';
 import type { ToolContext } from '../src/framework/tool';
+import { getMemoryDir, loadMemory } from '../src/memory/storage';
 import fs from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
 
 const ctx: ToolContext = {
@@ -50,6 +52,69 @@ describe('TOOLS array', () => {
     expect(names).toContain('todo_write');
     expect(names).toContain('enter_plan_mode');
     expect(names).toContain('exit_plan_mode');
+  });
+});
+
+describe('memory tools project cwd', () => {
+  const memoryProject = path.join(tmpdir(), `openhorse-memory-tools-${Date.now()}`);
+  const memoryCtx: ToolContext = {
+    cwd: memoryProject,
+    config: { name: 'test', mode: 'development' },
+  };
+
+  beforeEach(() => {
+    if (fs.existsSync(memoryProject)) {
+      fs.rmSync(memoryProject, { recursive: true, force: true });
+    }
+    fs.mkdirSync(memoryProject, { recursive: true });
+    const memoryDir = getMemoryDir(memoryProject);
+    if (fs.existsSync(memoryDir)) {
+      fs.rmSync(memoryDir, { recursive: true, force: true });
+    }
+  });
+
+  afterEach(() => {
+    const memoryDir = getMemoryDir(memoryProject);
+    if (fs.existsSync(memoryProject)) {
+      fs.rmSync(memoryProject, { recursive: true, force: true });
+    }
+    if (fs.existsSync(memoryDir)) {
+      fs.rmSync(memoryDir, { recursive: true, force: true });
+    }
+  });
+
+  test('memory_save writes to ToolContext.cwd project memory', async () => {
+    const name = `ctx-memory-${Date.now()}`;
+    const result = await executeTool('memory_save', {
+      name,
+      type: 'project',
+      description: 'Context memory',
+      content: 'Stored via tool context cwd',
+    }, undefined, memoryCtx);
+
+    expect(JSON.parse(result).success).toBe(true);
+    expect(fs.existsSync(path.join(getMemoryDir(memoryProject), `${name}.md`))).toBe(true);
+    expect(loadMemory(name, memoryProject)?.content).toBe('Stored via tool context cwd');
+    expect(loadMemory(name, process.cwd())).toBeNull();
+  });
+
+  test('memory_recall and memory_forget use ToolContext.cwd', async () => {
+    await executeTool('memory_save', {
+      name: 'ctx-forget',
+      type: 'feedback',
+      content: 'Forget me from context project',
+    }, undefined, memoryCtx);
+
+    const recalled = JSON.parse(await executeTool('memory_recall', {
+      query: 'Forget me',
+    }, undefined, memoryCtx));
+    expect(recalled.output).toContain('ctx-forget');
+
+    const forgotten = JSON.parse(await executeTool('memory_forget', {
+      name: 'ctx-forget',
+    }, undefined, memoryCtx));
+    expect(forgotten.success).toBe(true);
+    expect(loadMemory('ctx-forget', memoryProject)).toBeNull();
   });
 });
 

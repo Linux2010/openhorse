@@ -5,13 +5,21 @@
 import {
   getConfigHome,
   ensureConfigDir,
+  ensureProjectDir,
   getGlobalConfigPath,
   getSettingsPath,
   getUserMemoryPath,
   getHistoryPath,
-  getSessionsDir,
   getProjectsDir,
   getCostDir,
+  getCanonicalProjectKey,
+  getLegacyProjectMemoryDir,
+  getProjectArtifactsDir,
+  getProjectCheckpointsDir,
+  getProjectMetadataPath,
+  getProjectMemoryDir,
+  readProjectMetadata,
+  updateProjectMetadata,
   getMemoryPath,
   getExistingMemoryPaths,
   type MemoryType,
@@ -58,7 +66,7 @@ describe('config-dir', () => {
       ensureConfigDir();
 
       expect(existsSync(testDir)).toBe(true);
-      expect(existsSync(join(testDir, 'sessions'))).toBe(true);
+      expect(existsSync(join(testDir, 'sessions'))).toBe(false);
       expect(existsSync(join(testDir, 'projects'))).toBe(true);
       expect(existsSync(join(testDir, 'cost'))).toBe(true);
       expect(existsSync(join(testDir, 'cache'))).toBe(true);
@@ -88,16 +96,46 @@ describe('config-dir', () => {
       expect(getHistoryPath()).toBe(join(testDir, 'history.jsonl'));
     });
 
-    test('getSessionsDir returns correct path', () => {
-      expect(getSessionsDir()).toBe(join(testDir, 'sessions'));
-    });
-
     test('getProjectsDir returns correct path', () => {
       expect(getProjectsDir()).toBe(join(testDir, 'projects'));
     });
 
     test('getCostDir returns correct path', () => {
       expect(getCostDir()).toBe(join(testDir, 'cost'));
+    });
+
+    test('project-scoped storage helpers use canonical encoded project key', () => {
+      const projectPath = '/tmp/openhorse config-dir project';
+      const key = getCanonicalProjectKey(projectPath);
+
+      expect(key).toContain('tmp-openhorse-config-dir-project');
+      expect(getProjectMemoryDir(projectPath)).toBe(join(testDir, 'projects', key, 'memory'));
+      expect(getProjectArtifactsDir(projectPath)).toBe(join(testDir, 'projects', key, 'artifacts'));
+      expect(getProjectCheckpointsDir(projectPath)).toBe(join(testDir, 'projects', key, 'checkpoints'));
+      expect(getLegacyProjectMemoryDir(projectPath)).not.toBe(getProjectMemoryDir(projectPath));
+    });
+
+    test('ensureProjectDir writes project metadata', () => {
+      const projectPath = '/tmp/openhorse-project-metadata';
+
+      ensureProjectDir(projectPath);
+
+      const metadata = readProjectMetadata(projectPath);
+      expect(existsSync(getProjectMetadataPath(projectPath))).toBe(true);
+      expect(metadata?.schemaVersion).toBe(1);
+      expect(metadata?.projectKey).toBe(getCanonicalProjectKey(projectPath));
+      expect(metadata?.projectPath).toBe(projectPath);
+      expect(metadata?.createdAt).toBeDefined();
+      expect(metadata?.lastSeenAt).toBeDefined();
+    });
+
+    test('updateProjectMetadata preserves createdAt', () => {
+      const projectPath = '/tmp/openhorse-project-metadata-preserve';
+      const first = updateProjectMetadata(projectPath, new Date('2026-01-01T00:00:00.000Z'));
+      const second = updateProjectMetadata(projectPath, new Date('2026-01-02T00:00:00.000Z'));
+
+      expect(second.createdAt).toBe(first.createdAt);
+      expect(second.lastSeenAt).toBe('2026-01-02T00:00:00.000Z');
     });
   });
 

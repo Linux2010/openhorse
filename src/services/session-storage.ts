@@ -19,9 +19,6 @@ import {
   getProjectSessionMetaPath,
   getProjectSessionsDir,
   getProjectsDir,
-  getSessionMetaPath,
-  getSessionMessagesPath,
-  getSessionsDir,
 } from './config-dir';
 import { atomicWriteFileSync } from './atomic-write';
 import { deleteSessionIndex, updateSessionIndex } from './session-index';
@@ -292,9 +289,7 @@ function safeFileSize(path: string): number | null {
 }
 
 function computeSessionHistorySizeBytes(session: Pick<SessionMeta, 'id' | 'projectPath'>): number {
-  const projectSize = safeFileSize(getProjectSessionMessagesPath(session.projectPath, session.id));
-  if (projectSize !== null) return projectSize;
-  return safeFileSize(getSessionMessagesPath(session.id)) ?? 0;
+  return safeFileSize(getProjectSessionMessagesPath(session.projectPath, session.id)) ?? 0;
 }
 
 // ============================================================================
@@ -355,14 +350,6 @@ export function loadSessionMeta(sessionId: string): SessionMeta | null {
       if (session) {
         return normalizeSessionMeta(session);
       }
-    }
-  }
-
-  const globalPath = getSessionMetaPath(sessionId);
-  if (existsSync(globalPath)) {
-    const session = parseSessionMetaFile(globalPath);
-    if (session) {
-      return normalizeSessionMeta(session);
     }
   }
 
@@ -624,22 +611,13 @@ export function appendSessionMessage(sessionId: string, message: SessionMessage)
   const line = JSON.stringify(message) + '\n';
   const session = touchSession(sessionId, 1);
 
-  const paths = session
-    ? [getProjectSessionMessagesPath(session.projectPath, sessionId)]
-    : [getSessionMessagesPath(sessionId)];
+  if (!session) return;
 
-  if (session) {
-    ensureProjectDir(session.projectPath);
-  }
-
-  for (const path of uniquePaths(paths)) {
-    appendFileSync(path, line, { mode: 0o600 });
-  }
+  ensureProjectDir(session.projectPath);
+  appendFileSync(getProjectSessionMessagesPath(session.projectPath, sessionId), line, { mode: 0o600 });
 
   // Update session index for fast search
-  if (session) {
-    updateSessionIndex(sessionId, session.projectPath, message);
-  }
+  updateSessionIndex(sessionId, session.projectPath, message);
 }
 
 /**
@@ -652,22 +630,13 @@ export function appendSessionMessages(sessionId: string, messages: SessionMessag
   const lines = messages.map(m => JSON.stringify(m)).join('\n') + '\n';
   const session = touchSession(sessionId, messages.length);
 
-  const paths = session
-    ? [getProjectSessionMessagesPath(session.projectPath, sessionId)]
-    : [getSessionMessagesPath(sessionId)];
+  if (!session) return;
 
-  if (session) {
-    ensureProjectDir(session.projectPath);
-  }
+  ensureProjectDir(session.projectPath);
+  appendFileSync(getProjectSessionMessagesPath(session.projectPath, sessionId), lines, { mode: 0o600 });
 
-  for (const path of uniquePaths(paths)) {
-    appendFileSync(path, lines, { mode: 0o600 });
-  }
-
-  if (session) {
-    for (const message of messages) {
-      updateSessionIndex(sessionId, session.projectPath, message);
-    }
+  for (const message of messages) {
+    updateSessionIndex(sessionId, session.projectPath, message);
   }
 }
 
@@ -688,30 +657,21 @@ function findLastCompleteBoundary(messages: SessionMessage[]): number {
 function overwriteSessionMessages(sessionId: string, messages: SessionMessage[]): void {
   ensureConfigDir();
   const session = loadSessionMeta(sessionId);
+  if (!session) return;
+
   const content = messages.length > 0 ? messages.map(message => JSON.stringify(message)).join('\n') + '\n' : '';
 
-  const paths = session
-    ? [getProjectSessionMessagesPath(session.projectPath, sessionId)]
-    : [getSessionMessagesPath(sessionId)];
+  ensureProjectDir(session.projectPath);
+  atomicWriteFileSync(getProjectSessionMessagesPath(session.projectPath, sessionId), content, { mode: 0o600 });
 
-  if (session) {
-    ensureProjectDir(session.projectPath);
+  deleteSessionIndex(sessionId, session.projectPath);
+  for (const message of messages) {
+    updateSessionIndex(sessionId, session.projectPath, message);
   }
-
-  for (const path of uniquePaths(paths)) {
-    atomicWriteFileSync(path, content, { mode: 0o600 });
-  }
-
-  if (session) {
-    deleteSessionIndex(sessionId, session.projectPath);
-    for (const message of messages) {
-      updateSessionIndex(sessionId, session.projectPath, message);
-    }
-    session.messageCount = messages.length;
-    session.updatedAt = Date.now();
-    session.updatedAtIso = new Date(session.updatedAt).toISOString();
-    saveSessionMeta(session);
-  }
+  session.messageCount = messages.length;
+  session.updatedAt = Date.now();
+  session.updatedAtIso = new Date(session.updatedAt).toISOString();
+  saveSessionMeta(session);
 }
 
 /**
@@ -744,26 +704,18 @@ export function removeLastIncompleteAssistantMessage(sessionId: string): Session
  */
 export function readSessionMessages(sessionId: string): SessionMessage[] {
   const session = loadSessionMeta(sessionId);
-  const candidatePaths = session
-    ? [
-        getProjectSessionMessagesPath(session.projectPath, sessionId),
-        getSessionMessagesPath(sessionId),
-      ]
-    : [getSessionMessagesPath(sessionId)];
+  if (!session) return [];
 
-  for (const path of uniquePaths(candidatePaths)) {
-    if (!existsSync(path)) continue;
+  const path = getProjectSessionMessagesPath(session.projectPath, sessionId);
+  if (!existsSync(path)) return [];
 
-    try {
-      const content = readFileSync(path, 'utf-8');
-      const lines = content.trim().split('\n').filter(Boolean);
-      return lines.map(line => JSON.parse(line) as SessionMessage);
-    } catch {
-      // try the next candidate
-    }
+  try {
+    const content = readFileSync(path, 'utf-8');
+    const lines = content.trim().split('\n').filter(Boolean);
+    return lines.map(line => JSON.parse(line) as SessionMessage);
+  } catch {
+    return [];
   }
-
-  return [];
 }
 
 /**
@@ -797,19 +749,7 @@ export function loadSessionHistory(sessionId: string): Message[] {
  */
 export function listSessions(limit?: number): SessionMeta[] {
   ensureConfigDir();
-  const sessionsDir = getSessionsDir();
-
   const sessionsById = new Map<string, SessionMeta>();
-
-  if (existsSync(sessionsDir)) {
-    const files = readdirSync(sessionsDir).filter(isSessionMetaFile);
-    for (const file of files) {
-      const rawSession = parseSessionMetaFile(join(sessionsDir, file));
-      if (rawSession) {
-        upsertNewestSession(sessionsById, normalizeSessionMeta(rawSession));
-      }
-    }
-  }
 
   const projectsDir = getProjectsDir();
   if (existsSync(projectsDir)) {
@@ -927,21 +867,15 @@ export function renameSession(sessionId: string, name: string): SessionMeta | nu
  */
 export function deleteSession(sessionId: string): boolean {
   const session = loadSessionMeta(sessionId);
-  const paths = [
-    getSessionMetaPath(sessionId),
-    getSessionMessagesPath(sessionId),
-  ];
-
-  if (session) {
-    paths.push(
-      getProjectSessionMetaPath(session.projectPath, sessionId),
-      getProjectSessionMessagesPath(session.projectPath, sessionId),
-      getProjectSessionHarnessPath(session.projectPath, sessionId)
-    );
-    deleteSessionIndex(sessionId, session.projectPath);
-  }
+  if (!session) return false;
 
   let deleted = false;
+  const paths = [
+    getProjectSessionMetaPath(session.projectPath, sessionId),
+    getProjectSessionMessagesPath(session.projectPath, sessionId),
+    getProjectSessionHarnessPath(session.projectPath, sessionId),
+  ];
+  deleteSessionIndex(sessionId, session.projectPath);
 
   for (const path of uniquePaths(paths)) {
     if (existsSync(path)) {

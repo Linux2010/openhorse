@@ -4,13 +4,13 @@
  * Before editing files, create recoverable snapshots so the user can
  * undo agent changes back to a specific turn.
  *
- * Storage: ~/.openhorse/projects/<hash>/_checkpoints/<turnId>/<file>
+ * Storage: ~/.openhorse/projects/<project-key>/checkpoints/<turnId>/<file>
  * TTL: 7 days
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { getProjectSessionsDir } from '../services/config-dir';
+import { getProjectCheckpointsDir, getProjectSessionsDir } from '../services/config-dir';
 
 export const CHECKPOINT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -27,17 +27,28 @@ export interface Checkpoint {
 }
 
 function getCheckpointDir(projectPath: string): string {
-  const base = getProjectSessionsDir(projectPath);
-  const dir = path.join(base, '_checkpoints');
+  const dir = getProjectCheckpointsDir(projectPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
   return dir;
 }
 
+function getLegacyCheckpointDir(projectPath: string): string {
+  return path.join(getProjectSessionsDir(projectPath), '_checkpoints');
+}
+
 function getTurnDir(projectPath: string, turnId: string): string {
   const base = getCheckpointDir(projectPath);
   return path.join(base, `${turnId}`);
+}
+
+function getExistingTurnDir(projectPath: string, turnId: string): string {
+  const canonical = path.join(getProjectCheckpointsDir(projectPath), `${turnId}`);
+  if (fs.existsSync(canonical)) return canonical;
+  const legacy = path.join(getLegacyCheckpointDir(projectPath), `${turnId}`);
+  if (fs.existsSync(legacy)) return legacy;
+  return canonical;
 }
 
 /**
@@ -93,7 +104,7 @@ export function restoreCheckpoint(
 ): { restored: string[]; error?: string } {
   if (!projectPath) return { restored: [], error: 'No project path' };
 
-  const dir = getTurnDir(projectPath, turnId);
+  const dir = getExistingTurnDir(projectPath, turnId);
   if (!fs.existsSync(dir)) {
     return { restored: [], error: `No checkpoint found for turn ${turnId}` };
   }
@@ -134,22 +145,27 @@ export function restoreCheckpoint(
 export function listCheckpoints(projectPath: string | undefined): Checkpoint[] {
   if (!projectPath) return [];
 
-  const dir = getCheckpointDir(projectPath);
-  if (!fs.existsSync(dir)) return [];
+  const dirs = [getCheckpointDir(projectPath), getLegacyCheckpointDir(projectPath)];
 
-  const checkpoints: Checkpoint[] = [];
-  for (const entry of fs.readdirSync(dir)) {
-    const metaPath = path.join(dir, entry, '.checkpoint.json');
-    if (fs.existsSync(metaPath)) {
-      try {
-        checkpoints.push(JSON.parse(fs.readFileSync(metaPath, 'utf8')));
-      } catch {
-        // Skip corrupted metadata
+  const checkpointsByTurn = new Map<string, Checkpoint>();
+  for (const dir of dirs) {
+    if (!fs.existsSync(dir)) continue;
+    for (const entry of fs.readdirSync(dir)) {
+      const metaPath = path.join(dir, entry, '.checkpoint.json');
+      if (fs.existsSync(metaPath)) {
+        try {
+          const checkpoint = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as Checkpoint;
+          if (!checkpointsByTurn.has(checkpoint.turnId)) {
+            checkpointsByTurn.set(checkpoint.turnId, checkpoint);
+          }
+        } catch {
+          // Skip corrupted metadata
+        }
       }
     }
   }
 
-  return checkpoints.sort((a, b) => b.createdAt - a.createdAt);
+  return Array.from(checkpointsByTurn.values()).sort((a, b) => b.createdAt - a.createdAt);
 }
 
 /**
@@ -158,31 +174,33 @@ export function listCheckpoints(projectPath: string | undefined): Checkpoint[] {
 export function cleanupCheckpoints(projectPath: string | undefined): number {
   if (!projectPath) return 0;
 
-  const dir = getCheckpointDir(projectPath);
-  if (!fs.existsSync(dir)) return 0;
+  const dirs = [getCheckpointDir(projectPath), getLegacyCheckpointDir(projectPath)];
 
   let cleaned = 0;
   const now = Date.now();
 
-  for (const entry of fs.readdirSync(dir)) {
-    if (entry === '.checkpoint.json') continue; // Skip stray meta files
+  for (const dir of dirs) {
+    if (!fs.existsSync(dir)) continue;
+    for (const entry of fs.readdirSync(dir)) {
+      if (entry === '.checkpoint.json') continue; // Skip stray meta files
 
-    const entryPath = path.join(dir, entry);
-    try {
-      const stat = fs.statSync(entryPath);
-      if (!stat.isDirectory()) continue;
+      const entryPath = path.join(dir, entry);
+      try {
+        const stat = fs.statSync(entryPath);
+        if (!stat.isDirectory()) continue;
 
-      // Check the meta file's mtime
-      const metaPath = path.join(entryPath, '.checkpoint.json');
-      if (fs.existsSync(metaPath)) {
-        const metaStat = fs.statSync(metaPath);
-        if (now - metaStat.mtimeMs > CHECKPOINT_TTL_MS) {
-          fs.rmSync(entryPath, { recursive: true, force: true });
-          cleaned++;
+        // Check the meta file's mtime
+        const metaPath = path.join(entryPath, '.checkpoint.json');
+        if (fs.existsSync(metaPath)) {
+          const metaStat = fs.statSync(metaPath);
+          if (now - metaStat.mtimeMs > CHECKPOINT_TTL_MS) {
+            fs.rmSync(entryPath, { recursive: true, force: true });
+            cleaned++;
+          }
         }
+      } catch {
+        // Skip entries that can't be accessed
       }
-    } catch {
-      // Skip entries that can't be accessed
     }
   }
 

@@ -6,8 +6,11 @@
  */
 
 import { homedir } from 'os';
-import { join } from 'path';
-import { existsSync, mkdirSync } from 'fs';
+import { join, resolve } from 'path';
+import { existsSync, mkdirSync, readFileSync, realpathSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { createHash } from 'crypto';
+import { atomicWriteFileSync } from './atomic-write';
 
 // ============================================================================
 // 配置目录根路径
@@ -37,7 +40,7 @@ export function ensureConfigDir(): void {
   }
 
   // 确保子目录存在
-  const subdirs = ['sessions', 'projects', 'cost', 'cache'];
+  const subdirs = ['projects', 'cost', 'cache'];
   for (const subdir of subdirs) {
     const path = join(dir, subdir);
     if (!existsSync(path)) {
@@ -49,6 +52,17 @@ export function ensureConfigDir(): void {
 // ============================================================================
 // 各文件/目录路径
 // ============================================================================
+
+export const PROJECT_METADATA_SCHEMA_VERSION = 1;
+
+/** Project-scoped storage metadata persisted in projects/<project-key>/project.json. */
+export interface ProjectMetadata {
+  schemaVersion: number;
+  projectKey: string;
+  projectPath: string;
+  createdAt: string;
+  lastSeenAt: string;
+}
 
 /** 全局配置文件路径 */
 export function getGlobalConfigPath(): string {
@@ -70,21 +84,6 @@ export function getHistoryPath(): string {
   return join(getConfigHome(), 'history.jsonl');
 }
 
-/** 会话目录路径 */
-export function getSessionsDir(): string {
-  return join(getConfigHome(), 'sessions');
-}
-
-/** 单个会话元数据文件路径 */
-export function getSessionMetaPath(sessionId: string): string {
-  return join(getSessionsDir(), `${sessionId}.json`);
-}
-
-/** 单个会话对话记录文件路径 (JSONL) */
-export function getSessionMessagesPath(sessionId: string): string {
-  return join(getSessionsDir(), `${sessionId}.jsonl`);
-}
-
 /** 项目配置目录路径 */
 export function getProjectsDir(): string {
   return join(getConfigHome(), 'projects');
@@ -99,9 +98,44 @@ export function encodeProjectPath(projectPath: string): string {
   return encoded || 'root';
 }
 
+/** Resolve a project path for storage identity without depending on session-storage. */
+export function resolveProjectStoragePath(projectPath: string): string {
+  const absolute = resolve(projectPath);
+
+  if (existsSync(absolute)) {
+    try {
+      const root = execFileSync('git', ['-C', absolute, 'rev-parse', '--show-toplevel'], {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (root) return realpathSync(root);
+    } catch {
+      // Not a git worktree, or git is unavailable.
+    }
+
+    try {
+      return realpathSync(absolute);
+    } catch {
+      // Fall through to absolute path.
+    }
+  }
+
+  return absolute;
+}
+
+/** Canonical project key used for all project-scoped storage. */
+export function getCanonicalProjectKey(projectPath: string): string {
+  return encodeProjectPath(resolveProjectStoragePath(projectPath));
+}
+
 /** 项目状态目录路径 */
 export function getProjectDir(projectPath: string): string {
-  return join(getProjectsDir(), encodeProjectPath(projectPath));
+  return join(getProjectsDir(), getCanonicalProjectKey(projectPath));
+}
+
+/** Project metadata file path. */
+export function getProjectMetadataPath(projectPath: string): string {
+  return join(getProjectDir(projectPath), 'project.json');
 }
 
 /** 项目会话目录路径 */
@@ -122,6 +156,60 @@ export function ensureProjectDir(projectPath: string): void {
   if (!existsSync(sessionsDir)) {
     mkdirSync(sessionsDir, { recursive: true, mode: 0o700 });
   }
+
+  updateProjectMetadata(projectPath);
+}
+
+/** Read project metadata, returning null for missing or invalid files. */
+export function readProjectMetadata(projectPath: string): ProjectMetadata | null {
+  const metadataPath = getProjectMetadataPath(projectPath);
+  if (!existsSync(metadataPath)) return null;
+
+  try {
+    const parsed = JSON.parse(readFileSync(metadataPath, 'utf8')) as ProjectMetadata;
+    if (
+      parsed?.schemaVersion !== PROJECT_METADATA_SCHEMA_VERSION ||
+      typeof parsed.projectKey !== 'string' ||
+      typeof parsed.projectPath !== 'string'
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/** Create or refresh project metadata without changing the project identity. */
+export function updateProjectMetadata(projectPath: string, now: Date = new Date()): ProjectMetadata {
+  const resolvedPath = resolveProjectStoragePath(projectPath);
+  const projectKey = encodeProjectPath(resolvedPath);
+  const projectDir = join(getProjectsDir(), projectKey);
+  if (!existsSync(projectDir)) {
+    mkdirSync(projectDir, { recursive: true, mode: 0o700 });
+  }
+
+  const metadataPath = join(projectDir, 'project.json');
+  let createdAt = now.toISOString();
+  try {
+    const existing = JSON.parse(readFileSync(metadataPath, 'utf8')) as Partial<ProjectMetadata>;
+    if (typeof existing.createdAt === 'string' && existing.createdAt) {
+      createdAt = existing.createdAt;
+    }
+  } catch {
+    // Missing or invalid metadata is replaced below.
+  }
+
+  const metadata: ProjectMetadata = {
+    schemaVersion: PROJECT_METADATA_SCHEMA_VERSION,
+    projectKey,
+    projectPath: resolvedPath,
+    createdAt,
+    lastSeenAt: now.toISOString(),
+  };
+
+  atomicWriteFileSync(metadataPath, JSON.stringify(metadata, null, 2), { mode: 0o600 });
+  return metadata;
 }
 
 /** 项目内单个会话元数据文件路径 */
@@ -137,6 +225,32 @@ export function getProjectSessionMessagesPath(projectPath: string, sessionId: st
 /** 项目内单个会话 Harness sidecar 路径 */
 export function getProjectSessionHarnessPath(projectPath: string, sessionId: string): string {
   return join(getProjectSessionsDir(projectPath), `${sessionId}.harness.json`);
+}
+
+/** 项目 Memory 目录路径 */
+export function getProjectMemoryDir(projectPath: string): string {
+  return join(getProjectDir(projectPath), 'memory');
+}
+
+/** Legacy hash-based project Memory 目录路径（只读兼容） */
+export function getLegacyProjectMemoryDir(projectPath: string): string {
+  const hash = createHash('sha256').update(projectPath).digest('hex').slice(0, 16);
+  return join(getProjectsDir(), hash, 'memory');
+}
+
+/** 项目工具 Artifact 目录路径 */
+export function getProjectArtifactsDir(projectPath: string): string {
+  return join(getProjectDir(projectPath), 'artifacts');
+}
+
+/** 项目 Checkpoint 目录路径 */
+export function getProjectCheckpointsDir(projectPath: string): string {
+  return join(getProjectDir(projectPath), 'checkpoints');
+}
+
+/** 项目索引目录路径 */
+export function getProjectIndexesDir(projectPath: string): string {
+  return join(getProjectDir(projectPath), 'indexes');
 }
 
 /** 成本记录目录路径 */

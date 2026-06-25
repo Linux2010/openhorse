@@ -1,6 +1,14 @@
-import { existsSync, readdirSync, statSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
-import { getConfigHome, getGlobalConfigPath, getProjectSessionsDir } from './config-dir';
+import {
+  getConfigHome,
+  getGlobalConfigPath,
+  getLegacyProjectMemoryDir,
+  getProjectArtifactsDir,
+  getProjectCheckpointsDir,
+  getProjectMemoryDir,
+  getProjectSessionsDir,
+} from './config-dir';
 import { isConfigured, type OpenHorseCLIConfig } from './config';
 import { getMcpConfigPath, mcpManager } from '../tools/mcp';
 import { getRuntimeTools } from '../tools';
@@ -164,8 +172,7 @@ function summarizeHarness(ctx: DoctorContext): DoctorCheck {
 }
 
 function summarizeArtifacts(projectPath: string): DoctorCheck {
-  const sessionsDir = getProjectSessionsDir(projectPath);
-  const artifactDir = join(sessionsDir, '_artifacts');
+  const artifactDir = getProjectArtifactsDir(projectPath);
   if (!existsSync(artifactDir)) {
     return { id: 'artifacts', status: 'ok', label: 'Artifacts', summary: 'No artifacts directory' };
   }
@@ -181,6 +188,84 @@ function summarizeArtifacts(projectPath: string): DoctorCheck {
     label: 'Artifacts',
     summary: `${entries.length} files, ${(totalBytes / 1024).toFixed(0)}KB`,
     detail: status === 'warn' ? 'Consider running cleanupArtifacts()' : undefined,
+  };
+}
+
+function dirStats(dir: string): { files: number; bytes: number } {
+  if (!existsSync(dir)) return { files: 0, bytes: 0 };
+  let files = 0;
+  let bytes = 0;
+  const visit = (current: string) => {
+    for (const entry of readdirSync(current)) {
+      const fullPath = join(current, entry);
+      try {
+        const stat = statSync(fullPath);
+        if (stat.isDirectory()) {
+          visit(fullPath);
+        } else {
+          files++;
+          bytes += stat.size;
+        }
+      } catch {
+        // ignore unreadable paths
+      }
+    }
+  };
+  visit(dir);
+  return { files, bytes };
+}
+
+function countInvalidHarnessSidecars(projectPath: string): number {
+  const sessionsDir = getProjectSessionsDir(projectPath);
+  if (!existsSync(sessionsDir)) return 0;
+  let invalid = 0;
+  for (const entry of readdirSync(sessionsDir)) {
+    if (!entry.endsWith('.harness.json')) continue;
+    try {
+      const content = readFileSync(join(sessionsDir, entry), 'utf8');
+      const parsed = JSON.parse(content);
+      if (parsed?.version !== 2 || !parsed.state) invalid++;
+    } catch {
+      invalid++;
+    }
+  }
+  return invalid;
+}
+
+function summarizeStorageLayout(projectPath: string): DoctorCheck {
+  const canonicalMemory = getProjectMemoryDir(projectPath);
+  const legacyMemory = getLegacyProjectMemoryDir(projectPath);
+  const artifacts = getProjectArtifactsDir(projectPath);
+  const checkpoints = getProjectCheckpointsDir(projectPath);
+  const legacyArtifacts = join(getProjectSessionsDir(projectPath), '_artifacts');
+  const legacyCheckpoints = join(getProjectSessionsDir(projectPath), '_checkpoints');
+
+  const canonicalMemoryStats = dirStats(canonicalMemory);
+  const legacyMemoryStats = dirStats(legacyMemory);
+  const artifactStats = dirStats(artifacts);
+  const checkpointStats = dirStats(checkpoints);
+  const legacyArtifactStats = dirStats(legacyArtifacts);
+  const legacyCheckpointStats = dirStats(legacyCheckpoints);
+  const invalidHarness = countInvalidHarnessSidecars(projectPath);
+
+  const hasLegacy = legacyMemoryStats.files > 0 || legacyArtifactStats.files > 0 || legacyCheckpointStats.files > 0;
+  const largeStorage = artifactStats.bytes + legacyArtifactStats.bytes + checkpointStats.bytes + legacyCheckpointStats.bytes > 100_000_000;
+  const status: DoctorStatus = invalidHarness > 0 || hasLegacy || largeStorage ? 'warn' : 'ok';
+
+  return {
+    id: 'storage-layout',
+    status,
+    label: 'Storage Layout',
+    summary: `${canonicalMemoryStats.files} memory, ${artifactStats.files + legacyArtifactStats.files} artifacts, ${checkpointStats.files + legacyCheckpointStats.files} checkpoint files`,
+    detail: [
+      `memory=${canonicalMemory}`,
+      legacyMemoryStats.files > 0 ? `legacy memory=${legacyMemory} (${legacyMemoryStats.files} files)` : '',
+      `artifacts=${artifactStats.files} files ${(artifactStats.bytes / 1024).toFixed(0)}KB`,
+      legacyArtifactStats.files > 0 ? `legacy artifacts=${legacyArtifactStats.files} files ${(legacyArtifactStats.bytes / 1024).toFixed(0)}KB` : '',
+      `checkpoints=${checkpointStats.files} files ${(checkpointStats.bytes / 1024).toFixed(0)}KB`,
+      legacyCheckpointStats.files > 0 ? `legacy checkpoints=${legacyCheckpointStats.files} files ${(legacyCheckpointStats.bytes / 1024).toFixed(0)}KB` : '',
+      invalidHarness > 0 ? `invalid harness sidecars=${invalidHarness}` : '',
+    ].filter(Boolean).join('\n'),
   };
 }
 
@@ -260,6 +345,7 @@ export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
     summarizeSessions(ctx, projectPath),
     summarizeHarness(ctx),
     summarizeArtifacts(projectPath),
+    summarizeStorageLayout(projectPath),
     summarizePromptCache(ctx),
     summarizeWarningDedup(),
     {

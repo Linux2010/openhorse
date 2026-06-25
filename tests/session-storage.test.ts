@@ -27,7 +27,7 @@ import {
 } from '../src/services/session-storage';
 import { loadSessionIndex, saveSessionIndex, searchSessions } from '../src/services/session-index';
 import { createContextHarness } from '../src/harness';
-import { existsSync, readFileSync, rmSync, realpathSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, realpathSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { getProjectSessionHarnessPath, getProjectSessionMessagesPath, getProjectSessionMetaPath } from '../src/services/config-dir';
@@ -255,7 +255,7 @@ describe('session-storage', () => {
   });
 
   describe('session messages (JSONL)', () => {
-    test('appendSessionMessage creates file', () => {
+    test('appendSessionMessage ignores unknown session ids', () => {
       const sessionId = 'test-msg-session';
       const message: SessionMessage = {
         role: 'user',
@@ -266,7 +266,7 @@ describe('session-storage', () => {
       appendSessionMessage(sessionId, message);
 
       const path = join(testDir, 'sessions', `${sessionId}.jsonl`);
-      expect(existsSync(path)).toBe(true);
+      expect(existsSync(path)).toBe(false);
     });
 
     test('appendSessionMessage mirrors project transcript and updates message count', () => {
@@ -305,20 +305,20 @@ describe('session-storage', () => {
     });
 
     test('readSessionMessages returns all messages', () => {
-      const sessionId = 'test-msg-session-2';
+      const session = createSession('/tmp/project-read-messages', 'gpt-4o');
 
-      appendSessionMessage(sessionId, {
+      appendSessionMessage(session.id, {
         role: 'user',
         content: 'Question',
         timestamp: 1000,
       });
-      appendSessionMessage(sessionId, {
+      appendSessionMessage(session.id, {
         role: 'assistant',
         content: 'Answer',
         timestamp: 2000,
       });
 
-      const messages = readSessionMessages(sessionId);
+      const messages = readSessionMessages(session.id);
       expect(messages.length).toBe(2);
       expect(messages[0].role).toBe('user');
       expect(messages[1].role).toBe('assistant');
@@ -351,7 +351,7 @@ describe('session-storage', () => {
       expect(sessionsA.some(s => s.id === sessionB.id)).toBe(false);
     });
 
-    test('listProjectSessions does not include legacy global session files', () => {
+    test('session lookup ignores legacy global session files', () => {
       const project = '/tmp/project-ignore-global';
       const legacySession: SessionMeta = {
         id: 'legacy-global-session',
@@ -363,6 +363,7 @@ describe('session-storage', () => {
         cost: 0,
       };
 
+      mkdirSync(join(testDir, 'sessions'), { recursive: true });
       writeFileSync(
         join(testDir, 'sessions', `${legacySession.id}.json`),
         JSON.stringify(legacySession, null, 2)
@@ -372,7 +373,7 @@ describe('session-storage', () => {
       const allProjectsMatch = findSession(legacySession.id, project, { allProjects: true });
 
       expect(projectSessions.some(s => s.id === legacySession.id)).toBe(false);
-      expect(allProjectsMatch?.id).toBe(legacySession.id);
+      expect(allProjectsMatch).toBeNull();
     });
 
     test('findSession defaults to the provided project scope', () => {
