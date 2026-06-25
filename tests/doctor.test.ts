@@ -9,6 +9,8 @@ import { TOOLS } from '../src/tools';
 import { mcpManager } from '../src/tools/mcp';
 import { findCommand } from '../src/commands';
 import type { CommandContext } from '../src/commands/types';
+import { getLegacyProjectMemoryDir } from '../src/services/config-dir';
+import { resolveProjectPath } from '../src/services/session-storage';
 
 const originalEnv = { ...process.env };
 
@@ -139,6 +141,38 @@ describe('doctor report', () => {
     const permissions = report.checks.find(check => check.id === 'permissions');
     expect(permissions?.status).toBe('warn');
     expect(permissions?.detail).toContain('--ui terminal');
+  });
+
+  it('warns about legacy storage layout without failing doctor', () => {
+    const legacyMemoryDir = getLegacyProjectMemoryDir(resolveProjectPath(projectDir));
+    mkdirSync(legacyMemoryDir, { recursive: true });
+    writeFileSync(join(legacyMemoryDir, 'legacy-memory.md'), `---
+name: legacy-memory
+description: Legacy memory
+type: project
+---
+
+Legacy content`);
+
+    const config = loadConfig({ apiKey: 'sk-test', model: 'mock-doctor' });
+    const store = new Store({
+      config,
+      tools: TOOLS,
+      currentModel: config.model,
+    });
+
+    const report = collectDoctorReport({
+      cwd: projectDir,
+      config,
+      store,
+      llm: makeLlm('mock-doctor') as any,
+      runtime: makeRuntime() as any,
+    });
+
+    const storage = report.checks.find(check => check.id === 'storage-layout');
+    expect(storage?.status).toBe('warn');
+    expect(storage?.detail).toContain('legacy memory');
+    expect(hasDoctorFailures(report)).toBe(false);
   });
 
   it('is exposed as /doctor slash command', async () => {

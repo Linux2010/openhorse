@@ -59,6 +59,13 @@ import { refreshProjectInstructions } from '../services/prompt-context';
 import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from '../services/doctor';
 import { collectWorkspaceDiff, formatWorkspaceDiff } from '../services/workspace-diff';
 import { createCommitPlan, formatCommitPlan } from '../services/commit-plan';
+import {
+  cleanupStorage,
+  collectStorageReport,
+  formatStorageCleanupResult,
+  formatStorageReport,
+  repairProjectMetadata,
+} from '../services/storage-maintenance';
 
 // ============================================================================
 // 颜色常量
@@ -1242,6 +1249,50 @@ function handleDoctor(ctx: CommandContext): CommandResult {
   return { success: !hasDoctorFailures(report) };
 }
 
+function handleStorage(_ctx: CommandContext, args: string): CommandResult {
+  const trimmed = args.trim();
+  const [action = 'doctor'] = trimmed.split(/\s+/);
+
+  if (action === 'cleanup') {
+    const dryRun = /\b--dry-run\b/.test(trimmed);
+    const result = cleanupStorage({ dryRun });
+    console.log();
+    console.log(formatStorageCleanupResult(result));
+    console.log();
+    return { success: true };
+  }
+
+  if (action === 'repair') {
+    const result = repairProjectMetadata();
+    console.log();
+    console.log(HEADER('OpenHorse Storage Repair'));
+    console.log(DIM('─'.repeat(40)));
+    console.log(`  Repaired ${ACCENT(String(result.repaired.length))}`);
+    console.log(`  Skipped  ${DIM(String(result.skipped.length))}`);
+    for (const project of result.repaired.slice(0, 12)) {
+      console.log(`  ${SUCCESS('✓')} ${DIM(project)}`);
+    }
+    if (result.repaired.length > 12) {
+      console.log(DIM(`  ... ${result.repaired.length - 12} more`));
+    }
+    console.log();
+    return { success: true };
+  }
+
+  if (action !== 'doctor' && action !== 'status') {
+    return {
+      success: false,
+      error: 'Usage: /storage [doctor|status|repair|cleanup --dry-run]',
+    };
+  }
+
+  const report = collectStorageReport();
+  console.log();
+  console.log(formatStorageReport(report));
+  console.log();
+  return { success: true };
+}
+
 function handleDiff(ctx: CommandContext, args: string): CommandResult {
   const maxFilesMatch = args.match(/--max-files(?:=|\s+)(\d+)/);
   const maxFiles = maxFilesMatch ? Number(maxFilesMatch[1]) : 40;
@@ -2149,6 +2200,15 @@ const COMMANDS: SlashCommand[] = [
     priority: 5,
     type: 'builtin',
     execute: (ctx) => handleDoctor(ctx),
+  },
+  {
+    name: 'storage',
+    description: 'Inspect, repair, or clean OpenHorse storage layout',
+    argumentHint: '[doctor|repair|cleanup --dry-run]',
+    category: 'diagnostics',
+    priority: 8,
+    type: 'builtin',
+    execute: (ctx, args) => handleStorage(ctx, args),
   },
   {
     name: 'usage',

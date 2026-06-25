@@ -1,6 +1,11 @@
 import { EmbeddingService, getEmbeddingService, resetEmbeddingService } from '../src/memory/embeddings';
 import { VectorStore } from '../src/memory/vector-store';
 import { SemanticSearchService } from '../src/memory/semantic-search';
+import { createHash } from 'crypto';
+import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { getCanonicalProjectKey } from '../src/services/config-dir';
 
 describe('EmbeddingService', () => {
   beforeEach(() => {
@@ -40,14 +45,17 @@ describe('EmbeddingService', () => {
 
 describe('VectorStore', () => {
   let store: VectorStore;
+  let dbPath: string;
 
   beforeEach(() => {
     // Use temp database for each test
-    store = new VectorStore({ dbPath: '/tmp/openhorse-test-vector.db' });
+    dbPath = join(mkdtempSync(join(tmpdir(), 'openhorse-test-vector-')), 'vector.db');
+    store = new VectorStore({ dbPath });
   });
 
   afterEach(() => {
     store.close();
+    rmSync(join(dbPath, '..'), { recursive: true, force: true });
   });
 
   test('initializes database', () => {
@@ -86,23 +94,131 @@ describe('VectorStore', () => {
     expect(found).toBeUndefined();
   });
 
+  test('project-scoped rows with the same memory name do not overwrite each other', async () => {
+    const name = 'shared-memory';
+    await store.upsert({
+      name,
+      type: 'project',
+      content: 'project A content',
+      description: 'A',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }, '/tmp/openhorse-vector-project-a');
+    await store.upsert({
+      name,
+      type: 'project',
+      content: 'project B content',
+      description: 'B',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }, '/tmp/openhorse-vector-project-b');
+
+    expect(store.getAll('/tmp/openhorse-vector-project-a')[0]?.content).toBe('project A content');
+    expect(store.getAll('/tmp/openhorse-vector-project-b')[0]?.content).toBe('project B content');
+
+    store.delete(name, '/tmp/openhorse-vector-project-a');
+
+    expect(store.getAll('/tmp/openhorse-vector-project-a')).toHaveLength(0);
+    expect(store.getAll('/tmp/openhorse-vector-project-b')[0]?.content).toBe('project B content');
+  });
+
   test('search returns results', async () => {
     const results = await store.search('test', 5);
     expect(results.length).toBeGreaterThanOrEqual(0);
+  });
+
+  test('project search includes legacy hash project rows', () => {
+    const projectPath = '/tmp/openhorse-vector-legacy-project';
+    const legacyProjectKey = createHash('sha256').update(projectPath).digest('hex').slice(0, 16);
+    const db = (store as any).db;
+
+    db.prepare(`
+      INSERT OR REPLACE INTO memories (id, name, type, content, description, project, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'legacy-memory',
+      'legacy-memory',
+      'project',
+      'legacy vector content',
+      'Legacy vector row',
+      legacyProjectKey,
+      Date.now(),
+      Date.now(),
+    );
+
+    const all = store.getAll(projectPath);
+    expect(all.find(memory => memory.name === 'legacy-memory')).toBeDefined();
+  });
+
+  test('cleanupOrphanProjects removes rows for missing projects', async () => {
+    const keepProject = '/tmp/openhorse-vector-keep-project';
+    const orphanProject = '/tmp/openhorse-vector-orphan-project';
+    await store.upsert({
+      name: 'keep-memory',
+      type: 'project',
+      content: 'keep',
+      description: 'keep',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }, keepProject);
+    await store.upsert({
+      name: 'orphan-memory',
+      type: 'project',
+      content: 'orphan',
+      description: 'orphan',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }, orphanProject);
+
+    const result = store.cleanupOrphanProjects([getCanonicalProjectKey(keepProject)]);
+
+    expect(result.orphanProjects).toContain(getCanonicalProjectKey(orphanProject));
+    expect(result.deletedRows).toBe(1);
+    expect(store.getAll(keepProject)).toHaveLength(1);
+    expect(store.getAll(orphanProject)).toHaveLength(0);
+  });
+
+  test('default database path follows OPENHORSE_CONFIG_DIR', () => {
+    const originalConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+    const originalConfigHome = process.env.OPENHORSE_CONFIG_HOME;
+    const configDir = mkdtempSync(join(tmpdir(), 'openhorse-vector-config-'));
+    delete process.env.OPENHORSE_CONFIG_HOME;
+    process.env.OPENHORSE_CONFIG_DIR = configDir;
+
+    const defaultStore = new VectorStore();
+    try {
+      expect(existsSync(join(configDir, 'vector.db'))).toBe(true);
+    } finally {
+      defaultStore.close();
+      rmSync(configDir, { recursive: true, force: true });
+      if (originalConfigDir === undefined) {
+        delete process.env.OPENHORSE_CONFIG_DIR;
+      } else {
+        process.env.OPENHORSE_CONFIG_DIR = originalConfigDir;
+      }
+      if (originalConfigHome === undefined) {
+        delete process.env.OPENHORSE_CONFIG_HOME;
+      } else {
+        process.env.OPENHORSE_CONFIG_HOME = originalConfigHome;
+      }
+    }
   });
 });
 
 describe('SemanticSearchService', () => {
   let service: SemanticSearchService;
   let store: VectorStore;
+  let dbPath: string;
 
   beforeEach(() => {
-    store = new VectorStore({ dbPath: '/tmp/openhorse-test-semantic.db' });
-    service = new SemanticSearchService({ dbPath: '/tmp/openhorse-test-semantic.db' });
+    dbPath = join(mkdtempSync(join(tmpdir(), 'openhorse-test-semantic-')), 'vector.db');
+    store = new VectorStore({ dbPath });
+    service = new SemanticSearchService({ dbPath });
   });
 
   afterEach(() => {
     store.close();
+    rmSync(join(dbPath, '..'), { recursive: true, force: true });
   });
 
   test('creates service', () => {

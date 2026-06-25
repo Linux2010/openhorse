@@ -4,9 +4,9 @@
  * 管理多个并发 CLI 会话，防止冲突。
  */
 
-import { writeFileSync, readFileSync, existsSync, unlinkSync, readdirSync } from 'fs';
+import { writeFileSync, readFileSync, existsSync, unlinkSync, readdirSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { getConfigDir, ensureConfigDir } from './config-dir';
+import { getCacheDir, ensureConfigDir } from './config-dir';
 
 // ============================================================================
 // 类型定义
@@ -57,7 +57,7 @@ export class SessionManager {
 
     ensureConfigDir();
     this.sessionId = this.generateSessionId();
-    this.sessionPath = join(getConfigDir(), 'sessions');
+    this.sessionPath = join(getCacheDir(), 'active-sessions');
     this.ensureSessionDir();
   }
 
@@ -74,9 +74,8 @@ export class SessionManager {
    * 确保会话目录存在
    */
   private ensureSessionDir(): void {
-    const sessionsDir = join(getConfigDir(), 'sessions');
-    if (!existsSync(sessionsDir)) {
-      writeFileSync(sessionsDir, ''); // 创建目录标记
+    if (!existsSync(this.sessionPath)) {
+      mkdirSync(this.sessionPath, { recursive: true, mode: 0o700 });
     }
   }
 
@@ -159,7 +158,7 @@ export class SessionManager {
    */
   getActiveSessions(): SessionInfo[] {
     const sessions: SessionInfo[] = [];
-    const sessionsDir = join(getConfigDir(), 'sessions');
+    const sessionsDir = this.sessionPath;
 
     if (!existsSync(sessionsDir)) {
       return sessions;
@@ -231,7 +230,7 @@ export class SessionManager {
    * 获取会话文件路径
    */
   private getSessionFilePath(sessionId: string): string {
-    return join(getConfigDir(), 'sessions', `${sessionId}.json`);
+    return join(this.sessionPath, `${sessionId}.json`);
   }
 
   /**
@@ -258,7 +257,7 @@ export class SessionManager {
    */
   cleanup(): number {
     let cleaned = 0;
-    const sessionsDir = join(getConfigDir(), 'sessions');
+    const sessionsDir = this.sessionPath;
 
     if (!existsSync(sessionsDir)) {
       return cleaned;

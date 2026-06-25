@@ -8,19 +8,22 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { getProjectSessionsDir } from '../services/config-dir';
+import { getProjectArtifactsDir, getProjectSessionsDir } from '../services/config-dir';
 
 /** Maximum output size before truncation + artifact storage (10KB) */
 export const ARTIFACT_THRESHOLD = 10_240;
 
 /** Directory for tool artifacts */
 function getArtifactDir(projectPath: string): string {
-  const base = getProjectSessionsDir(projectPath);
-  const dir = path.join(base, '_artifacts');
+  const dir = getProjectArtifactsDir(projectPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
   return dir;
+}
+
+function getLegacyArtifactDir(projectPath: string): string {
+  return path.join(getProjectSessionsDir(projectPath), '_artifacts');
 }
 
 export interface ToolArtifact {
@@ -94,20 +97,22 @@ export function truncateForContext(output: string, maxBytes = 4096): string {
  * Clean up expired artifacts (older than 24h).
  */
 export function cleanupArtifacts(projectPath: string): void {
-  const artifactDir = getArtifactDir(projectPath);
-  if (!fs.existsSync(artifactDir)) return;
+  const artifactDirs = [getArtifactDir(projectPath), getLegacyArtifactDir(projectPath)];
 
   const now = Date.now();
-  const entries = fs.readdirSync(artifactDir);
-  for (const entry of entries) {
-    const fullPath = path.join(artifactDir, entry);
-    try {
-      const stat = fs.statSync(fullPath);
-      if (now - stat.mtimeMs > 24 * 60 * 60 * 1000) {
-        fs.unlinkSync(fullPath);
+  for (const artifactDir of artifactDirs) {
+    if (!fs.existsSync(artifactDir)) continue;
+    const entries = fs.readdirSync(artifactDir);
+    for (const entry of entries) {
+      const fullPath = path.join(artifactDir, entry);
+      try {
+        const stat = fs.statSync(fullPath);
+        if (now - stat.mtimeMs > 24 * 60 * 60 * 1000) {
+          fs.unlinkSync(fullPath);
+        }
+      } catch {
+        // Best-effort
       }
-    } catch {
-      // Best-effort
     }
   }
 }

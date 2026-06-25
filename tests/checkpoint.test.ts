@@ -11,7 +11,7 @@ import {
   cleanupCheckpoints,
   CHECKPOINT_TTL_MS,
 } from '../src/core/checkpoint';
-import { getProjectSessionsDir } from '../src/services/config-dir';
+import { getProjectCheckpointsDir } from '../src/services/config-dir';
 
 const TEST_PROJECT = `/tmp/openhorse-checkpoint-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
@@ -21,15 +21,18 @@ describe('checkpoint', () => {
       fs.rmSync(TEST_PROJECT, { recursive: true, force: true });
     }
     fs.mkdirSync(TEST_PROJECT, { recursive: true });
+    const checkpointDir = getProjectCheckpointsDir(TEST_PROJECT);
+    if (fs.existsSync(checkpointDir)) {
+      fs.rmSync(checkpointDir, { recursive: true, force: true });
+    }
   });
 
   afterEach(() => {
+    const checkpointDir = getProjectCheckpointsDir(TEST_PROJECT);
     if (fs.existsSync(TEST_PROJECT)) {
       fs.rmSync(TEST_PROJECT, { recursive: true, force: true });
     }
     // Also clean up the checkpoint directory under ~/.openhorse
-    const sessionsDir = getProjectSessionsDir(TEST_PROJECT);
-    const checkpointDir = path.join(sessionsDir, '_checkpoints');
     if (fs.existsSync(checkpointDir)) {
       fs.rmSync(checkpointDir, { recursive: true, force: true });
     }
@@ -125,8 +128,7 @@ describe('checkpoint', () => {
     createCheckpoint(TEST_PROJECT, 'old-turn', [filePath]);
 
     // Find and age the checkpoint metadata
-    const sessionsDir = getProjectSessionsDir(TEST_PROJECT);
-    const cpDir = path.join(sessionsDir, '_checkpoints');
+    const cpDir = getProjectCheckpointsDir(TEST_PROJECT);
     const oldMetaPath = path.join(cpDir, 'old-turn', '.checkpoint.json');
 
     expect(fs.existsSync(oldMetaPath)).toBe(true);

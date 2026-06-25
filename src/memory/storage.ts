@@ -12,7 +12,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, unlink
 import { join, basename } from 'path';
 import { createHash } from 'crypto';
 import type { MemoryEntry, MemoryType } from './types';
-import { getConfigHome } from '../services/config-dir';
+import { getConfigHome, getLegacyProjectMemoryDir, getProjectMemoryDir } from '../services/config-dir';
 import { atomicWriteFileSync } from '../services/atomic-write';
 import { getVectorStore, type SearchResult } from './vector-store';  // Issue #32 #3.8
 
@@ -59,11 +59,15 @@ export function getMemoryDir(projectPath?: string): string {
   const configHome = getConfigHome();
 
   if (projectPath) {
-    const hash = getProjectHash(projectPath);
-    return join(configHome, PROJECTS_SUBDIR, hash, MEMORY_SUBDIR);
+    return getProjectMemoryDir(projectPath);
   }
 
   return join(configHome, MEMORY_SUBDIR);
+}
+
+/** Legacy hash-based memory directory kept as a read fallback. */
+export function getLegacyMemoryDir(projectPath: string): string {
+  return getLegacyProjectMemoryDir(projectPath);
 }
 
 /**
@@ -79,7 +83,7 @@ export function getEntrypointPath(projectPath?: string): string {
 export function ensureMemoryDir(projectPath?: string): string {
   const dir = getMemoryDir(projectPath);
   if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
   return dir;
 }
@@ -139,10 +143,16 @@ ${entry.content}`;
  * @param projectPath - Project path (defaults to cwd)
  */
 export function loadAllMemories(projectPath?: string): MemoryEntry[] {
-  const dir = ensureMemoryDir(projectPath);
-  const memories: MemoryEntry[] = [];
+  const dirs = projectPath
+    ? [getMemoryDir(projectPath), getLegacyMemoryDir(projectPath)]
+    : [ensureMemoryDir(projectPath)];
+  const memoriesByName = new Map<string, MemoryEntry>();
 
-  try {
+  for (const dir of dirs) {
+    if (!existsSync(dir)) {
+      if (!projectPath) ensureMemoryDir(projectPath);
+      continue;
+    }
     const files = readdirSync(dir);
     for (const file of files) {
       if (!file.endsWith('.md') || file === ENTRYPOINT_NAME) continue;
@@ -153,46 +163,57 @@ export function loadAllMemories(projectPath?: string): MemoryEntry[] {
         const entry = parseMemoryFrontmatter(content);
         if (entry) {
           entry.name = basename(file, '.md');
-          memories.push(entry);
+          // Canonical dir is first; keep it when legacy contains the same name.
+          if (!memoriesByName.has(entry.name)) {
+            memoriesByName.set(entry.name, entry);
+          }
         }
       } catch {
         // Skip unreadable files
       }
     }
-  } catch {
-    // Directory doesn't exist or unreadable
   }
 
-  return memories;
+  return Array.from(memoriesByName.values());
 }
 
 /**
  * Load MEMORY.md index for a project.
  */
 export function loadMemoryIndex(projectPath?: string): string {
-  const path = getEntrypointPath(projectPath);
-  if (!existsSync(path)) return '';
-  return readFileSync(path, 'utf-8');
+  const paths = projectPath
+    ? [getEntrypointPath(projectPath), join(getLegacyMemoryDir(projectPath), ENTRYPOINT_NAME)]
+    : [getEntrypointPath(projectPath)];
+
+  for (const path of paths) {
+    if (!existsSync(path)) continue;
+    return readFileSync(path, 'utf-8');
+  }
+  return '';
 }
 
 /**
  * Load specific memory by name from a project.
  */
 export function loadMemory(name: string, projectPath?: string): MemoryEntry | null {
-  const dir = getMemoryDir(projectPath);
-  const filePath = join(dir, `${name}.md`);
+  const dirs = projectPath
+    ? [getMemoryDir(projectPath), getLegacyMemoryDir(projectPath)]
+    : [getMemoryDir(projectPath)];
 
-  if (!existsSync(filePath)) return null;
+  for (const dir of dirs) {
+    const filePath = join(dir, `${name}.md`);
+    if (!existsSync(filePath)) continue;
 
-  try {
-    const content = readFileSync(filePath, 'utf-8');
-    const entry = parseMemoryFrontmatter(content);
-    if (entry) {
-      entry.name = name;
-      return entry;
+    try {
+      const content = readFileSync(filePath, 'utf-8');
+      const entry = parseMemoryFrontmatter(content);
+      if (entry) {
+        entry.name = name;
+        return entry;
+      }
+    } catch {
+      // File unreadable
     }
-  } catch {
-    // File unreadable
   }
 
   return null;
@@ -226,12 +247,17 @@ export function saveMemory(entry: MemoryEntry, projectPath?: string): void {
  * Hard-deletes the file so `memory_recall` no longer returns it.
  */
 export function deleteMemory(name: string, projectPath?: string): void {
-  const dir = getMemoryDir(projectPath);
-  const filePath = join(dir, `${name}.md`);
+  const dirs = projectPath
+    ? [getMemoryDir(projectPath), getLegacyMemoryDir(projectPath)]
+    : [getMemoryDir(projectPath)];
 
-  if (existsSync(filePath)) {
+  const canonicalPath = join(dirs[0], `${name}.md`);
+  const legacyPath = dirs[1] ? join(dirs[1], `${name}.md`) : undefined;
+  const deletePath = existsSync(canonicalPath) ? canonicalPath : legacyPath;
+
+  if (deletePath && existsSync(deletePath)) {
     try {
-      unlinkSync(filePath);
+      unlinkSync(deletePath);
     } catch {
       // ignore — index regeneration below will reflect whatever is on disk
     }

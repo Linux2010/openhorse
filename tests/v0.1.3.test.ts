@@ -26,6 +26,7 @@ import {
 import {
   getProjectHash,
   getMemoryDir,
+  getLegacyMemoryDir,
   ensureMemoryDir,
   saveMemory,
   loadAllMemories,
@@ -163,12 +164,14 @@ describe('Memory project dimension', () => {
   test('getMemoryDir returns project-specific path', () => {
     const dirA = getMemoryDir(PROJECT_A);
     const dirB = getMemoryDir(PROJECT_B);
+    const legacyDirA = getLegacyMemoryDir(PROJECT_A);
     const dirGlobal = getMemoryDir(); // No project = global
 
     expect(dirA).toContain('projects');
-    expect(dirA).toContain(getProjectHash(PROJECT_A));
-    expect(dirB).toContain(getProjectHash(PROJECT_B));
+    expect(dirA).toContain('project-a');
+    expect(legacyDirA).toContain(getProjectHash(PROJECT_A));
     expect(dirA).not.toBe(dirB);
+    expect(dirA).not.toBe(legacyDirA);
 
     // Global path should be different structure
     expect(dirGlobal).not.toContain('projects');
@@ -233,6 +236,81 @@ describe('Memory project dimension', () => {
     // A's memory not in B
     const memoryAinB = loadMemory('unique-memory-a', PROJECT_B);
     expect(memoryAinB).toBeNull();
+  });
+
+  test('loadAllMemories reads legacy hash memory and canonical overrides same name', () => {
+    const memoryName = `shared-memory-${Date.now()}`;
+    const legacyDir = getLegacyMemoryDir(PROJECT_A);
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(join(legacyDir, `${memoryName}.md`), `---
+name: ${memoryName}
+description: Legacy memory
+type: project
+---
+
+Legacy content`, 'utf-8');
+
+    let memories = loadAllMemories(PROJECT_A);
+    expect(memories.find(m => m.name === memoryName)?.content).toBe('Legacy content');
+
+    saveMemory({
+      name: memoryName,
+      type: 'project',
+      description: 'Canonical memory',
+      content: 'Canonical content',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }, PROJECT_A);
+
+    memories = loadAllMemories(PROJECT_A);
+    const shared = memories.filter(m => m.name === memoryName);
+    expect(shared).toHaveLength(1);
+    expect(shared[0].content).toBe('Canonical content');
+  });
+
+  test('deleteMemory preserves legacy when canonical same-name memory exists', () => {
+    const memoryName = `forget-memory-${Date.now()}`;
+    const legacyDir = getLegacyMemoryDir(PROJECT_A);
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(join(legacyDir, `${memoryName}.md`), `---
+name: ${memoryName}
+description: Legacy memory
+type: project
+---
+
+Legacy content`, 'utf-8');
+
+    saveMemory({
+      name: memoryName,
+      type: 'project',
+      description: 'Canonical memory',
+      content: 'Canonical content',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }, PROJECT_A);
+
+    deleteMemory(memoryName, PROJECT_A);
+
+    expect(readFileSync(join(legacyDir, `${memoryName}.md`), 'utf-8')).toContain('Legacy content');
+    expect(loadMemory(memoryName, PROJECT_A)?.content).toBe('Legacy content');
+  });
+
+  test('deleteMemory removes legacy when no canonical same-name memory exists', () => {
+    const memoryName = `legacy-only-${Date.now()}`;
+    const legacyDir = getLegacyMemoryDir(PROJECT_A);
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(join(legacyDir, `${memoryName}.md`), `---
+name: ${memoryName}
+description: Legacy only
+type: project
+---
+
+Legacy only content`, 'utf-8');
+
+    deleteMemory(memoryName, PROJECT_A);
+
+    expect(existsSync(join(legacyDir, `${memoryName}.md`))).toBe(false);
+    expect(loadMemory(memoryName, PROJECT_A)).toBeNull();
   });
 
   test('searchMemories is project-scoped', () => {

@@ -11,6 +11,7 @@ import {
   ARTIFACT_THRESHOLD,
   cleanupArtifacts,
 } from '../src/core/tool-artifacts';
+import { getProjectArtifactsDir } from '../src/services/config-dir';
 
 const TEST_PROJECT = '/tmp/openhorse-artifact-test';
 
@@ -41,6 +42,7 @@ describe('tool-artifacts', () => {
     expect(artifact!.outputBytes).toBe(Buffer.byteLength(output));
     expect(artifact!.truncated).toBe(false);
     expect(fs.existsSync(artifact!.path)).toBe(true);
+    expect(artifact!.path.startsWith(getProjectArtifactsDir(TEST_PROJECT))).toBe(true);
   });
 
   test('retrieveArtifact returns the stored content', () => {

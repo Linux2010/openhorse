@@ -88,7 +88,7 @@ export const TOOLS: OpenHorseTool[] = [
       },
       required: ['path'],
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
       // Ensure path is a valid string
       const path = args.path;
       if (!path || typeof path !== 'string') {
@@ -124,7 +124,7 @@ export const TOOLS: OpenHorseTool[] = [
       },
       required: ['path', 'content'],
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
       // Ensure path and content are valid strings
       const path = args.path;
       const content = args.content;
@@ -450,7 +450,7 @@ export const TOOLS: OpenHorseTool[] = [
       },
       required: ['name', 'type', 'content'],
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
       const name = args.name as string;
       const type = args.type as MemoryType;
       const content = args.content as string;
@@ -467,7 +467,7 @@ export const TOOLS: OpenHorseTool[] = [
       }
 
       try {
-        const projectPath = process.cwd();
+        const projectPath = context?.cwd || process.cwd();
         const entry: MemoryEntry = {
           name,
           type,
@@ -516,9 +516,9 @@ export const TOOLS: OpenHorseTool[] = [
       },
       required: [],
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
       try {
-        const projectPath = process.cwd();
+        const projectPath = context?.cwd || process.cwd();
         const query = (args.query as string) || '';
         const type = args.type as MemoryType | undefined;
 
@@ -598,14 +598,14 @@ export const TOOLS: OpenHorseTool[] = [
       },
       required: ['name'],
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
       const name = args.name as string;
       if (!name || typeof name !== 'string') {
         return { success: false, output: '', error: 'memory_forget requires a name parameter' };
       }
 
       try {
-        const projectPath = process.cwd();
+        const projectPath = context?.cwd || process.cwd();
         const existing = loadMemory(name, projectPath);
         if (!existing) {
           return { success: false, output: '', error: `Memory not found: ${name}` };
@@ -615,7 +615,7 @@ export const TOOLS: OpenHorseTool[] = [
         if (isSemanticEnabled()) {
           try {
             const { getVectorStore } = require('../memory/vector-store');
-            getVectorStore().delete(name);
+            getVectorStore().delete(name, projectPath);
           } catch {
             // Vector store cleanup is best-effort
           }

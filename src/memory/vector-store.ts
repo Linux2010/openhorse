@@ -10,6 +10,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { createHash } from 'crypto';  // Issue #32 #3.4: 用于 hashProject
 import { getEmbeddingService, type EmbeddingConfig } from './embeddings';
 import type { MemoryEntry, MemoryType } from './types';
+import { getCanonicalProjectKey, getConfigHome } from '../services/config-dir';
 
 // ============================================================================
 // Types
@@ -30,6 +31,16 @@ export interface VectorStoreConfig {
   embeddingConfig?: EmbeddingConfig;
 }
 
+export interface VectorProjectStats {
+  project: string;
+  rows: number;
+}
+
+export interface VectorCleanupResult {
+  orphanProjects: string[];
+  deletedRows: number;
+}
+
 // ============================================================================
 // Vector Store
 // ============================================================================
@@ -41,8 +52,7 @@ export class VectorStore {
 
   constructor(config?: VectorStoreConfig) {
     // Determine database path
-    const configHome = process.env.OPENHORSE_CONFIG_HOME || join(process.env.HOME || '', '.openhorse');
-    const dbPath = config?.dbPath || join(configHome, 'vector.db');
+    const dbPath = config?.dbPath || join(getConfigHome(), 'vector.db');
 
     // Ensure directory exists
     const dbDir = join(dbPath, '..');
@@ -117,15 +127,17 @@ export class VectorStore {
 
   /** Insert or update memory with embedding - Issue #32 #3.3: 使用事务 */
   async upsert(entry: MemoryEntry, projectPath?: string): Promise<void> {
-    const projectHash = projectPath ? this.hashProject(projectPath) : 'global';
+    const projectKey = projectPath ? this.projectKey(projectPath) : 'global';
+    const memoryId = this.memoryId(projectKey, entry.name);
 
     // Issue #32 #3.3: 使用事务确保 embed 失败时不写 memories 表
     const upsertTransaction = this.db.transaction((data: {
+      id: string;
       name: string;
       type: string;
       content: string;
       description: string;
-      projectHash: string;
+      projectKey: string;
       createdAt: number;
       updatedAt: number;
     }) => {
@@ -136,12 +148,12 @@ export class VectorStore {
       `);
 
       stmt.run(
-        data.name,
+        data.id,
         data.name,
         data.type,
         data.content,
         data.description,
-        data.projectHash,
+        data.projectKey,
         data.createdAt,
         data.updatedAt
       );
@@ -154,18 +166,18 @@ export class VectorStore {
 
         // Now execute transaction with the data
         upsertTransaction({
+          id: memoryId,
           name: entry.name,
           type: entry.type,
           content: entry.content,
           description: entry.description || entry.content.slice(0, 100),
-          projectHash,
+          projectKey,
           createdAt: entry.createdAt,
           updatedAt: entry.updatedAt,
         });
 
         // Delete old vector if exists
-        this.db.prepare('DELETE FROM memory_vectors WHERE memory_id = ?').run(entry.name);
-        this.db.prepare('DELETE FROM vec_memories WHERE rowid IN (SELECT vector_rowid FROM memory_vectors WHERE memory_id = ?)').run(entry.name);
+        this.deleteVectorsForMemoryIds([memoryId]);
 
         // Insert new vector
         const vectorStmt = this.db.prepare(`INSERT INTO vec_memories (embedding) VALUES (?)`);
@@ -173,7 +185,7 @@ export class VectorStore {
 
         // Link vector to memory
         this.db.prepare('INSERT INTO memory_vectors (memory_id, vector_rowid) VALUES (?, ?)').run(
-          entry.name,
+          memoryId,
           result.lastInsertRowid
         );
       } catch (err: any) {
@@ -184,11 +196,12 @@ export class VectorStore {
     } else {
       // No vector search - just write memory
       upsertTransaction({
+        id: memoryId,
         name: entry.name,
         type: entry.type,
         content: entry.content,
         description: entry.description || entry.content.slice(0, 100),
-        projectHash,
+        projectKey,
         createdAt: entry.createdAt,
         updatedAt: entry.updatedAt,
       });
@@ -196,44 +209,53 @@ export class VectorStore {
   }
 
   /** Delete memory */
-  delete(name: string): void {
-    // Delete vector link
-    if (this.initialized) {
-      this.db.prepare('DELETE FROM vec_memories WHERE rowid IN (SELECT vector_rowid FROM memory_vectors WHERE memory_id = ?)').run(name);
-      this.db.prepare('DELETE FROM memory_vectors WHERE memory_id = ?').run(name);
+  delete(name: string, projectPath?: string): void {
+    if (!projectPath) {
+      this.deleteMemoryIds([name]);
+      return;
     }
 
-    // Delete memory record
-    this.db.prepare('DELETE FROM memories WHERE id = ?').run(name);
+    const projectKeys = this.projectKeys(projectPath);
+    const scopedIds = projectKeys.map(projectKey => this.memoryId(projectKey, name));
+    const idPlaceholders = scopedIds.map(() => '?').join(', ');
+    const projectPlaceholders = projectKeys.map(() => '?').join(', ');
+    const rows = this.db.prepare(`
+      SELECT id FROM memories
+      WHERE id IN (${idPlaceholders})
+         OR (id = ? AND project IN (${projectPlaceholders}))
+    `).all(...scopedIds, name, ...projectKeys) as Array<{ id: string }>;
+
+    this.deleteMemoryIds(rows.map(row => row.id));
   }
 
   /** Search by similarity */
   async search(query: string, limit: number = 10, projectPath?: string): Promise<SearchResult[]> {
-    const projectHash = projectPath ? this.hashProject(projectPath) : undefined;
+    const projectKeys = projectPath ? this.projectKeys(projectPath) : undefined;
 
     // If vector search available, use semantic search
     if (this.initialized) {
-      return this.semanticSearch(query, limit, projectHash);
+      return this.semanticSearch(query, limit, projectKeys);
     }
 
     // Otherwise fall back to text search
-    return this.textSearch(query, limit, projectHash);
+    return this.textSearch(query, limit, projectKeys);
   }
 
   /** Semantic search using vectors */
-  private async semanticSearch(query: string, limit: number, projectHash?: string): Promise<SearchResult[]> {
+  private async semanticSearch(query: string, limit: number, projectKeys?: string[]): Promise<SearchResult[]> {
     try {
       const queryVector = await this.embeddingService.embed(query);
+      const projectPlaceholders = projectKeys?.map(() => '?').join(', ');
 
       // Use sqlite-vec for similarity search
-      const sql = projectHash
+      const sql = projectKeys
         ? `
           SELECT m.id, m.name, m.type, m.content, m.description, m.created_at,
                  vec_distance_cosine(v.embedding, ?) as distance
           FROM memories m
           JOIN memory_vectors mv ON m.id = mv.memory_id
           JOIN vec_memories v ON mv.vector_rowid = v.rowid
-          WHERE m.project = ?
+          WHERE m.project IN (${projectPlaceholders})
           ORDER BY distance ASC
           LIMIT ?
         `
@@ -248,8 +270,8 @@ export class VectorStore {
         `;
 
       const stmt = this.db.prepare(sql);
-      const params = projectHash
-        ? [JSON.stringify(queryVector), projectHash, limit]
+      const params = projectKeys
+        ? [JSON.stringify(queryVector), ...projectKeys, limit]
         : [JSON.stringify(queryVector), limit];
 
       const rows = stmt.all(...params) as any[];
@@ -265,17 +287,18 @@ export class VectorStore {
       }));
     } catch (err: any) {
       console.warn(`[VectorStore] Semantic search failed: ${err.message}`);
-      return this.textSearch(query, limit, projectHash);
+      return this.textSearch(query, limit, projectKeys);
     }
   }
 
   /** Text search fallback */
-  private textSearch(query: string, limit: number, projectHash?: string): SearchResult[] {
-    const sql = projectHash
+  private textSearch(query: string, limit: number, projectKeys?: string[]): SearchResult[] {
+    const projectPlaceholders = projectKeys?.map(() => '?').join(', ');
+    const sql = projectKeys
       ? `
         SELECT id, name, type, content, description, created_at
         FROM memories
-        WHERE project = ? AND (content LIKE ? OR name LIKE ? OR description LIKE ?)
+        WHERE project IN (${projectPlaceholders}) AND (content LIKE ? OR name LIKE ? OR description LIKE ?)
         LIMIT ?
       `
       : `
@@ -287,8 +310,8 @@ export class VectorStore {
 
     const searchTerm = `%${query}%`;
     const stmt = this.db.prepare(sql);
-    const params = projectHash
-      ? [projectHash, searchTerm, searchTerm, searchTerm, limit]
+    const params = projectKeys
+      ? [...projectKeys, searchTerm, searchTerm, searchTerm, limit]
       : [searchTerm, searchTerm, searchTerm, limit];
 
     const rows = stmt.all(...params) as any[];
@@ -306,14 +329,15 @@ export class VectorStore {
 
   /** Get all memories for a project */
   getAll(projectPath?: string): SearchResult[] {
-    const projectHash = projectPath ? this.hashProject(projectPath) : undefined;
+    const projectKeys = projectPath ? this.projectKeys(projectPath) : undefined;
+    const projectPlaceholders = projectKeys?.map(() => '?').join(', ');
 
-    const sql = projectHash
-      ? 'SELECT id, name, type, content, description, created_at FROM memories WHERE project = ?'
+    const sql = projectKeys
+      ? `SELECT id, name, type, content, description, created_at FROM memories WHERE project IN (${projectPlaceholders})`
       : 'SELECT id, name, type, content, description, created_at FROM memories';
 
     const stmt = this.db.prepare(sql);
-    const params = projectHash ? [projectHash] : [];
+    const params = projectKeys ?? [];
     const rows = stmt.all(...params) as any[];
 
     return rows.map(row => ({
@@ -327,10 +351,80 @@ export class VectorStore {
     }));
   }
 
-  /** Hash project path - Issue #32 #3.4: 使用 SHA256 避免路径冲突 */
-  private hashProject(projectPath: string): string {
-    // 使用 SHA256 生成唯一哈希，避免路径冲突
+  /** Count rows by project key for storage maintenance diagnostics. */
+  getProjectStats(): VectorProjectStats[] {
+    const rows = this.db.prepare(`
+      SELECT COALESCE(project, 'global') as project, COUNT(*) as rows
+      FROM memories
+      GROUP BY COALESCE(project, 'global')
+      ORDER BY rows DESC, project ASC
+    `).all() as Array<{ project: string; rows: number }>;
+
+    return rows.map(row => ({ project: row.project, rows: row.rows }));
+  }
+
+  /** Delete all rows for projects that are not in validProjectKeys. */
+  cleanupOrphanProjects(validProjectKeys: string[]): VectorCleanupResult {
+    const valid = new Set([...validProjectKeys, 'global']);
+    const orphanProjects = this.getProjectStats()
+      .map(stat => stat.project)
+      .filter(project => !valid.has(project));
+
+    let deletedRows = 0;
+    for (const project of orphanProjects) {
+      deletedRows += this.deleteProjectRows(project);
+    }
+
+    return { orphanProjects, deletedRows };
+  }
+
+  private deleteProjectRows(project: string): number {
+    const ids = (this.db.prepare('SELECT id FROM memories WHERE project = ?').all(project) as Array<{ id: string }>)
+      .map(row => row.id);
+    if (ids.length === 0) return 0;
+
+    this.deleteMemoryIds(ids);
+    return ids.length;
+  }
+
+  private deleteMemoryIds(ids: string[]): void {
+    const uniqueIds = [...new Set(ids)];
+    if (uniqueIds.length === 0) return;
+
+    this.deleteVectorsForMemoryIds(uniqueIds);
+    const placeholders = uniqueIds.map(() => '?').join(', ');
+    this.db.prepare(`DELETE FROM memories WHERE id IN (${placeholders})`).run(...uniqueIds);
+  }
+
+  private deleteVectorsForMemoryIds(ids: string[]): void {
+    if (!this.hasTable('memory_vectors') || !this.hasTable('vec_memories') || ids.length === 0) return;
+
+    const placeholders = ids.map(() => '?').join(', ');
+    this.db.prepare(`DELETE FROM vec_memories WHERE rowid IN (SELECT vector_rowid FROM memory_vectors WHERE memory_id IN (${placeholders}))`).run(...ids);
+    this.db.prepare(`DELETE FROM memory_vectors WHERE memory_id IN (${placeholders})`).run(...ids);
+  }
+
+  /** Canonical project key used by v0.2.8+ storage. */
+  private projectKey(projectPath: string): string {
+    return getCanonicalProjectKey(projectPath);
+  }
+
+  /** Legacy hash project key used by older memory/vector storage. */
+  private legacyProjectKey(projectPath: string): string {
     return createHash('sha256').update(projectPath).digest('hex').slice(0, 16);
+  }
+
+  private projectKeys(projectPath: string): string[] {
+    return [...new Set([this.projectKey(projectPath), this.legacyProjectKey(projectPath)])];
+  }
+
+  private memoryId(projectKey: string, name: string): string {
+    return projectKey === 'global' ? name : `${projectKey}:${name}`;
+  }
+
+  private hasTable(name: string): boolean {
+    const row = this.db.prepare("SELECT name FROM sqlite_master WHERE name = ?").get(name);
+    return !!row;
   }
 
   /** Close database */
