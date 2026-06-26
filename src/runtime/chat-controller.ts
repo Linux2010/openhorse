@@ -23,7 +23,8 @@ import { executeTool, getRuntimeTools } from '../tools';
 import { resolveSkillsForTurn, hasMatchingSkill } from '../skills';
 import { buildReferencedFilesPrompt } from '../services/file-context';
 import { refreshProjectInstructions } from '../services/prompt-context';
-import type { OpenHorseUiRuntime, TranscriptEntry, UiEventSink } from './ui-events';
+import type { OpenHorseUiRuntime, TranscriptEntry, UiEventSink, UiRendererCapabilities } from './ui-events';
+import { resolveUiRendererCapabilities } from './ui-events';
 
 const ANSI_PATTERN = /\x1b\[[0-9;?]*[A-Za-z]/g;
 
@@ -260,6 +261,11 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
 
   return {
     start(event: ToolCallEvent): void {
+      events.toolStarted?.({
+        callId: event.callId,
+        name: event.name,
+        args: event.args,
+      });
       const detail = compactToolArgs(event.args);
       const entryId = events.append({
         role: 'tool',
@@ -270,6 +276,15 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
     },
 
     finish(event: ToolResultEvent): void {
+      events.toolFinished?.({
+        callId: event.callId,
+        name: event.name,
+        args: event.args,
+        success: event.success,
+        duration: event.duration,
+        summary: event.summary,
+        error: event.error,
+      });
       const content = [
         event.summary || toolSummary(event.name, event.args, event.success, event.duration),
         event.error ? `Error: ${event.error}` : '',
@@ -325,8 +340,10 @@ export interface RunInputOptions {
 
 export interface AgentChatControllerOptions {
   confirmToolUse?: Parameters<typeof query>[0]['confirmToolUse'];
+  uiCapabilities?: UiRendererCapabilities;
 }
 
+/** @deprecated Use AgentChatControllerOptions. Chat execution is renderer-independent. */
 export type InkChatControllerOptions = AgentChatControllerOptions;
 
 export class AgentChatController {
@@ -443,6 +460,7 @@ export class AgentChatController {
           this.events.append({ role: 'system', content: text });
         }
       },
+      uiCapabilities: resolveUiRendererCapabilities(this.controllerOptions.uiCapabilities),
     };
   }
 
@@ -691,6 +709,7 @@ export class AgentChatController {
   }
 }
 
+/** @deprecated Use AgentChatController. Chat execution is renderer-independent. */
 export { AgentChatController as InkChatController };
 
 export function loadSessionIntoRuntime(runtime: OpenHorseUiRuntime, sessionId: string): string {

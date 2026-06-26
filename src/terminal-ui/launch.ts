@@ -3,12 +3,14 @@ import stringWidth from 'string-width';
 import { parseInput } from '../commands/parser';
 import { AgentRuntimeController, type AgentRuntimeInput } from '../runtime/agent-runtime-controller';
 import { emitToUiEventSink, type AgentRuntimeEventSink } from '../runtime/agent-runtime-protocol';
+import { resolveUiRendererCapabilities } from '../runtime/ui-events';
+import { formatBytes } from '../services/format';
 import { applyTerminalTabCompletion } from './completion';
 import { openExternalEditor } from './editor';
 import { RawTerminalEditor } from './raw-editor';
 import type {
   EditPreviewRequest,
-  OpenHorseInkRuntime,
+  OpenHorseUiRuntime,
   SessionPickerRequest,
   TranscriptAppendEntry,
   TranscriptEntry,
@@ -21,18 +23,6 @@ const DIM = chalk.hex('#567089');
 const ERROR = chalk.hex('#FF7A7A');
 const TOOL = chalk.hex('#7FA2B8');
 const BORDER = chalk.hex('#38556A');
-
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit++;
-  }
-  return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
-}
 
 function stripTrailingNewlines(text: string): string {
   return text.replace(/\n+$/g, '');
@@ -68,7 +58,7 @@ function shouldShowStatus(message: string): boolean {
   return Boolean(message.trim());
 }
 
-interface TerminalWriter {
+export interface TerminalWriter {
   write(text: string): void;
 }
 
@@ -106,7 +96,7 @@ function bannerRow(content: string, width: number): string {
   return `${BORDER('│')}${safeContent}${padding}${BORDER('│')}`;
 }
 
-class TerminalEventSink implements UiEventSink {
+export class TerminalEventSink implements UiEventSink {
   private readonly entries = new Map<string, TranscriptEntry>();
   private readonly printedContent = new Map<string, string>();
   private readonly pendingAssistantOutput = new Map<string, string>();
@@ -115,7 +105,7 @@ class TerminalEventSink implements UiEventSink {
   private pendingEditPreview: EditPreviewRequest | null = null;
 
   constructor(
-    private readonly runtime: OpenHorseInkRuntime,
+    private readonly runtime: OpenHorseUiRuntime,
     private readonly writer: TerminalWriter = new DirectTerminalWriter()
   ) {}
 
@@ -292,7 +282,7 @@ class TerminalEventSink implements UiEventSink {
   }
 }
 
-function printBanner(runtime: OpenHorseInkRuntime): void {
+function printBanner(runtime: OpenHorseUiRuntime): void {
   const width = Math.min(process.stdout.columns || 88, 112);
   const line = '─'.repeat(Math.max(20, width - 2));
   const firstLine = ` ${ACCENT.bold('OPENHORSE')} ${DIM(`v${runtime.version}`)} ${DIM('stable terminal UI')}`;
@@ -305,7 +295,7 @@ function printBanner(runtime: OpenHorseInkRuntime): void {
   process.stdout.write(`${BORDER(`╰${line}╯`)}\n\n`);
 }
 
-function promptText(runtime: OpenHorseInkRuntime): string {
+function promptText(runtime: OpenHorseUiRuntime): string {
   const session = runtime.getSession()?.id.slice(0, 8) ?? 'new';
   return `${DIM(`[${session}]`)} ${ACCENT('›')} `;
 }
@@ -440,7 +430,7 @@ export function normalizeTerminalAnswer(input: string): string {
   return output;
 }
 
-export async function launchTerminalUI(runtime: OpenHorseInkRuntime): Promise<void> {
+export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<void> {
   printBanner(runtime);
 
   let editor!: RawTerminalEditor;
@@ -504,6 +494,7 @@ export async function launchTerminalUI(runtime: OpenHorseInkRuntime): Promise<vo
   agentController = new AgentRuntimeController({
     runtime,
     eventSink,
+    uiCapabilities: resolveUiRendererCapabilities(undefined, 'terminal'),
     useRuntimeToolPermissions: true,
     echoSubmittedInput: false,
     beforeTurn: () => writer.write('\n'),

@@ -1,5 +1,7 @@
 import type {
   EditPreviewRequest,
+  RuntimeToolFinishedEvent,
+  RuntimeToolStartedEvent,
   SessionPickerRequest,
   ToolPermissionRequest,
   TranscriptAppendEntry,
@@ -68,6 +70,8 @@ export type AgentRuntimeEvent =
   | { type: 'session_picker_requested'; request: SessionPickerRequest }
   | { type: 'edit_preview_requested'; request: EditPreviewRequest }
   | { type: 'permission_requested'; request: ToolPermissionRequest }
+  | { type: 'tool_started'; event: RuntimeToolStartedEvent }
+  | { type: 'tool_finished'; event: RuntimeToolFinishedEvent }
   | { type: 'processing_changed'; processing: boolean };
 
 export interface AgentRuntimeEventSink {
@@ -104,6 +108,12 @@ export function emitToUiEventSink(events: UiEventSink, event: AgentRuntimeEvent)
       return undefined;
     case 'permission_requested':
       events.showPermissionRequest?.(event.request);
+      return undefined;
+    case 'tool_started':
+      events.toolStarted?.(event.event);
+      return undefined;
+    case 'tool_finished':
+      events.toolFinished?.(event.event);
       return undefined;
     case 'processing_changed':
       events.setProcessing(event.processing);
@@ -145,6 +155,12 @@ export function createUiEventSinkFromAgentRuntimeEvents(sink: AgentRuntimeEventS
     },
     showPermissionRequest: request => {
       sink.emit({ type: 'permission_requested', request });
+    },
+    toolStarted: event => {
+      sink.emit({ type: 'tool_started', event });
+    },
+    toolFinished: event => {
+      sink.emit({ type: 'tool_finished', event });
     },
     setProcessing: processing => {
       sink.emit({ type: 'processing_changed', processing });

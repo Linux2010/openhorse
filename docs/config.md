@@ -18,7 +18,7 @@
 | `apiBaseUrl` | string | `OPENHORSE_API_BASE_URL` | `(OpenAI 默认)` | API 地址 |
 | `defaultModel` | string | `OPENHORSE_MODEL` | `gpt-4o` | 默认模型 |
 | `fallbackModel` | string | `OPENHORSE_FALLBACK_MODEL` | `(无)` | 备用模型（主模型过载时自动切换） |
-| `toolConfirmation` | `allow` \| `deny` \| `ask` | `OPENHORSE_TOOL_CONFIRMATION` | `allow` | 工具需要确认时的兜底策略；当前 CLI 无交互确认 UI，默认自动允许 `ask` 级工具 |
+| `toolConfirmation` | `allow` \| `deny` \| `ask` | `OPENHORSE_TOOL_CONFIRMATION` | `allow` | 工具需要确认时的兜底策略；`ask` 通过统一 runtime permission protocol 交给当前 renderer 展示 |
 | `ui.confirmations` | `config` \| `interactive` | `OPENHORSE_UI_CONFIRMATIONS` | `config` | 工具确认由配置兜底，还是交给交互式 UI |
 | `webSearch.provider` | string | `OPENHORSE_WEBSEARCH_PROVIDER` | `auto` | WebSearch 模式或 provider。`auto` 先 MCP 后 adapter；可设 `native`、`bailian`、`zhipu`、`tavily-mcp`、`tavily`、`brave`、`custom`、`ddg` |
 | `webSearch.apiKey` | string | `OPENHORSE_WEBSEARCH_API_KEY` / provider env | 主 `apiKey` | WebSearch MCP 或 adapter API Key；未设置时 MCP 复用 OpenHorse 主 API Key |
@@ -85,27 +85,31 @@
 
 ## Tool Confirmation
 
-`toolConfirmation` only applies when a tool returns `ask` from its permission check and the session is in the default permission mode.
+`toolConfirmation` only applies when a tool returns `ask` from its permission
+check and the session is in the default permission mode.
 
-- `allow`: run the tool without prompting. This is the current default because the non-Ink CLI cannot show interactive confirmations.
+- `allow`: run the tool without prompting. This remains the default for local
+  iteration and scripted use.
 - `deny`: reject tools that would need confirmation while still allowing safe/read-only tools.
-- `ask`: preserve the confirmation-required result. Use this after an interactive prompt UI is available.
+- `ask`: route confirmation through the shared runtime permission protocol.
+  The stable `terminal` UI is the primary supported prompt path; beta `ink` and
+  `tui` renderers also consume the same runtime event.
 
 Tools that return `deny` from safety checks are still blocked regardless of this setting.
 
 ## UI
 
-v0.2.3 起，默认启动路径是稳定的 scrollback terminal renderer。它使用轻量 raw editor 管理当前输入缓冲，但不进入 alternate screen，也不绘制会污染 shell scrollback 的全屏 overlay；中文提交文本、Backspace、运行中输入恢复、shell scrollback 和窗口历史都在普通终端窗口里工作。renderer-owned TUI 和 Ink/React UI 仍保留为显式实验模式。
+v0.2.9 起，默认启动路径是稳定的 scrollback terminal renderer。这是当前主力产品 UI。它使用轻量 raw editor 管理当前输入缓冲，但不进入 alternate screen，也不绘制会污染 shell scrollback 的全屏 overlay；中文提交文本、Backspace、运行中输入恢复、shell scrollback 和窗口历史都在普通终端窗口里工作。renderer-owned TUI 和 Ink/React UI 仍保留为显式 beta 实验模式。
 
 - 默认启动 `openhorse`：使用稳定 scrollback terminal UI。
 - `openhorse --ui terminal`：显式使用稳定 scrollback terminal UI。
 - `openhorse --ui tui`：显式启用 renderer-owned TUI。它使用单一 input parser、frame model 和 terminal writer 管理输入、输出、overlay、状态栏和光标，适合继续验证高级交互。
 - `openhorse --ui ink`：显式启用实验 Ink UI。中文 IME 场景请优先使用默认 terminal UI。
-- `openhorse --ui legacy` / `openhorse --ui v2`：兼容旧参数，会回退到稳定 terminal UI。
+- `openhorse --ui legacy` / `openhorse --ui v2`：仅作为旧参数兼容入口，会回退到稳定 terminal UI；它们不是可配置 renderer。
 - `OPENHORSE_UI` / `OPENHORSE_UI_RENDERER` 不再切换 renderer，避免 `.env` 或 `~/.openhorse.env` 遗留配置让默认启动误入实验 UI。
 - `ui.confirmations: "config"`：工具确认沿用 `toolConfirmation` 兜底。
 - `ui.confirmations: "interactive"`：预留给后续 permission dialog。
-- `toolConfirmation: "ask"`：默认 `terminal` renderer 会显示交互确认；实验 `tui` / `ink` renderer 尚未接入该确认 hook，建议使用 `--ui terminal` 或配置为 `allow` / `deny`。
+- `toolConfirmation: "ask"`：当前 renderer 通过统一 runtime permission protocol 处理确认；稳定 `terminal` 是主力验证路径，实验 `tui` / `ink` 仍只用于 beta 交互验证。
 
 默认 terminal UI 当前支持：
 
@@ -141,7 +145,7 @@ openhorse --ui ink
 
 ## Print Mode
 
-`-p` / `--print` 提供 Claude Code/Codex 风格的非交互执行入口，适合脚本、CI、远程 harness 和管道调用。它复用同一套 agent runtime，因此 tools、MCP、skills、session、harness 与交互模式一致。
+`-p` / `--print` 是后续非交互 renderer 目标的早期实验入口，适合验证脚本、CI、远程 harness 和管道调用需要的事件协议。它复用同一套 agent runtime，因此 tools、MCP、skills、session、harness 与交互模式一致；但它不是当前主力交互 UI，也不作为 v0.2.9 的完整自动化/remote UI 交付范围。
 
 ```bash
 openhorse -p "review the current git diff"
@@ -152,6 +156,7 @@ openhorse --print --output-format json "list next actions"
 - 默认 `--output-format text`：assistant 内容输出到 stdout，状态和工具进度输出到 stderr。
 - `--output-format json`：输出 `{ content, entries, statuses, errors, sessionId, model }`，方便上层程序读取。
 - print mode 不渲染 banner、prompt、picker 或交互确认；需要选择 session 时请直接使用 `/resume <session-id>` 或 `/resume --last`。
+- print mode 当前只保证确定性非交互行为；更完整的 automation/remote UI 能力留到后续迭代。
 
 ## Doctor Diagnostics
 

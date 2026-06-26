@@ -6,8 +6,9 @@ import { dirname, join, relative, resolve } from 'path';
 import { getCommandCategoryLabel, getCommands, getVisibleCommands } from '../../commands';
 import { getModeDisplayText } from '../../commands/types';
 import { AgentRuntimeController } from '../../runtime/agent-runtime-controller';
+import { resolveUiRendererCapabilities } from '../../runtime/ui-events';
 import { addToInputHistory, getInputHistory } from '../../services/global-config';
-import { formatBytes } from '../../ui-v2/state/sessions';
+import { formatBytes } from '../../services/format';
 import type { SessionMeta } from '../../services/session-storage';
 import { NativeCursor } from '../components/NativeCursor';
 import { PromptInput } from '../components/PromptInput';
@@ -27,7 +28,7 @@ import {
   staticTranscriptEntries,
   transcriptReducer,
 } from '../runtime/transcript-state';
-import type { OpenHorseInkRuntime, SessionPickerRequest, ToolPermissionRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink, EditPreviewRequest } from '../types';
+import type { OpenHorseUiRuntime, SessionPickerRequest, ToolPermissionRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink, EditPreviewRequest } from '../types';
 
 type Overlay =
   | { type: 'commands'; selectedIndex: number }
@@ -177,7 +178,7 @@ export function isMultilinePasteValue(value: string | undefined): boolean {
 }
 
 export interface ReplScreenProps {
-  runtime: OpenHorseInkRuntime;
+  runtime: OpenHorseUiRuntime;
   cursorController: NativeCursorController;
   resizeEpoch?: number;
 }
@@ -255,6 +256,7 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
   const agentController = useMemo(() => new AgentRuntimeController({
     runtime,
     events,
+    uiCapabilities: resolveUiRendererCapabilities(undefined, 'ink'),
     exitConfirmWindowMs: 5000,
     useRuntimeToolPermissions: true,
     beforeTurn: () => setStatusMessage(''),

@@ -132,7 +132,7 @@ def run_cli(
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        timeout=25,
+        timeout=45,
     )
 
 

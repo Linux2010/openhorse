@@ -1,6 +1,17 @@
 import { AgentRuntimeController } from '../runtime/agent-runtime-controller';
 import { emitToUiEventSink, type AgentRuntimeEventSink } from '../runtime/agent-runtime-protocol';
-import type { EditPreviewRequest, OpenHorseInkRuntime, SessionPickerRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink } from '../runtime/ui-events';
+import { resolveUiRendererCapabilities } from '../runtime/ui-events';
+import type {
+  EditPreviewRequest,
+  OpenHorseUiRuntime,
+  RuntimeToolFinishedEvent,
+  RuntimeToolStartedEvent,
+  SessionPickerRequest,
+  ToolPermissionRequest,
+  TranscriptAppendEntry,
+  TranscriptEntry,
+  UiEventSink,
+} from '../runtime/ui-events';
 
 export type PrintOutputFormat = 'text' | 'json';
 
@@ -8,14 +19,19 @@ export interface PrintModeOptions {
   outputFormat?: PrintOutputFormat;
 }
 
-interface PrintModeResult {
+export interface PrintModeResult {
   content: string;
   entries: TranscriptEntry[];
+  toolEvents: PrintRuntimeToolEvent[];
   statuses: string[];
   errors: string[];
   sessionId: string | null;
   model: string;
 }
+
+export type PrintRuntimeToolEvent =
+  | ({ type: 'started' } & RuntimeToolStartedEvent)
+  | ({ type: 'finished' } & RuntimeToolFinishedEvent);
 
 function stripTrailingNewlines(text: string): string {
   return text.replace(/\n+$/g, '');
@@ -26,15 +42,16 @@ function stderrLine(text: string): void {
   process.stderr.write(`${stripTrailingNewlines(text)}\n`);
 }
 
-class PrintEventSink implements UiEventSink {
+export class PrintEventSink implements UiEventSink {
   private readonly entries = new Map<string, TranscriptEntry>();
   private readonly printedContent = new Map<string, string>();
+  private readonly toolEvents: PrintRuntimeToolEvent[] = [];
   private readonly statuses: string[] = [];
   private readonly errors: string[] = [];
   private idCounter = 0;
 
   constructor(
-    private readonly runtime: OpenHorseInkRuntime,
+    private readonly runtime: OpenHorseUiRuntime,
     private readonly outputFormat: PrintOutputFormat,
   ) {}
 
@@ -109,12 +126,20 @@ class PrintEventSink implements UiEventSink {
     }
   }
 
-  showPermissionRequest(request: { name: string; reason?: string }): void {
+  showPermissionRequest(request: ToolPermissionRequest): void {
     const message = `Tool ${request.name} requires confirmation, but print mode is non-interactive.${request.reason ? ` ${request.reason}` : ''}`;
     this.errors.push(message);
     if (this.outputFormat === 'text') {
       stderrLine(message);
     }
+  }
+
+  toolStarted(event: RuntimeToolStartedEvent): void {
+    this.toolEvents.push({ type: 'started', ...event });
+  }
+
+  toolFinished(event: RuntimeToolFinishedEvent): void {
+    this.toolEvents.push({ type: 'finished', ...event });
   }
 
   setProcessing(_processing: boolean): void {
@@ -133,6 +158,7 @@ class PrintEventSink implements UiEventSink {
     return {
       content,
       entries,
+      toolEvents: [...this.toolEvents],
       statuses: [...this.statuses],
       errors: [...this.errors],
       sessionId: this.runtime.getSession()?.id ?? null,
@@ -201,7 +227,7 @@ export async function readPromptFromStdinIfAvailable(stdin: NodeJS.ReadStream = 
 }
 
 export async function launchPrintMode(
-  runtime: OpenHorseInkRuntime,
+  runtime: OpenHorseUiRuntime,
   input: string,
   options: PrintModeOptions = {},
 ): Promise<number> {
@@ -231,6 +257,7 @@ export async function launchPrintMode(
     eventSink,
     echoSubmittedInput: false,
     useRuntimeToolPermissions: true,
+    uiCapabilities: resolveUiRendererCapabilities(undefined, 'print'),
   });
 
   try {

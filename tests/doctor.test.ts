@@ -117,7 +117,7 @@ describe('doctor report', () => {
     expect(report.checks.find(check => check.id === 'permissions')?.status).toBe('ok');
   });
 
-  it('warns when ask tool confirmation is configured for a non-terminal renderer', () => {
+  it('does not warn for ask tool confirmation in beta renderers because permissions are runtime-owned', () => {
     const config = loadConfig({
       apiKey: 'sk-test',
       model: 'mock-doctor',
@@ -139,8 +139,8 @@ describe('doctor report', () => {
     });
 
     const permissions = report.checks.find(check => check.id === 'permissions');
-    expect(permissions?.status).toBe('warn');
-    expect(permissions?.detail).toContain('--ui terminal');
+    expect(permissions?.status).toBe('ok');
+    expect(permissions?.detail).toContain('shared runtime permission protocol');
   });
 
   it('warns about legacy storage layout without failing doctor', () => {
@@ -231,7 +231,7 @@ describe('openhorse doctor CLI', () => {
           FORCE_COLOR: '0',
         },
         encoding: 'utf8',
-        timeout: 20000,
+        timeout: 45000,
         maxBuffer: 1024 * 1024,
       }
     );

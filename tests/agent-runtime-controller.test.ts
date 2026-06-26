@@ -1,26 +1,37 @@
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { AgentRuntimeController, type AgentRuntimeRunner } from '../src/runtime/agent-runtime-controller';
 import {
   type AgentRuntimeEvent,
   createAgentRuntimeEventSinkFromUiEvents,
   createUiEventSinkFromAgentRuntimeEvents,
 } from '../src/runtime/agent-runtime-protocol';
-import type { OpenHorseInkRuntime, TranscriptAppendEntry, UiEventSink } from '../src/runtime/ui-events';
+import { AgentChatController } from '../src/runtime/chat-controller';
+import {
+  resolveUiRendererCapabilities,
+  type OpenHorseUiRuntime,
+  type TranscriptAppendEntry,
+  type UiEventSink,
+} from '../src/runtime/ui-events';
+import { appendSessionMessage, createSession, type SessionMeta } from '../src/services/session-storage';
 
-function createRuntime(): OpenHorseInkRuntime {
+function createRuntime(overrides: Partial<OpenHorseUiRuntime> = {}): OpenHorseUiRuntime {
   return {
     cwd: '/tmp/openhorse',
     version: 'test',
-    config: { model: 'test-model' } as OpenHorseInkRuntime['config'],
+    config: { model: 'test-model' } as OpenHorseUiRuntime['config'],
     store: {
       setProcessing: jest.fn(),
-    } as unknown as OpenHorseInkRuntime['store'],
+    } as unknown as OpenHorseUiRuntime['store'],
     llm: null,
-    runtime: {} as OpenHorseInkRuntime['runtime'],
+    runtime: {} as OpenHorseUiRuntime['runtime'],
     isConfigured: true,
     ensureSession: jest.fn(),
     setSession: jest.fn(),
     getSession: jest.fn(() => null),
     shutdown: jest.fn(),
+    ...overrides,
   };
 }
 
@@ -41,6 +52,8 @@ function createEvents() {
     setStatus: jest.fn(message => statuses.push(message)),
     showSessionPicker: jest.fn(),
     showEditPreview: jest.fn(),
+    toolStarted: jest.fn(),
+    toolFinished: jest.fn(),
     setProcessing: jest.fn(value => processing.push(value)),
   };
 
@@ -59,7 +72,145 @@ function createDeferredRunner(): AgentRuntimeRunner & {
   };
 }
 
+async function withTempConfig<T>(fn: (paths: { configDir: string; projectDir: string }) => Promise<T> | T): Promise<T> {
+  const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+  const root = mkdtempSync(join(tmpdir(), 'openhorse-runtime-test-'));
+  const configDir = join(root, 'config');
+  const projectDir = join(root, 'project');
+
+  process.env.OPENHORSE_CONFIG_DIR = configDir;
+  try {
+    return await fn({ configDir, projectDir });
+  } finally {
+    if (previousConfigDir === undefined) {
+      delete process.env.OPENHORSE_CONFIG_DIR;
+    } else {
+      process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function createRestorableSession(projectDir: string, content: string): SessionMeta {
+  const session = createSession(projectDir, 'test-model');
+  appendSessionMessage(session.id, {
+    role: 'user',
+    content,
+    timestamp: Date.now(),
+  });
+  return session;
+}
+
 describe('AgentRuntimeController', () => {
+  it('resolves UI renderer capabilities from runtime renderer names and adapter overrides', () => {
+    expect(resolveUiRendererCapabilities()).toEqual({
+      structuredPickers: true,
+      inlineProgress: true,
+      suppressLegacyTokenMeta: true,
+      extraAssistantSpacing: true,
+      suppressAbortNotice: true,
+    });
+    expect(resolveUiRendererCapabilities(undefined, 'terminal')).toEqual({
+      structuredPickers: true,
+      inlineProgress: true,
+      suppressLegacyTokenMeta: true,
+      extraAssistantSpacing: true,
+      suppressAbortNotice: true,
+    });
+    expect(resolveUiRendererCapabilities(undefined, 'legacy')).toEqual(expect.objectContaining({
+      structuredPickers: true,
+      inlineProgress: true,
+    }));
+    expect(resolveUiRendererCapabilities(undefined, 'v2')).toEqual(expect.objectContaining({
+      structuredPickers: true,
+      inlineProgress: true,
+    }));
+    expect(resolveUiRendererCapabilities(undefined, 'print')).toEqual({
+      structuredPickers: false,
+      inlineProgress: false,
+      suppressLegacyTokenMeta: false,
+      extraAssistantSpacing: false,
+      suppressAbortNotice: false,
+    });
+    expect(resolveUiRendererCapabilities({ structuredPickers: false }, 'terminal')).toEqual(expect.objectContaining({
+      structuredPickers: false,
+      inlineProgress: true,
+    }));
+  });
+
+  it('uses structured resume pickers when the renderer adapter supports them', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      createRestorableSession(projectDir, 'older task');
+      createRestorableSession(projectDir, 'newer task');
+
+      const runtime = createRuntime({ cwd: projectDir });
+      const { events, appended } = createEvents();
+      const controller = new AgentChatController(runtime, events);
+
+      await controller.runInput('/resume');
+
+      expect(events.showSessionPicker).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Pick a Session',
+        sessions: expect.arrayContaining([
+          expect.objectContaining({ projectPath: projectDir }),
+        ]),
+        maxVisibleItems: 10,
+      }));
+      expect(appended).toEqual([]);
+    });
+  });
+
+  it('falls back to textual resume instructions when structured pickers are disabled', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      createRestorableSession(projectDir, 'older task');
+      createRestorableSession(projectDir, 'newer task');
+
+      const runtime = createRuntime({ cwd: projectDir });
+      const { events, appended } = createEvents();
+      const controller = new AgentChatController(runtime, events, {
+        uiCapabilities: { structuredPickers: false },
+      });
+
+      await controller.runInput('/resume');
+
+      expect(events.showSessionPicker).not.toHaveBeenCalled();
+      expect(appended).toEqual([
+        expect.objectContaining({
+          role: 'system',
+          title: '/resume',
+          content: expect.stringContaining('Use /resume <number|session-id|name> or /resume --last.'),
+        }),
+      ]);
+    });
+  });
+
+  it('passes renderer capabilities from the runtime controller boundary into commands', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      createRestorableSession(projectDir, 'older task');
+      createRestorableSession(projectDir, 'newer task');
+
+      const runtime = createRuntime({ cwd: projectDir });
+      const { events, appended } = createEvents();
+      const controller = new AgentRuntimeController({
+        runtime,
+        events,
+        uiCapabilities: { structuredPickers: false },
+      });
+
+      expect(controller.submit('/resume')).toEqual({ type: 'started' });
+      await controller.waitForIdle();
+
+      expect(events.showSessionPicker).not.toHaveBeenCalled();
+      expect(appended).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          role: 'system',
+          title: '/resume',
+          content: expect.stringContaining('Use /resume <number|session-id|name> or /resume --last.'),
+        }),
+      ]));
+    });
+  });
+
   it('runs a submitted input through the shared runner and processing lifecycle', async () => {
     const runtime = createRuntime();
     const { events, appended, processing } = createEvents();
@@ -320,10 +471,27 @@ describe('AgentRuntimeController', () => {
     })).toBe('entry-1');
     runtimeSink.emit({ type: 'status_changed', message: 'ready' });
     runtimeSink.emit({ type: 'processing_changed', processing: true });
+    runtimeSink.emit({
+      type: 'tool_started',
+      event: { callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } },
+    });
+    runtimeSink.emit({
+      type: 'tool_finished',
+      event: {
+        callId: 'call-1',
+        name: 'read_file',
+        args: { path: 'src/index.ts' },
+        success: true,
+        duration: 12,
+        summary: 'read file ok',
+      },
+    });
 
     expect(appended).toEqual([expect.objectContaining({ role: 'assistant', content: 'hello' })]);
     expect(statuses).toEqual(['ready']);
     expect(processing).toEqual([true]);
+    expect(events.toolStarted).toHaveBeenCalledWith({ callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } });
+    expect(events.toolFinished).toHaveBeenCalledWith(expect.objectContaining({ callId: 'call-1', success: true }));
   });
 
   it('adapts a protocol event sink back into UiEventSink for renderer compatibility', () => {
@@ -337,11 +505,22 @@ describe('AgentRuntimeController', () => {
 
     expect(uiEvents.append({ role: 'user', content: 'hello' })).toBe('runtime-entry-1');
     uiEvents.setStatus('working');
+    uiEvents.toolStarted?.({ callId: 'call-1', name: 'grep', args: { pattern: 'TODO' } });
+    uiEvents.toolFinished?.({
+      callId: 'call-1',
+      name: 'grep',
+      args: { pattern: 'TODO' },
+      success: false,
+      duration: 34,
+      error: 'not found',
+    });
     uiEvents.setProcessing(false);
 
     expect(emitted.map(event => event.type)).toEqual([
       'transcript_append',
       'status_changed',
+      'tool_started',
+      'tool_finished',
       'processing_changed',
     ]);
   });

@@ -1,5 +1,5 @@
 /**
- * openhorse - Ink/React CLI entry
+ * openhorse - CLI entry
  */
 
 import 'dotenv/config';
@@ -8,7 +8,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { init, type OpenHorseRuntime } from './init';
 import { LLMService } from './services/llm';
-import { loadConfig, isConfigured, type UIRenderer } from './services/config';
+import { loadConfig, isConfigured, resolveUIRenderer, SUPPORTED_UI_RENDERERS, type UIRenderer } from './services/config';
 import { ensureConfigDir } from './services/config-dir';
 import { recordFirstStartTime, incrementSessionCount } from './services/global-config';
 import { createSession, endSession, readSessionMessages, updateSessionSummary, type SessionMeta } from './services/session-storage';
@@ -26,7 +26,7 @@ import { launchPrintMode, readPromptFromStdinIfAvailable, type PrintOutputFormat
 import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from './services/doctor';
 import { collectWorkspaceDiff, formatWorkspaceDiff } from './services/workspace-diff';
 import { createCommitPlan, formatCommitPlan } from './services/commit-plan';
-import type { OpenHorseInkRuntime } from './runtime/ui-events';
+import type { OpenHorseUiRuntime } from './runtime/ui-events';
 
 const BRAND = chalk.hex('#FF6B35');
 const ACCENT = chalk.hex('#00D4AA');
@@ -54,7 +54,7 @@ function showCliHelp(): void {
   console.log('  openhorse doctor      Run local diagnostics and exit');
   console.log('  openhorse diff        Summarize current git workspace changes');
   console.log('  openhorse commit      Create a read-only commit plan and suggested message');
-  console.log('  openhorse -p "task"   Run one non-interactive task and print the result');
+  console.log('  openhorse -p "task"   Run an experimental non-interactive task');
   console.log('  openhorse --help      Show this help message');
   console.log('  openhorse --version   Show version');
   console.log('  openhorse --ui terminal  Start the stable native terminal UI explicitly');
@@ -64,11 +64,11 @@ function showCliHelp(): void {
   console.log(ACCENT('Options:'));
   console.log('  -h, --help     Show help');
   console.log('  -v, --version  Show version');
-  console.log('  -p, --print    Non-interactive print mode');
-  console.log('  --ui <mode>    UI renderer: terminal, tui, ink');
+  console.log('  -p, --print    Experimental non-interactive print mode');
+  console.log(`  --ui <mode>    UI renderer: ${SUPPORTED_UI_RENDERERS.join(', ')}`);
   console.log('  --output-format <text|json>  Print-mode output format');
   console.log();
-  console.log(DIM('terminal is the default. tui and ink remain experimental renderers.'));
+  console.log(DIM('terminal is the stable default. tui and ink are beta; print is experimental.'));
   console.log();
 }
 
@@ -105,16 +105,9 @@ function parseCliOptions(args: string[]): CliOptions {
 
     if (uiValue !== undefined) {
       if (arg === '--ui') i++;
-      if (uiValue === 'terminal' || uiValue === 'stable') {
-        uiRenderer = 'terminal';
-        continue;
-      }
-      if (uiValue === 'tui') {
-        uiRenderer = 'tui';
-        continue;
-      }
-      if (uiValue === 'ink') {
-        uiRenderer = 'ink';
+      const resolvedRenderer = resolveUIRenderer(uiValue);
+      if (resolvedRenderer) {
+        uiRenderer = resolvedRenderer;
         continue;
       }
 
@@ -125,7 +118,7 @@ function parseCliOptions(args: string[]): CliOptions {
       }
 
       console.error(ERROR(`Invalid --ui value: ${uiValue}`));
-      console.error(DIM('Expected: terminal, tui, ink'));
+      console.error(DIM(`Expected: ${SUPPORTED_UI_RENDERERS.join(', ')}`));
       process.exit(1);
     }
 
@@ -153,7 +146,7 @@ function parseCliOptions(args: string[]): CliOptions {
   return { uiRenderer, printMode, outputFormat, promptArgs };
 }
 
-async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OpenHorseInkRuntime> {
+async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OpenHorseUiRuntime> {
   ensureConfigDir();
   recordFirstStartTime();
 

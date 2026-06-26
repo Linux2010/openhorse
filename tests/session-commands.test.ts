@@ -48,7 +48,7 @@ describe('session commands', () => {
     }
   });
 
-  function makeContext(renderer: 'legacy' | 'v2' | 'tui' = 'v2') {
+  function makeContext(renderer: 'terminal' | 'ink' | 'tui' = 'terminal') {
     const config = loadConfig({
       apiKey: 'test-key',
       ui: { renderer, confirmations: 'config' },
@@ -82,10 +82,10 @@ describe('session commands', () => {
     return session;
   }
 
-  test('/resume returns an interactive picker request for v2 when multiple sessions exist', async () => {
+  test('/resume returns an interactive picker request for terminal when multiple sessions exist', async () => {
     createRestorableSession('first restorable session');
     createRestorableSession('second restorable session');
-    const { ctx } = makeContext('v2');
+    const { ctx } = makeContext('terminal');
 
     const result = await findCommand('resume')!.execute(ctx, '');
 
@@ -108,9 +108,22 @@ describe('session commands', () => {
     expect(result.sessionPicker?.maxVisibleItems).toBe(10);
   });
 
+  test('/resume can fall back to printed picker when renderer adapter disables structured pickers', async () => {
+    createRestorableSession('first printed restorable session');
+    createRestorableSession('second printed restorable session');
+    const { ctx } = makeContext('terminal');
+    ctx.uiCapabilities = { structuredPickers: false };
+
+    const result = await findCommand('resume')!.execute(ctx, '');
+
+    expect(result.success).toBe(true);
+    expect(result.sessionPicker).toBeUndefined();
+    expect(logSpy.mock.calls.flat().join('\n')).toContain('Use /resume <number|session-id|name>');
+  });
+
   test('/resume <session-id> restores history and switches active session', async () => {
     const session = createRestorableSession('restore this exact session');
-    const { ctx, restored, store } = makeContext('v2');
+    const { ctx, restored, store } = makeContext('terminal');
 
     const result = await findCommand('resume')!.execute(ctx, session.id);
 

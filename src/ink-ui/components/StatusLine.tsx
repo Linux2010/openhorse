@@ -3,11 +3,11 @@ import { Box, Text } from 'ink';
 import stringWidth from 'string-width';
 import { calculateCtxPercent } from '../../services/model-context';
 import { mcpManager } from '../../tools/mcp';
-import type { OpenHorseInkRuntime } from '../types';
+import type { OpenHorseUiRuntime } from '../types';
 import { RunningHorseIndicator, runningHorseLabel } from './RunningHorseIndicator';
 
 export interface StatusLineProps {
-  runtime: OpenHorseInkRuntime;
+  runtime: OpenHorseUiRuntime;
   running: boolean;
   statusMessage?: string;
   width?: number;

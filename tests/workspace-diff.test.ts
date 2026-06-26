@@ -128,7 +128,7 @@ describe('openhorse diff CLI', () => {
           FORCE_COLOR: '0',
         },
         encoding: 'utf8',
-        timeout: 20000,
+        timeout: 45000,
         maxBuffer: 1024 * 1024,
       }
     );

@@ -1,5 +1,5 @@
 import { AgentRuntimeController, type AgentRuntimeInput } from '../runtime/agent-runtime-controller';
-import type { OpenHorseInkRuntime, SessionPickerRequest } from '../runtime/ui-events';
+import { resolveUiRendererCapabilities, type OpenHorseUiRuntime, type SessionPickerRequest } from '../runtime/ui-events';
 import { TuiRunner } from './runner';
 
 const ENTER_ALT_SCREEN = '\x1b[?1049h';
@@ -15,7 +15,7 @@ export interface TuiLaunchOptions {
 }
 
 export async function launchTuiUI(
-  runtime: OpenHorseInkRuntime,
+  runtime: OpenHorseUiRuntime,
   options: TuiLaunchOptions = {}
 ): Promise<void> {
   const input = options.input ?? process.stdin;
@@ -164,6 +164,7 @@ export async function launchTuiUI(
   controller = new AgentRuntimeController({
     runtime,
     events: runner.events,
+    uiCapabilities: resolveUiRendererCapabilities(undefined, 'tui'),
     useRuntimeToolPermissions: true,
     runningStatus: () => statusSnapshot(runtime, 'running'),
     readyStatus: () => statusSnapshot(runtime, 'ready'),
@@ -188,7 +189,7 @@ export async function launchTuiUI(
   });
 }
 
-function statusSnapshot(runtime: OpenHorseInkRuntime, left: string): string {
+function statusSnapshot(runtime: OpenHorseUiRuntime, left: string): string {
   const snapshot = runtime.store.getSnapshot();
   const session = runtime.getSession()?.id.slice(0, 8) ?? 'none';
   const tokens = snapshot.tokenUsage

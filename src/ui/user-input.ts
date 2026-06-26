@@ -69,7 +69,7 @@ export function renderUserInputEcho(input: string, width?: number): string {
 }
 
 export function renderUserInputEchoFrame(input: string, width?: number): string {
-  // Kept for compatibility with the v2 caller. Submitted input should read as
-  // conversation content, not as a bordered live input frame.
+  // Kept for compatibility with older framed-input callers. Submitted input
+  // should read as conversation content, not as a bordered live input frame.
   return renderUserInputEcho(input, width);
 }

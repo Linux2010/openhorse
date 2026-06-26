@@ -9,7 +9,10 @@
 import chalk from 'chalk';
 import { getCommands } from '../commands/index';
 import type { SlashCommand } from '../commands/types';
-import { renderCommandPalette, buildCommandSuggestions, visualWidth, stripAnsi, renderV2InputFrame } from '../ui-v2';
+import { renderCommandPalette } from './shared/command-palette';
+import { buildCommandSuggestions } from './shared/command-suggestions';
+import { renderFramedInputFrame } from './shared/input-frame';
+import { stripAnsi, visualWidth } from './shared/text';
 
 // ============================================================================
 // 颜色常量 - Issue #32 #3.11: NO_COLOR 支持
@@ -33,17 +36,18 @@ const ACCENT = colorize.accent;
 const DIM = colorize.dim;
 const SELECTED = colorize.selected;
 
-type InputPromptRenderer = 'legacy' | 'v2';
+type InputPromptRenderer = 'classic' | 'framed' | 'legacy' | 'v2';
+type NormalizedInputPromptRenderer = 'classic' | 'framed';
 interface InputRenderContext {
   prefixLines?: string[];
 }
 
-let inputPromptRenderer: InputPromptRenderer = 'legacy';
+let inputPromptRenderer: NormalizedInputPromptRenderer = 'classic';
 let inputRenderContextProvider: () => InputRenderContext = () => ({});
 let inputStatusText = '';
 
 export function setInputPromptRenderer(renderer: InputPromptRenderer): void {
-  inputPromptRenderer = renderer;
+  inputPromptRenderer = renderer === 'framed' || renderer === 'v2' ? 'framed' : 'classic';
 }
 
 export function setInputRenderContextProvider(provider: () => InputRenderContext): void {
@@ -324,8 +328,8 @@ let lastInputCursorRow = 0;
 let lastInputCursorColumn = 0;
 let lastInputValue = '';
 let lastInputModeIndicator = '';
-let v2InputFrameVisible = false;
-let v2InputFrameLeadingNewline = false;
+let framedInputVisible = false;
+let framedInputLeadingNewline = false;
 let outputCursorColumn = 0;
 let outputCursorColumnBeforeFrame = 0;
 /** 是否是首次渲染（首次不清除） */
@@ -340,8 +344,8 @@ export function redrawInputWithPrompt(input: string, modeIndicator: string = '')
     clearPanel({ release: false });
   }
 
-  if (inputPromptRenderer === 'v2') {
-    redrawV2InputFrame(input, modeIndicator);
+  if (inputPromptRenderer === 'framed') {
+    redrawFramedInput(input, modeIndicator);
     return;
   }
 
@@ -384,10 +388,10 @@ export function redrawInputWithPrompt(input: string, modeIndicator: string = '')
   isFirstRender = false;
 }
 
-function redrawV2InputFrame(input: string, modeIndicator: string): void {
-  const wasVisible = v2InputFrameVisible;
-  if (v2InputFrameVisible) {
-    clearPreviousV2InputFrame();
+function redrawFramedInput(input: string, modeIndicator: string): void {
+  const wasVisible = framedInputVisible;
+  if (framedInputVisible) {
+    clearPreviousFramedInput();
   }
 
   const leadingNewline = !wasVisible && outputCursorColumn > 0;
@@ -401,7 +405,7 @@ function redrawV2InputFrame(input: string, modeIndicator: string): void {
     ...(context.prefixLines || []),
     input,
   ].join('\n');
-  const frame = renderV2InputFrame({
+  const frame = renderFramedInputFrame({
     input: frameInput,
     modeIndicator,
     width: terminalWidth,
@@ -422,13 +426,13 @@ function redrawV2InputFrame(input: string, modeIndicator: string): void {
   lastTotalRendered = visualWidth(input);
   lastInputValue = input;
   lastInputModeIndicator = modeIndicator;
-  v2InputFrameVisible = true;
-  v2InputFrameLeadingNewline = leadingNewline;
+  framedInputVisible = true;
+  framedInputLeadingNewline = leadingNewline;
   isFirstRender = false;
 }
 
-function clearPreviousV2InputFrame(): void {
-  if (lastInputBlockHeight <= 0 || !v2InputFrameVisible) return;
+function clearPreviousFramedInput(): void {
+  if (lastInputBlockHeight <= 0 || !framedInputVisible) return;
 
   if (lastInputCursorRow > 0) {
     process.stdout.write(`\x1b[${lastInputCursorRow}A`);
@@ -446,7 +450,7 @@ function clearPreviousV2InputFrame(): void {
     process.stdout.write(`\x1b[${lastInputBlockHeight - 1}A`);
   }
 
-  if (v2InputFrameLeadingNewline) {
+  if (framedInputLeadingNewline) {
     process.stdout.write('\x1b[1A');
     process.stdout.write(`\r\x1b[${outputCursorColumnBeforeFrame + 1}G`);
     outputCursorColumn = outputCursorColumnBeforeFrame;
@@ -455,12 +459,12 @@ function clearPreviousV2InputFrame(): void {
     process.stdout.write('\r');
   }
 
-  v2InputFrameVisible = false;
+  framedInputVisible = false;
 }
 
 export function clearRenderedInput(): void {
-  if (inputPromptRenderer === 'v2') {
-    clearPreviousV2InputFrame();
+  if (inputPromptRenderer === 'framed') {
+    clearPreviousFramedInput();
   } else {
     process.stdout.write('\x1b[2K\r');
   }
@@ -468,7 +472,7 @@ export function clearRenderedInput(): void {
 }
 
 function getPanelOffsetRows(): number {
-  return inputPromptRenderer === 'v2' ? 2 : 0;
+  return inputPromptRenderer === 'framed' ? 2 : 0;
 }
 
 /**
@@ -481,15 +485,15 @@ export function resetRenderLength(): void {
   lastInputCursorColumn = 0;
   lastInputValue = '';
   lastInputModeIndicator = '';
-  v2InputFrameVisible = false;
-  v2InputFrameLeadingNewline = false;
+  framedInputVisible = false;
+  framedInputLeadingNewline = false;
   outputCursorColumn = 0;
   outputCursorColumnBeforeFrame = 0;
   isFirstRender = true;
 }
 
 export function writeOutputPreservingInput(text: string): void {
-  if (inputPromptRenderer !== 'v2' || !v2InputFrameVisible) {
+  if (inputPromptRenderer !== 'framed' || !framedInputVisible) {
     process.stdout.write(text);
     trackOutputCursor(text);
     return;
@@ -497,10 +501,10 @@ export function writeOutputPreservingInput(text: string): void {
 
   const input = lastInputValue;
   const modeIndicator = lastInputModeIndicator;
-  clearPreviousV2InputFrame();
+  clearPreviousFramedInput();
   process.stdout.write(text);
   trackOutputCursor(text);
-  redrawV2InputFrame(input, modeIndicator);
+  redrawFramedInput(input, modeIndicator);
 }
 
 export function writeLinePreservingInput(text: string = ''): void {

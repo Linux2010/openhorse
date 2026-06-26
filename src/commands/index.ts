@@ -15,6 +15,7 @@ import {
   type CommandResult,
   type PermissionMode,
 } from './types';
+import { resolveUiRendererCapabilities } from '../runtime/ui-events';
 import type { Task } from '../core/agent';
 import { TaskManager, CreateTaskOptions } from '../services/task-manager';
 import { AgentRunner } from '../services/agent-runner';
@@ -22,8 +23,7 @@ import { isConfigured } from '../services/config';
 import { createSpinner, toolLine } from '../ui/box';
 import { createStreamRenderer, type StreamMarkdownRenderer } from '../ui/stream-markdown';
 import { showProgress, hideProgress, showToolProgress } from '../ui/progress';
-import { renderSessionPicker } from '../ui-v2';
-import { formatBytes } from '../ui-v2/state/sessions';
+import { formatBytes } from '../services/format';
 import { query, getSystemPrompt, resetToolState, getToolState, type QueryEvent, type PromptContext } from '../framework';
 import { executeTool, getRuntimeTools, getToolNames } from '../tools';
 import { mcpManager } from '../tools/mcp';
@@ -89,6 +89,10 @@ const CATEGORY_ORDER: CommandCategory[] = [
   'diagnostics',
   'legacy',
 ];
+
+function commandUICapabilities(ctx: CommandContext) {
+  return resolveUiRendererCapabilities(ctx.uiCapabilities);
+}
 
 const CATEGORY_LABELS: Record<CommandCategory, string> = {
   workflow: 'Workflow',
@@ -801,6 +805,7 @@ async function handleRun(ctx: CommandContext, args: string): Promise<CommandResu
 }
 
 async function handleChat(ctx: CommandContext, input: string): Promise<CommandResult> {
+  const ui = commandUICapabilities(ctx);
   const writeOutput = ctx.writeOutput ?? ((text: string) => process.stdout.write(text));
   const writeLine = ctx.writeLine ?? ((text: string = '') => console.log(text));
 
@@ -868,7 +873,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
   const systemPrompt = getSystemPrompt(promptCtx);
 
   const spinner = createSpinner();
-  const useSpinner = ctx.config.ui?.renderer !== 'v2';
+  const useSpinner = !ui.inlineProgress;
   if (useSpinner) {
     spinner.start('Thinking');
   }
@@ -1080,11 +1085,11 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
 
     if (responseStarted) {
       writeLine();
-      if (ctx.config.ui?.renderer === 'v2') {
+      if (ui.extraAssistantSpacing) {
         writeLine();
       }
     }
-    if (ctx.config.ui?.renderer !== 'v2') {
+    if (!ui.suppressLegacyTokenMeta) {
       const stats = [
         finalUsage ? `tokens: ${finalUsage.promptTokens}+${finalUsage.completionTokens}` : '',
         finalModel ? finalModel : '',
@@ -1098,7 +1103,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
     writeLine();
     if (isAbortError(error, ctx.abortSignal)) {
       hideProgress();
-      if (ctx.config.ui?.renderer !== 'v2') {
+      if (!ui.suppressAbortNotice) {
         writeLine(DIM('Interrupted.'));
       }
     } else {
@@ -1591,23 +1596,13 @@ function printSessionConflict(ref: string, matches: SessionMeta[]): void {
 }
 
 function printSessionPicker(sessions: SessionMeta[], options: { title: string; showProject?: boolean; moreCount?: number }): void {
-  const lines = renderSessionPicker({
-    title: options.title,
-    sessions,
-    width: process.stdout.columns || 80,
-    showProject: options.showProject,
-    moreCount: options.moreCount,
-    footer: '  Use /resume <number|session-id|name>  /resume --last',
-    theme: {
-      accent: ACCENT,
-      dim: DIM,
-      selected: text => chalk.bgHex('#1E293B').hex('#E2E8F0')(text),
-    },
-  });
-
-  for (const line of lines) {
-    console.log(line);
+  console.log(HEADER(options.title));
+  console.log(DIM('─'.repeat(Math.min(process.stdout.columns || 80, 96))));
+  printSessionRows(sessions, { indexed: true, showProject: options.showProject });
+  if (options.moreCount && options.moreCount > 0) {
+    console.log(DIM(`... ${options.moreCount} more sessions. Use /sessions to list them, or /resume <session-id>.`));
   }
+  console.log(DIM('Use /resume <number|session-id|name> or /resume --last.'));
 }
 
 function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
@@ -1677,6 +1672,7 @@ function handleSessions(ctx: CommandContext, args: string = ''): CommandResult {
 }
 
 function handleResume(ctx: CommandContext, args: string): CommandResult {
+  const ui = commandUICapabilities(ctx);
   const scope = parseSessionScopeArgs(args, ctx.cwd);
   const sessionRef = scope.query;
   const scopedSessions = (scope.allProjects ? listSessions() : listProjectSessions(scope.projectPath))
@@ -1704,7 +1700,7 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
       maxVisibleItems: 10,
     };
 
-    if (ctx.config.ui?.renderer === 'v2' || ctx.config.ui?.renderer === 'ink' || ctx.config.ui?.renderer === 'terminal' || ctx.config.ui?.renderer === 'tui') {
+    if (ui.structuredPickers) {
       return { success: true, sessionPicker: picker };
     }
 
@@ -1888,7 +1884,7 @@ async function handleEditPreview(ctx: CommandContext): Promise<CommandResult> {
   }
   console.log();
 
-  // Return structured data for v2/TUI/Ink picker rendering
+  // Return structured data for terminal/TUI/Ink picker rendering.
   if (parsed.success && parsed.metadata?.candidates && Array.isArray(parsed.metadata.candidates)) {
     return {
       success: true,
