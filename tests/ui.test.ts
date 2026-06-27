@@ -224,7 +224,7 @@ describe('User Input Echo', () => {
     expect(output).not.toContain('\x1b[');
   });
 
-  test('renders submitted v2 input without transcript separators', () => {
+  test('renders submitted framed input without transcript separators', () => {
     delete process.env.NO_COLOR;
     process.env.TERM = 'xterm-256color';
 

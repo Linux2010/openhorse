@@ -105,7 +105,7 @@ describe('global-config', () => {
       saveGlobalConfig({
         ...config,
         ui: {
-          renderer: 'legacy',
+          renderer: 'ink',
           confirmations: 'interactive',
         },
       });

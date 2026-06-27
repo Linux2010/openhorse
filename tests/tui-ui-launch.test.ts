@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import { Store } from '../src/framework/store';
 import { loadConfig } from '../src/services/config';
 import { launchTuiUI } from '../src/tui-ui/launch';
-import type { OpenHorseInkRuntime } from '../src/runtime/ui-events';
+import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
 
 class FakeTTYInput extends EventEmitter {
   isTTY = true;
@@ -39,7 +39,7 @@ class FakeTTYOutput extends EventEmitter {
   }
 }
 
-function makeRuntime(): OpenHorseInkRuntime {
+function makeRuntime(): OpenHorseUiRuntime {
   const config = loadConfig({
     apiKey: 'sk-test',
     model: 'glm-5',

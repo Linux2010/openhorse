@@ -23,6 +23,7 @@ export interface SessionPickerRequest {
   showProject?: boolean;
   allProjects?: boolean;
   maxVisibleItems?: number;
+  moreCount?: number;
 }
 
 export interface EditPreviewCandidate {
@@ -43,6 +44,57 @@ export interface EditPreviewRequest {
   width?: number;
 }
 
+export interface UiRendererCapabilities {
+  structuredPickers?: boolean;
+  inlineProgress?: boolean;
+  suppressLegacyTokenMeta?: boolean;
+  extraAssistantSpacing?: boolean;
+  suppressAbortNotice?: boolean;
+}
+
+export type ResolvedUiRendererCapabilities = Required<UiRendererCapabilities>;
+
+const INTERACTIVE_RENDERER_CAPABILITIES: ResolvedUiRendererCapabilities = {
+  structuredPickers: true,
+  inlineProgress: true,
+  suppressLegacyTokenMeta: true,
+  extraAssistantSpacing: true,
+  suppressAbortNotice: true,
+};
+
+const NON_INTERACTIVE_RENDERER_CAPABILITIES: ResolvedUiRendererCapabilities = {
+  structuredPickers: false,
+  inlineProgress: false,
+  suppressLegacyTokenMeta: false,
+  extraAssistantSpacing: false,
+  suppressAbortNotice: false,
+};
+
+export function resolveUiRendererCapabilities(
+  capabilities?: UiRendererCapabilities,
+  renderer?: unknown
+): ResolvedUiRendererCapabilities {
+  const defaults = renderer == null || isInteractiveRendererName(renderer)
+    ? INTERACTIVE_RENDERER_CAPABILITIES
+    : NON_INTERACTIVE_RENDERER_CAPABILITIES;
+
+  return {
+    structuredPickers: capabilities?.structuredPickers ?? defaults.structuredPickers,
+    inlineProgress: capabilities?.inlineProgress ?? defaults.inlineProgress,
+    suppressLegacyTokenMeta: capabilities?.suppressLegacyTokenMeta ?? defaults.suppressLegacyTokenMeta,
+    extraAssistantSpacing: capabilities?.extraAssistantSpacing ?? defaults.extraAssistantSpacing,
+    suppressAbortNotice: capabilities?.suppressAbortNotice ?? defaults.suppressAbortNotice,
+  };
+}
+
+function isInteractiveRendererName(renderer: unknown): boolean {
+  return renderer === 'terminal'
+    || renderer === 'tui'
+    || renderer === 'ink'
+    || renderer === 'legacy'
+    || renderer === 'v2';
+}
+
 export interface ToolPermissionRequest {
   id: string;
   name: string;
@@ -51,13 +103,29 @@ export interface ToolPermissionRequest {
   abortSignal?: AbortSignal;
 }
 
+export interface RuntimeToolStartedEvent {
+  callId: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+export interface RuntimeToolFinishedEvent {
+  callId: string;
+  name: string;
+  args: Record<string, unknown>;
+  success: boolean;
+  duration: number;
+  summary?: string;
+  error?: string;
+}
+
 export interface RuntimeSessionAccessors {
   ensureSession: () => SessionMeta;
   setSession: (session: SessionMeta | null) => void;
   getSession: () => SessionMeta | null;
 }
 
-export interface OpenHorseInkRuntime extends RuntimeSessionAccessors {
+export interface OpenHorseUiRuntime extends RuntimeSessionAccessors {
   cwd: string;
   version: string;
   config: OpenHorseCLIConfig;
@@ -69,7 +137,8 @@ export interface OpenHorseInkRuntime extends RuntimeSessionAccessors {
   shutdown: () => Promise<void>;
 }
 
-export type OpenHorseUiRuntime = OpenHorseInkRuntime;
+/** @deprecated Use OpenHorseUiRuntime. Runtime context is shared by every renderer. */
+export type OpenHorseInkRuntime = OpenHorseUiRuntime;
 
 export interface UiEventSink {
   append: (entry: TranscriptAppendEntry) => string;
@@ -82,5 +151,7 @@ export interface UiEventSink {
   showSessionPicker: (request: SessionPickerRequest) => void;
   showEditPreview: (request: EditPreviewRequest) => void;
   showPermissionRequest?: (request: ToolPermissionRequest) => void;
+  toolStarted?: (event: RuntimeToolStartedEvent) => void;
+  toolFinished?: (event: RuntimeToolFinishedEvent) => void;
   setProcessing: (processing: boolean) => void;
 }

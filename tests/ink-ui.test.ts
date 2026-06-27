@@ -680,6 +680,7 @@ describe('Ink UI helpers', () => {
   it('updates a running tool entry when the matching result arrives', () => {
     const entries: TranscriptEntry[] = [];
     const finalized: Array<{ id: string; patch?: Partial<Omit<TranscriptEntry, 'id'>> }> = [];
+    const structuredEvents: string[] = [];
     const events: UiEventSink = {
       append: entry => {
         const id = `entry-${entries.length + 1}`;
@@ -706,6 +707,8 @@ describe('Ink UI helpers', () => {
       setStatus: jest.fn(),
       showSessionPicker: jest.fn(),
       showEditPreview: jest.fn(),
+      toolStarted: event => structuredEvents.push(`start:${event.callId}:${event.name}`),
+      toolFinished: event => structuredEvents.push(`finish:${event.callId}:${event.success ? 'ok' : 'fail'}`),
       setProcessing: jest.fn(),
     };
 
@@ -731,6 +734,7 @@ describe('Ink UI helpers', () => {
     expect(entries[0].content).toContain('✓ read_file src/index.ts (12ms)');
     expect(finalized).toHaveLength(1);
     expect(finalized[0].id).toBe('entry-1');
+    expect(structuredEvents).toEqual(['start:call-1:read_file', 'finish:call-1:ok']);
   });
 
   it('uses common tool argument keys in activity summaries', () => {

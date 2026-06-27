@@ -1,4 +1,14 @@
-import { loadConfig, isConfigured, getConfigErrors, getConfigSummary } from '../src/services/config';
+import {
+  loadConfig,
+  isConfigured,
+  getConfigErrors,
+  getConfigSummary,
+  isBetaUIRenderer,
+  isInteractiveUIRenderer,
+  isSupportedUIRenderer,
+  resolveUIRenderer,
+  SUPPORTED_UI_RENDERERS,
+} from '../src/services/config';
 
 const originalEnv = { ...process.env };
 
@@ -64,7 +74,7 @@ describe('loadConfig', () => {
       mode: 'production',
       logLevel: 'debug',
       toolConfirmation: 'deny',
-      ui: { renderer: 'v2', confirmations: 'interactive' },
+      ui: { renderer: 'ink', confirmations: 'interactive' },
     });
     expect(config.apiKey).toBe('test-key');
     expect(config.model).toBe('custom-model');
@@ -73,7 +83,7 @@ describe('loadConfig', () => {
     expect(config.mode).toBe('production');
     expect(config.logLevel).toBe('debug');
     expect(config.toolConfirmation).toBe('deny');
-    expect(config.ui).toEqual({ renderer: 'v2', confirmations: 'interactive' });
+    expect(config.ui).toEqual({ renderer: 'ink', confirmations: 'interactive' });
   });
 
   test('env vars are used when no overrides and no globalConfig', () => {
@@ -88,7 +98,7 @@ describe('loadConfig', () => {
     process.env.OPENHORSE_MODEL = 'env-model';
     process.env.OPENHORSE_FALLBACK_MODEL = 'env-fallback';
     process.env.OPENHORSE_TOOL_CONFIRMATION = 'ask';
-    process.env.OPENHORSE_UI_RENDERER = 'v2';
+    process.env.OPENHORSE_UI_RENDERER = 'ink';
     process.env.OPENHORSE_UI_CONFIRMATIONS = 'interactive';
     process.env.OPENHORSE_WEBSEARCH_API_KEY = 'sk-websearch-env';
     process.env.OPENHORSE_WEBSEARCH_PROVIDER = 'tavily';
@@ -128,7 +138,7 @@ describe('loadConfig', () => {
         toolName: 'web_search',
       },
       ui: {
-        renderer: 'legacy',
+        renderer: 'ink',
         confirmations: 'interactive',
       },
       totalSessions: 10,
@@ -149,11 +159,11 @@ describe('loadConfig', () => {
     expect(config.webSearch?.toolName).toBe('web_search');
   });
 
-  test('cli renderer override can switch to legacy', () => {
+  test('cli renderer override can switch to experimental ink beta', () => {
     jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
       defaultModel: 'gpt-4o',
       ui: {
-        renderer: 'v2',
+        renderer: 'ink',
         confirmations: 'config',
       },
       totalSessions: 0,
@@ -161,8 +171,8 @@ describe('loadConfig', () => {
       totalCost: 0,
     });
 
-    const config = loadConfig({ ui: { renderer: 'legacy' } });
-    expect(config.ui).toEqual({ renderer: 'legacy', confirmations: 'config' });
+    const config = loadConfig({ ui: { renderer: 'ink' } });
+    expect(config.ui).toEqual({ renderer: 'ink', confirmations: 'config' });
   });
 
   test('cli renderer override can switch to renderer-owned tui preview', () => {
@@ -208,6 +218,27 @@ describe('loadConfig', () => {
     const config = loadConfig();
     expect(config.toolConfirmation).toBe('allow');
     expect(config.ui).toEqual({ renderer: 'terminal', confirmations: 'config' });
+  });
+});
+
+describe('UI renderer helpers', () => {
+  test('defines terminal as stable and ink/tui as explicit beta renderers', () => {
+    expect(SUPPORTED_UI_RENDERERS).toEqual(['terminal', 'tui', 'ink']);
+    expect(resolveUIRenderer('stable')).toBe('terminal');
+    expect(resolveUIRenderer('terminal')).toBe('terminal');
+    expect(resolveUIRenderer('tui')).toBe('tui');
+    expect(resolveUIRenderer('ink')).toBe('ink');
+    expect(resolveUIRenderer('legacy')).toBeUndefined();
+    expect(resolveUIRenderer('v2')).toBeUndefined();
+  });
+
+  test('keeps renderer capability checks centralized', () => {
+    expect(isSupportedUIRenderer('terminal')).toBe(true);
+    expect(isInteractiveUIRenderer('ink')).toBe(true);
+    expect(isBetaUIRenderer('ink')).toBe(true);
+    expect(isBetaUIRenderer('tui')).toBe(true);
+    expect(isBetaUIRenderer('terminal')).toBe(false);
+    expect(isSupportedUIRenderer('print')).toBe(false);
   });
 });
 

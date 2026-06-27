@@ -83,6 +83,59 @@ describe('tui-ui runner', () => {
     expect(runner.getState().transcript.map(entry => [entry.id, entry.finalized])).toEqual([[liveId, true]]);
   });
 
+  it('keeps tool transcript output and structured runtime tool events ordered', () => {
+    const { output } = createOutput();
+    const runner = new TuiRunner({ output, width: 72, height: 12 });
+
+    runner.events.toolStarted?.({
+      callId: 'call-1',
+      name: 'read_file',
+      args: { path: 'src/index.ts' },
+    });
+    const toolId = runner.events.append({
+      role: 'tool',
+      title: 'tool',
+      content: 'Running read_file src/index.ts',
+    });
+    runner.events.toolFinished?.({
+      callId: 'call-1',
+      name: 'read_file',
+      args: { path: 'src/index.ts' },
+      success: true,
+      duration: 12,
+      summary: '✓ read_file src/index.ts (12ms)',
+    });
+    runner.events.finalize(toolId, {
+      role: 'tool',
+      title: 'tool',
+      content: '✓ read_file src/index.ts (12ms)',
+    });
+    const assistantId = runner.events.append({
+      role: 'assistant',
+      content: 'Done.',
+      live: true,
+    });
+    runner.events.finalize(assistantId);
+
+    const visible = runner.getVisibleRows().join('\n');
+    expect(visible).toContain('✓ read_file src/index.ts (12ms)');
+    expect(visible).toContain('Done.');
+    expect(visible.indexOf('✓ read_file')).toBeLessThan(visible.indexOf('Done.'));
+    expect(runner.getState().runtimeToolEvents).toEqual([
+      { type: 'started', callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } },
+      {
+        type: 'finished',
+        callId: 'call-1',
+        name: 'read_file',
+        args: { path: 'src/index.ts' },
+        success: true,
+        duration: 12,
+        summary: '✓ read_file src/index.ts (12ms)',
+      },
+    ]);
+    expect(runner.getState().transcript.map(entry => entry.id)).toEqual([toolId, assistantId]);
+  });
+
   it('navigates session picker overlay and submits the selected row with empty Enter', () => {
     const { output } = createOutput();
     const submitted: string[] = [];

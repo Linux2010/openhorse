@@ -10,8 +10,8 @@
  *   4. Agent 内部默认值
  *
  * UI renderer is intentionally not read from openhorse.json or env. The stable
- * native terminal UI is the default; --ui tui keeps the renderer-owned TUI
- * available for explicit testing while it matures.
+ * native terminal UI is the default; --ui tui and --ui ink keep beta renderer
+ * experiments available for explicit testing while they mature.
  */
 
 import {
@@ -25,6 +25,10 @@ import {
 } from './global-config';
 
 export type { ToolConfirmationPolicy, UIConfig, UIRenderer, UIConfirmationMode, WebSearchMcpConfig };
+
+export const STABLE_UI_RENDERER: UIRenderer = 'terminal';
+export const BETA_UI_RENDERERS = ['tui', 'ink'] as const satisfies readonly UIRenderer[];
+export const SUPPORTED_UI_RENDERERS = [STABLE_UI_RENDERER, ...BETA_UI_RENDERERS] as const satisfies readonly UIRenderer[];
 
 // ============================================================================
 // 类型定义
@@ -87,11 +91,21 @@ function normalizeToolConfirmationPolicy(value: unknown): ToolConfirmationPolicy
     : undefined;
 }
 
-function normalizeUIRenderer(value: unknown): UIRenderer | undefined {
+export function resolveUIRenderer(value: unknown): UIRenderer | undefined {
   if (value === 'stable') return 'terminal';
-  return value === 'terminal' || value === 'tui' || value === 'ink' || value === 'legacy' || value === 'v2'
-    ? value
-    : undefined;
+  return isSupportedUIRenderer(value) ? value : undefined;
+}
+
+export function isSupportedUIRenderer(value: unknown): value is UIRenderer {
+  return typeof value === 'string' && (SUPPORTED_UI_RENDERERS as readonly string[]).includes(value);
+}
+
+export function isInteractiveUIRenderer(value: unknown): value is UIRenderer {
+  return isSupportedUIRenderer(value);
+}
+
+export function isBetaUIRenderer(value: unknown): value is typeof BETA_UI_RENDERERS[number] {
+  return typeof value === 'string' && (BETA_UI_RENDERERS as readonly string[]).includes(value);
 }
 
 function normalizeUIConfirmationMode(value: unknown): UIConfirmationMode | undefined {
@@ -146,7 +160,7 @@ function loadUIConfig(
 
   return {
     renderer:
-      normalizeUIRenderer(overrides.ui?.renderer)
+      resolveUIRenderer(overrides.ui?.renderer)
       ?? INTERNAL_DEFAULTS.ui.renderer,
     confirmations:
       normalizeUIConfirmationMode(overrides.ui?.confirmations)

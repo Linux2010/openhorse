@@ -117,7 +117,7 @@ describe('Command Panel', () => {
         setInputPromptRenderer,
       } = require('../src/ui/command-panel');
 
-      setInputPromptRenderer('v2');
+      setInputPromptRenderer('framed');
       resetRenderLength();
       showCommandPanel('s');
       output = [];
@@ -132,7 +132,7 @@ describe('Command Panel', () => {
       expect(rendered).not.toContain('Matching "s"');
     });
 
-    it('clears the v2 input row before submitted input is echoed', () => {
+    it('clears the framed input row before submitted input is echoed', () => {
       const {
         clearRenderedInput,
         redrawInputWithPrompt,
@@ -140,7 +140,7 @@ describe('Command Panel', () => {
         setInputPromptRenderer,
       } = require('../src/ui/command-panel');
 
-      setInputPromptRenderer('v2');
+      setInputPromptRenderer('framed');
       resetRenderLength();
       redrawInputWithPrompt('hello');
       output = [];
@@ -153,14 +153,14 @@ describe('Command Panel', () => {
       expect(rendered.endsWith('\r')).toBe(true);
     });
 
-    it('clears the previous v2 input row before redrawing slash input', () => {
+    it('clears the previous framed input row before redrawing slash input', () => {
       const {
         redrawInputWithPrompt,
         resetRenderLength,
         setInputPromptRenderer,
       } = require('../src/ui/command-panel');
 
-      setInputPromptRenderer('v2');
+      setInputPromptRenderer('framed');
       resetRenderLength();
       redrawInputWithPrompt('');
       output = [];
@@ -175,7 +175,7 @@ describe('Command Panel', () => {
       expect(rendered).toContain('/');
     });
 
-    it('reserves command panel space below the v2 input frame', () => {
+    it('reserves command panel space below the framed input', () => {
       const {
         redrawInputWithPrompt,
         resetRenderLength,
@@ -183,7 +183,7 @@ describe('Command Panel', () => {
         showCommandPanel,
       } = require('../src/ui/command-panel');
 
-      setInputPromptRenderer('v2');
+      setInputPromptRenderer('framed');
       resetRenderLength();
       redrawInputWithPrompt('/');
       output = [];
@@ -196,7 +196,7 @@ describe('Command Panel', () => {
       expect(rendered).toContain('Commands');
     });
 
-    it('restores the v2 input frame below an unfinished output line', () => {
+    it('restores the framed input below an unfinished output line', () => {
       const {
         redrawInputWithPrompt,
         resetRenderLength,
@@ -204,7 +204,7 @@ describe('Command Panel', () => {
         writeOutputPreservingInput,
       } = require('../src/ui/command-panel');
 
-      setInputPromptRenderer('v2');
+      setInputPromptRenderer('framed');
       resetRenderLength();
       writeOutputPreservingInput('assistant partial');
       redrawInputWithPrompt('edit');
@@ -217,7 +217,7 @@ describe('Command Panel', () => {
       expect(rendered).not.toContain(' chunk─');
     });
 
-    it('keeps an empty v2 input row visible during assistant output without separators', () => {
+    it('keeps an empty framed input row visible during assistant output without separators', () => {
       const {
         redrawInputWithPrompt,
         resetRenderLength,
@@ -225,7 +225,7 @@ describe('Command Panel', () => {
         writeOutputPreservingInput,
       } = require('../src/ui/command-panel');
 
-      setInputPromptRenderer('v2');
+      setInputPromptRenderer('framed');
       resetRenderLength();
       redrawInputWithPrompt('');
       output = [];
@@ -236,6 +236,21 @@ describe('Command Panel', () => {
       expect(rendered).toContain('assistant line\n');
       expect(rendered).not.toContain('─');
       expect(rendered).toContain('›');
+    });
+
+    it('keeps the old v2 prompt renderer alias for compatibility', () => {
+      const {
+        redrawInputWithPrompt,
+        resetRenderLength,
+        setInputPromptRenderer,
+      } = require('../src/ui/command-panel');
+
+      setInputPromptRenderer('v2');
+      resetRenderLength();
+      redrawInputWithPrompt('compat');
+
+      const rendered = output.join('').replace(/\x1b\[[0-9;]*m/g, '');
+      expect(rendered).toContain('› compat');
     });
   });
 });

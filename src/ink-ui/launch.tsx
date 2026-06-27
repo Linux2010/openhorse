@@ -2,7 +2,7 @@ import React from 'react';
 import { render } from 'ink';
 import { App } from './App';
 import { createNativeCursorController } from './runtime/native-cursor';
-import type { OpenHorseInkRuntime } from './types';
+import type { OpenHorseUiRuntime } from './types';
 
 type RawModeStream = NodeJS.ReadStream & {
   isRaw?: boolean;
@@ -26,7 +26,7 @@ export function prepareInkStdin(stdin: RawModeStream = process.stdin): () => voi
   };
 }
 
-export async function launchInkUI(runtime: OpenHorseInkRuntime): Promise<void> {
+export async function launchInkUI(runtime: OpenHorseUiRuntime): Promise<void> {
   const restoreStdin = prepareInkStdin(process.stdin);
   const cursorController = createNativeCursorController(process.stdout);
   let resizeEpoch = 0;

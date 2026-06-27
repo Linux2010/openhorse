@@ -1,5 +1,7 @@
 import type {
   EditPreviewRequest,
+  RuntimeToolFinishedEvent,
+  RuntimeToolStartedEvent,
   SessionPickerRequest,
   ToolPermissionRequest,
   TranscriptAppendEntry,
@@ -17,6 +19,10 @@ export interface TuiTranscriptRecord extends TranscriptEntry {
   finalized: boolean;
 }
 
+export type TuiRuntimeToolEvent =
+  | ({ type: 'started' } & RuntimeToolStartedEvent)
+  | ({ type: 'finished' } & RuntimeToolFinishedEvent);
+
 export type TuiOverlayState =
   | { type: 'sessions'; request: SessionPickerRequest; selectedIndex: number }
   | { type: 'edit'; request: EditPreviewRequest; selectedIndex: number }
@@ -28,6 +34,7 @@ export type TuiOverlayState =
 
 export interface TuiUiState {
   transcript: TuiTranscriptRecord[];
+  runtimeToolEvents: TuiRuntimeToolEvent[];
   staticTranscriptCount: number;
   transcriptGeneration: number;
   transcriptScrollOffset: number;
@@ -51,6 +58,8 @@ export type TuiUiAction =
   | { type: 'showSessionPicker'; request: SessionPickerRequest }
   | { type: 'showEditPreview'; request: EditPreviewRequest }
   | { type: 'showPermissionRequest'; request: ToolPermissionRequest }
+  | { type: 'toolStarted'; event: RuntimeToolStartedEvent }
+  | { type: 'toolFinished'; event: RuntimeToolFinishedEvent }
   | { type: 'showCommandPalette'; query: string; items: TuiPickerItem[] }
   | { type: 'showFilePicker'; base: string; query: string; items: TuiPickerItem[] }
   | { type: 'showShortcuts' }
@@ -59,6 +68,7 @@ export type TuiUiAction =
 
 export const initialTuiUiState: TuiUiState = {
   transcript: [],
+  runtimeToolEvents: [],
   staticTranscriptCount: 0,
   transcriptGeneration: 0,
   transcriptScrollOffset: 0,
@@ -173,6 +183,12 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
         overlay: { type: 'permission', request: action.request, selectedIndex: 0 },
       };
 
+    case 'toolStarted':
+      return appendRuntimeToolEvent(state, { type: 'started', ...action.event });
+
+    case 'toolFinished':
+      return appendRuntimeToolEvent(state, { type: 'finished', ...action.event });
+
     case 'showCommandPalette':
       return {
         ...state,
@@ -252,7 +268,16 @@ export function createTuiUiEventSink(
     showSessionPicker: request => dispatch({ type: 'showSessionPicker', request }),
     showEditPreview: request => dispatch({ type: 'showEditPreview', request }),
     showPermissionRequest: request => dispatch({ type: 'showPermissionRequest', request }),
+    toolStarted: event => dispatch({ type: 'toolStarted', event }),
+    toolFinished: event => dispatch({ type: 'toolFinished', event }),
     setProcessing: processing => dispatch({ type: 'setProcessing', processing }),
+  };
+}
+
+function appendRuntimeToolEvent(state: TuiUiState, event: TuiRuntimeToolEvent): TuiUiState {
+  return {
+    ...state,
+    runtimeToolEvents: [...state.runtimeToolEvents, event].slice(-100),
   };
 }
 

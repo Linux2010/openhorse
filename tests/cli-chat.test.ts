@@ -182,10 +182,10 @@ describe('CLI Chat Regression', () => {
       expect(messages[2].role).toBe('assistant');
     });
 
-    test('executeChat suppresses legacy token meta line in v2 UI', async () => {
+    test('executeChat suppresses legacy token meta line in current interactive renderers', async () => {
       const config = loadConfig({
         apiKey: 'test-key',
-        ui: { renderer: 'v2', confirmations: 'config' },
+        ui: { renderer: 'terminal', confirmations: 'config' },
       });
       const store = new Store({
         config,
@@ -220,7 +220,7 @@ describe('CLI Chat Regression', () => {
     test('executeChat injects active skill prompt and scopes tools', async () => {
       const config = loadConfig({
         apiKey: 'test-key',
-        ui: { renderer: 'v2', confirmations: 'config' },
+        ui: { renderer: 'terminal', confirmations: 'config' },
       });
       const store = new Store({
         config,

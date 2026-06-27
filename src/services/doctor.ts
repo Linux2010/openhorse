@@ -9,7 +9,7 @@ import {
   getProjectMemoryDir,
   getProjectSessionsDir,
 } from './config-dir';
-import { isConfigured, type OpenHorseCLIConfig } from './config';
+import { isBetaUIRenderer, isConfigured, type OpenHorseCLIConfig } from './config';
 import { getMcpConfigPath, mcpManager } from '../tools/mcp';
 import { getRuntimeTools } from '../tools';
 import { loadProjectInstructionFiles } from './project-instructions';
@@ -306,7 +306,6 @@ export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
   const tools = snapshot.tools.length > 0 ? snapshot.tools : getRuntimeTools();
   const staticTools = tools.filter(tool => !tool.name.startsWith('mcp__')).length;
   const mcpTools = tools.length - staticTools;
-  const terminalToolConfirmations = ctx.config.ui?.renderer === 'terminal';
 
   const checks: DoctorCheck[] = [
     {
@@ -326,11 +325,11 @@ export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
     },
     {
       id: 'permissions',
-      status: ctx.config.toolConfirmation === 'ask' && !terminalToolConfirmations ? 'warn' : 'ok',
+      status: 'ok',
       label: 'Permissions',
       summary: `toolConfirmation=${ctx.config.toolConfirmation}, ui=${ctx.config.ui?.renderer}/${ctx.config.ui?.confirmations}`,
-      detail: ctx.config.toolConfirmation === 'ask' && !terminalToolConfirmations
-        ? 'Interactive tool confirmation is currently wired in the stable terminal renderer. Use --ui terminal or configure toolConfirmation=allow/deny for non-terminal renderers.'
+      detail: ctx.config.toolConfirmation === 'ask'
+        ? `Interactive tool confirmation is routed through the shared runtime permission protocol.${isBetaUIRenderer(ctx.config.ui?.renderer) ? ' This renderer is beta; terminal remains the primary product UI.' : ''}`
         : undefined,
     },
     {

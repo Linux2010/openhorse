@@ -7,8 +7,16 @@ import {
   completeSlashCommand,
   createTerminalCompleter,
 } from '../src/terminal-ui/completion';
-import { TerminalInputComposer, normalizeTerminalAnswer, parseEditInput, truncateTerminalText, visibleLength } from '../src/terminal-ui/launch';
+import {
+  TerminalEventSink,
+  TerminalInputComposer,
+  normalizeTerminalAnswer,
+  parseEditInput,
+  truncateTerminalText,
+  visibleLength,
+} from '../src/terminal-ui/launch';
 import { RawTerminalEditor } from '../src/terminal-ui/raw-editor';
+import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
 
 function makeRawEditor(options: { cwd?: string; onSubmit?: (input: string) => void } = {}) {
   const writes: string[] = [];
@@ -31,6 +39,32 @@ function makeRawEditor(options: { cwd?: string; onSubmit?: (input: string) => vo
   return { editor, writes };
 }
 
+function makeRuntime(): OpenHorseUiRuntime {
+  return {
+    cwd: '/tmp/openhorse-terminal-renderer',
+    version: 'test',
+    config: { model: 'test-model', ui: { renderer: 'terminal' } } as OpenHorseUiRuntime['config'],
+    store: {
+      setProcessing: jest.fn(),
+    } as unknown as OpenHorseUiRuntime['store'],
+    llm: null,
+    runtime: {} as OpenHorseUiRuntime['runtime'],
+    isConfigured: true,
+    ensureSession: jest.fn(),
+    setSession: jest.fn(),
+    getSession: jest.fn(() => null),
+    shutdown: jest.fn(),
+  };
+}
+
+function makeTerminalSink() {
+  const writes: string[] = [];
+  const sink = new TerminalEventSink(makeRuntime(), {
+    write: text => writes.push(text),
+  });
+  return { sink, writes };
+}
+
 describe('terminal UI input normalization', () => {
   it('applies DEL/backspace before submitting text', () => {
     expect(normalizeTerminalAnswer('/helpx\x7f')).toBe('/help');
@@ -50,6 +84,90 @@ describe('terminal UI input normalization', () => {
   it('drops leaked terminal escape sequences', () => {
     expect(normalizeTerminalAnswer('/help\x1b[A')).toBe('/help');
     expect(normalizeTerminalAnswer('/help\x1b[3~')).toBe('/help');
+  });
+});
+
+describe('terminal UI renderer adapter', () => {
+  it('maps session picker selections to runtime protocol inputs', () => {
+    const { sink, writes } = makeTerminalSink();
+
+    sink.showSessionPicker({
+      title: 'Pick a Session',
+      allProjects: true,
+      showProject: true,
+      sessions: [
+        {
+          id: '11111111-aaaa-bbbb-cccc-111111111111',
+          projectPath: '/tmp/project-a',
+          model: 'glm-5',
+          startTime: 1,
+          tokenCount: 0,
+          cost: 0,
+          messageCount: 4,
+          historySizeBytes: 1536,
+          taskSummary: 'older task',
+        },
+        {
+          id: '22222222-aaaa-bbbb-cccc-222222222222',
+          projectPath: '/tmp/project-b',
+          model: 'glm-5',
+          startTime: 2,
+          tokenCount: 0,
+          cost: 0,
+          messageCount: 8,
+          historySizeBytes: 2048,
+          taskSummary: 'newer task',
+        },
+      ],
+    });
+
+    expect(writes.join('')).toContain('Pick a Session');
+    expect(writes.join('')).toContain('newer task');
+    expect(sink.consumePendingSelection('2')).toEqual({
+      type: 'select_session',
+      sessionId: '22222222-aaaa-bbbb-cccc-222222222222',
+      allProjects: true,
+      source: 'picker',
+    });
+  });
+
+  it('keeps terminal scrollback transcript append-only for tool output', () => {
+    const { sink, writes } = makeTerminalSink();
+
+    const toolId = sink.append({
+      role: 'tool',
+      title: 'tool',
+      content: 'Running read_file src/index.ts',
+    });
+    sink.finalize(toolId, {
+      role: 'tool',
+      title: 'tool',
+      content: '✓ read_file src/index.ts (12ms)',
+    });
+    const assistantId = sink.append({
+      role: 'assistant',
+      content: 'Done.',
+    });
+    sink.finalize(assistantId);
+
+    const output = writes.join('');
+    expect(output).toContain('Running read_file src/index.ts');
+    expect(output).toContain('✓ read_file src/index.ts (12ms)');
+    expect(output).toContain('Done.');
+    expect(output.indexOf('Running read_file')).toBeLessThan(output.indexOf('✓ read_file'));
+    expect(output.indexOf('✓ read_file')).toBeLessThan(output.indexOf('Done.'));
+  });
+
+  it('clears renderer view state without clearing terminal scrollback', () => {
+    const { sink, writes } = makeTerminalSink();
+
+    const assistantId = sink.append({ role: 'assistant', content: 'existing transcript' });
+    sink.finalize(assistantId);
+    sink.clearTranscript();
+
+    const output = writes.join('');
+    expect(output).toContain('existing transcript');
+    expect(output).toContain('Terminal scrollback is preserved.');
   });
 });
 

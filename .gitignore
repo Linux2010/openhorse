@@ -4,4 +4,9 @@ dist/
 package-lock.json
 tests/tmp/
 docs/*
+!docs/codex/
+docs/codex/*
+!docs/codex/v0.2.9-runtime-ui-boundary-report.md
+!docs/targets/
+!docs/targets/**
 coverage/

@@ -11,7 +11,8 @@ import {
   createUiEventSinkFromAgentRuntimeEvents,
 } from './agent-runtime-protocol';
 import { AgentChatController, type AgentChatControllerOptions, type RunInputOptions } from './chat-controller';
-import type { OpenHorseUiRuntime, ToolPermissionRequest, TranscriptAppendEntry, UiEventSink } from './ui-events';
+import { resolveUiRendererCapabilities } from './ui-events';
+import type { OpenHorseUiRuntime, ToolPermissionRequest, TranscriptAppendEntry, UiEventSink, UiRendererCapabilities } from './ui-events';
 import { TurnController, type TurnControllerOptions } from './turn-controller';
 
 export type {
@@ -37,6 +38,8 @@ export interface AgentRuntimeControllerOptions extends TurnControllerOptions {
   events?: UiEventSink;
   eventSink?: AgentRuntimeEventSink;
   runner?: AgentRuntimeRunner;
+  /** Renderer presentation capabilities passed into command execution. */
+  uiCapabilities?: UiRendererCapabilities;
   chatOptions?: AgentChatControllerOptions;
   echoSubmittedInput?: boolean;
   runningStatus?: string | ((input: string) => string);
@@ -74,6 +77,8 @@ function statusText(value: string | ((input: string) => string) | undefined, inp
 function resumeSessionInput(sessionId: string, allProjects?: boolean): string {
   return `/resume ${sessionId}${allProjects ? ' --all' : ''}`;
 }
+
+const EVENT_RENDERER_CAPABILITIES = resolveUiRendererCapabilities(undefined, 'terminal');
 
 /**
  * UI-independent turn runner for interactive OpenHorse surfaces.
@@ -284,7 +289,16 @@ export class AgentRuntimeController {
   }
 
   private createChatOptions(): AgentChatControllerOptions | undefined {
-    const chatOptions = { ...(this.options.chatOptions ?? {}) };
+    const uiCapabilities = {
+      ...EVENT_RENDERER_CAPABILITIES,
+      ...(this.options.uiCapabilities ?? {}),
+      ...(this.options.chatOptions?.uiCapabilities ?? {}),
+    };
+    const chatOptions: AgentChatControllerOptions = {
+      uiCapabilities,
+      ...(this.options.chatOptions ?? {}),
+    };
+    chatOptions.uiCapabilities = uiCapabilities;
     if (this.options.useRuntimeToolPermissions && !chatOptions.confirmToolUse) {
       chatOptions.confirmToolUse = request => this.requestToolPermission(request);
     }

@@ -107,6 +107,40 @@ describe('tui-ui state', () => {
     expect(state.transcript.map(entry => entry.content)).toEqual(['before permission']);
   });
 
+  it('records structured runtime tool events outside transcript history', () => {
+    const state = reduce([
+      {
+        type: 'toolStarted',
+        event: { callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } },
+      },
+      {
+        type: 'toolFinished',
+        event: {
+          callId: 'call-1',
+          name: 'read_file',
+          args: { path: 'src/index.ts' },
+          success: true,
+          duration: 12,
+          summary: 'read ok',
+        },
+      },
+    ]);
+
+    expect(state.transcript).toEqual([]);
+    expect(state.runtimeToolEvents).toEqual([
+      { type: 'started', callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } },
+      {
+        type: 'finished',
+        callId: 'call-1',
+        name: 'read_file',
+        args: { path: 'src/index.ts' },
+        success: true,
+        duration: 12,
+        summary: 'read ok',
+      },
+    ]);
+  });
+
   it('keeps command, file, and shortcut overlays outside transcript history', () => {
     const state = reduce([
       { type: 'showCommandPalette', query: 's', items: [{ value: 'status', label: '/status' }] },

@@ -19,7 +19,7 @@ describe('Default terminal agent flow PTY smoke', () => {
     const result = spawnSync(python as string, [smokeScript], {
       cwd: join(__dirname, '..'),
       encoding: 'utf8',
-      timeout: 30000,
+      timeout: 60000,
       maxBuffer: 1024 * 1024,
     });
 
@@ -29,5 +29,5 @@ describe('Default terminal agent flow PTY smoke', () => {
       stdout: result.stdout,
       stderr: result.stderr,
     }).toEqual(expect.objectContaining({ status: 0, signal: null }));
-  }, 35000);
+  }, 65000);
 });

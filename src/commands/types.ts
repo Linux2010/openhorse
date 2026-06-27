@@ -10,21 +10,7 @@ import type { Store } from '../framework/store';
 import type { LLMService } from '../services/llm';
 import type { OpenHorseCLIConfig } from '../services/config';
 import type { SessionMeta } from '../services/session-storage';
-
-// ============================================================================
-// 类型定义
-// ============================================================================
-
-/** Minimal edit preview candidate shape for CommandResult.
- *  The canonical type lives in ui-v2; this avoids circular deps. */
-export interface EditPreviewCandidate {
-  index: number;
-  line: number;
-  match: string;
-  contextBefore: string;
-  contextAfter: string;
-  isReplaceAll: boolean;
-}
+import type { EditPreviewRequest, SessionPickerRequest, UiRendererCapabilities } from '../runtime/ui-events';
 
 // ============================================================================
 // 类型定义 (continued)
@@ -53,6 +39,8 @@ export interface CommandContext {
   writeOutput?: (text: string) => void;
   /** Write one line while preserving the live input frame, when supported by the UI. */
   writeLine?: (text?: string) => void;
+  /** Renderer adapter capabilities. Business commands should prefer these over renderer-name checks. */
+  uiCapabilities?: UiRendererCapabilities;
 }
 
 /** 命令执行结果 */
@@ -63,24 +51,10 @@ export interface CommandResult {
   /** 需要后续处理（如 chat） */
   continueAsChat?: boolean;
   chatInput?: string;
-  /** Interactive session picker request for terminal UI. */
-  sessionPicker?: {
-    sessions: SessionMeta[];
-    title: string;
-    showProject?: boolean;
-    moreCount?: number;
-    allProjects?: boolean;
-    maxVisibleItems?: number;
-  };
-  /** Structured edit preview candidates for rendering in v2/TUI/Ink pickers. */
-  editPreview?: {
-    path: string;
-    newString: string;
-    kind: 'exact' | 'fuzzy';
-    strategy?: string;
-    candidates: EditPreviewCandidate[];
-    width?: number;
-  };
+  /** Structured session picker request forwarded to renderer adapters. */
+  sessionPicker?: SessionPickerRequest;
+  /** Structured edit preview request forwarded to renderer adapters. */
+  editPreview?: EditPreviewRequest;
 }
 
 /** 命令参数定义 */

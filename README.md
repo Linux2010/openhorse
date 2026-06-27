@@ -66,7 +66,7 @@ openhorse diff
 # Generate a read-only commit plan and suggested message
 openhorse commit
 
-# Run one non-interactive task for scripts/CI
+# Try the early experimental non-interactive path
 openhorse -p "review the current git diff"
 echo "summarize this project" | openhorse --print
 ```
@@ -84,7 +84,7 @@ echo "summarize this project" | openhorse --print
 | **Safety Boundaries** | Bash safety checks, audit logging, permission modes |
 | **Streaming Output** | Real-time LLM responses with Markdown rendering |
 | **Skills System** | Builtin, user, and project-level skill extensions |
-| **Print Mode** | `-p/--print` one-shot tasks with text or JSON output |
+| **Print Mode** | Experimental `-p/--print` one-shot path for future automation/remote UI work |
 | **Doctor Diagnostics** | `openhorse doctor` / `/doctor` checks config, tools, MCP, skills, sessions, and harness |
 | **Workspace Diff** | `openhorse diff` / `/diff` summarizes staged, unstaged, and untracked changes |
 | **Commit Planning** | `openhorse commit` / `/commit` suggests a commit message without creating a commit |

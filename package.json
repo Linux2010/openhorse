@@ -1,6 +1,6 @@
 {
   "name": "openhorse",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "OpenHorse - Universal Agent Harness Framework. A complete coding CLI agent with tools, MCP, memory system.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -79,7 +79,10 @@
     "@types/node": "^20.0.0",
     "@types/react": "^17.0.83",
     "@types/uuid": "^9.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
     "eslint": "^8.56.0",
+    "eslint-config-prettier": "^9.1.2",
     "jest": "^29.7.0",
     "nodemon": "^3.0.0",
     "prettier": "^3.1.0",

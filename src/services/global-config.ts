@@ -30,13 +30,13 @@ export interface ProjectConfig {
 /** How to handle tool permission checks that request interactive confirmation. */
 export type ToolConfirmationPolicy = 'ask' | 'allow' | 'deny';
 
-/** Terminal UI renderer selection. */
-export type UIRenderer = 'terminal' | 'tui' | 'ink' | 'legacy' | 'v2';
+/** Runtime-only UI renderer selection. Terminal is stable; Ink/TUI are beta. */
+export type UIRenderer = 'terminal' | 'tui' | 'ink';
 
 /** How UI permission prompts should be handled. */
 export type UIConfirmationMode = 'config' | 'interactive';
 
-/** Terminal UI configuration. */
+/** UI configuration that is safe to persist globally. */
 export interface UIConfig {
   /** Runtime-only renderer override. This is ignored in openhorse.json. */
   renderer?: UIRenderer;

@@ -4,7 +4,10 @@
 
 import { basename } from 'path';
 import type { SessionMeta } from '../../services/session-storage';
+import { formatBytes } from '../../services/format';
 import type { SuggestionItem } from '../types';
+
+export { formatBytes } from '../../services/format';
 
 export interface BuildSessionSuggestionsOptions {
   showProject?: boolean;
@@ -77,18 +80,4 @@ export function formatRelativeTime(timestamp: number, now: number = Date.now()):
 
   const years = Math.floor(months / 12);
   return `${years}y ago`;
-}
-
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${formatNumber(kb)} KB`;
-  const mb = kb / 1024;
-  if (mb < 1024) return `${formatNumber(mb)} MB`;
-  return `${formatNumber(mb / 1024)} GB`;
-}
-
-function formatNumber(value: number): string {
-  return value >= 10 ? value.toFixed(0) : value.toFixed(1);
 }

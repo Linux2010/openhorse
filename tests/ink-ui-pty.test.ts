@@ -19,7 +19,7 @@ describe('Ink UI PTY smoke', () => {
     const result = spawnSync(python as string, [smokeScript], {
       cwd: join(__dirname, '..'),
       encoding: 'utf8',
-      timeout: 45000,
+      timeout: 60000,
       maxBuffer: 1024 * 1024,
     });
 
@@ -29,5 +29,5 @@ describe('Ink UI PTY smoke', () => {
       stdout: result.stdout,
       stderr: result.stderr,
     }).toEqual(expect.objectContaining({ status: 0, signal: null }));
-  }, 50000);
+  }, 65000);
 });

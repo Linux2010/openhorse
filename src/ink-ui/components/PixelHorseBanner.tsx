@@ -4,7 +4,7 @@ import stringWidth from 'string-width';
 import { basename } from 'path';
 import { calculateCtxPercent } from '../../services/model-context';
 import { mcpManager } from '../../tools/mcp';
-import type { OpenHorseInkRuntime } from '../types';
+import type { OpenHorseUiRuntime } from '../types';
 
 const HORSE = [
   '   ▄▟█▙▄   ',
@@ -22,7 +22,7 @@ const COMPACT_HORSE = [
 ];
 
 interface PixelHorseBannerProps {
-  runtime: OpenHorseInkRuntime;
+  runtime: OpenHorseUiRuntime;
   width?: number;
 }
 

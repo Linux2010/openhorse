@@ -5,6 +5,12 @@
 import { basename } from 'path';
 import chalk from 'chalk';
 import { padEndVisible, truncateVisible, visualWidth } from '../runtime/text';
+export {
+  renderV2InputFrame,
+  renderV2Prompt,
+  type V2InputFrameOptions,
+  type V2InputFrameRender,
+} from '../../ui/shared/input-frame';
 
 const NO_COLOR = process.env.NO_COLOR !== undefined || process.env.TERM === 'dumb';
 
@@ -25,11 +31,6 @@ const colorize = NO_COLOR ? {
   danger: chalk.red,
   label: chalk.hex('#94A3B8'),
 };
-
-const INPUT_BG = '\x1b[48;2;56;56;56m';
-const INPUT_FG = '\x1b[38;2;226;232;240m';
-const RESET_COLORS = '\x1b[39;49m';
-const CLEAR_TO_EOL = '\x1b[K';
 
 export interface V2ShellHeaderConfig {
   provider: string;
@@ -58,20 +59,6 @@ export interface V2StatusLineStats {
 export interface V2ShortcutItem {
   key: string;
   label: string;
-}
-
-export interface V2InputFrameOptions {
-  input: string;
-  modeIndicator?: string;
-  width?: number;
-  statusText?: string;
-}
-
-export interface V2InputFrameRender {
-  output: string;
-  height: number;
-  cursorRow: number;
-  cursorColumn: number;
 }
 
 const DEFAULT_SHORTCUTS: V2ShortcutItem[] = [
@@ -103,59 +90,6 @@ export function renderV2ShellHeader(config: V2ShellHeaderConfig): string {
     colorize.dim('│ ') + padEndVisible(truncateVisible(body, innerWidth - 2), innerWidth - 2) + colorize.dim(' │'),
     colorize.dim(`╰${'─'.repeat(innerWidth)}╯`),
   ].join('\n');
-}
-
-export function renderV2Prompt(modeIndicator: string = ''): string {
-  const mode = modeIndicator ? colorize.dim(`${modeIndicator} `) : '';
-  return `${colorize.accent('›')} ${mode}`;
-}
-
-export function renderV2InputFrame(options: V2InputFrameOptions): V2InputFrameRender {
-  const width = Math.max(24, options.width || process.stdout.columns || 80);
-  const inputWidth = Math.max(1, width - 1);
-  const logicalLines = options.input.length > 0 ? options.input.split('\n') : [''];
-  const firstPrompt = renderV2Prompt(options.modeIndicator || '');
-  const continuationPrompt = ' '.repeat(visualWidth(firstPrompt));
-
-  const renderedLines = logicalLines.map((line, index) => {
-    const prefix = index === 0 ? firstPrompt : continuationPrompt;
-    return renderInputLine(truncateVisible(prefix + line, inputWidth));
-  });
-  const statusLine = options.statusText ? renderInputStatusLine(inputWidth, options.statusText) : undefined;
-
-  const rowSpans = logicalLines.map((line, index) => {
-    const prefix = index === 0 ? firstPrompt : continuationPrompt;
-    return terminalRowsFor(visualWidth(prefix) + visualWidth(line), width);
-  });
-  const rowsBeforeCursor = rowSpans.slice(0, -1).reduce((sum, rows) => sum + rows, 0);
-  const lastLine = logicalLines[logicalLines.length - 1] || '';
-  const lastPrefix = logicalLines.length === 1 ? firstPrompt : continuationPrompt;
-  const lastVisibleWidth = visualWidth(lastPrefix) + visualWidth(lastLine);
-
-  return {
-    output: [...renderedLines, ...(statusLine ? [statusLine] : [])].join('\n'),
-    height: rowSpans.reduce((sum, rows) => sum + rows, 0) + (statusLine ? 1 : 0),
-    cursorRow: rowsBeforeCursor + Math.floor(lastVisibleWidth / width),
-    cursorColumn: (lastVisibleWidth % width) + 1,
-  };
-}
-
-function renderInputLine(content: string): string {
-  if (NO_COLOR) {
-    return content;
-  }
-
-  return `${INPUT_BG}${INPUT_FG}${content}${CLEAR_TO_EOL}${RESET_COLORS}`;
-}
-
-function renderInputStatusLine(width: number, statusText: string): string {
-  const badge = ` ${statusText} `;
-  const badgeWidth = visualWidth(badge);
-  if (badgeWidth >= width) {
-    return truncateVisible(badge, width);
-  }
-
-  return ' '.repeat(width - badgeWidth) + badge;
 }
 
 export function renderV2StatusBadge(stats: V2StatusLineStats): string {
@@ -220,11 +154,6 @@ function renderStatus(status: V2ShellHeaderConfig['status'], text?: string): str
 
 function renderToken(label: string, value: string): string {
   return `${colorize.label(label)}=${colorize.accent(value)}`;
-}
-
-function terminalRowsFor(visibleWidth: number, terminalWidth: number): number {
-  if (visibleWidth <= 0) return 1;
-  return Math.floor(visibleWidth / terminalWidth) + 1;
 }
 
 function shortProvider(provider: string): string {

@@ -19,14 +19,24 @@ describe('File Completion UI', () => {
     writeSpy.mockRestore();
   });
 
-  test('uses v2 prompt renderer when configured', () => {
+  test('uses framed prompt renderer when configured', () => {
     const { setFileCompletionPromptRenderer, redrawInputWithFile } = require('../src/ui/file-completion');
 
-    setFileCompletionPromptRenderer('v2');
+    setFileCompletionPromptRenderer('framed');
     redrawInputWithFile('@src');
 
     const rendered = output.join('').replace(/\x1b\[[0-9;]*m/g, '');
     expect(rendered).toContain('› @src');
     expect(rendered).not.toContain('oh');
+  });
+
+  test('keeps the old v2 prompt renderer alias for compatibility', () => {
+    const { setFileCompletionPromptRenderer, redrawInputWithFile } = require('../src/ui/file-completion');
+
+    setFileCompletionPromptRenderer('v2');
+    redrawInputWithFile('@docs');
+
+    const rendered = output.join('').replace(/\x1b\[[0-9;]*m/g, '');
+    expect(rendered).toContain('› @docs');
   });
 });

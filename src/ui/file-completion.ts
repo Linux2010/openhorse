@@ -6,17 +6,18 @@
 
 import chalk from 'chalk';
 import { matchFiles, type FileMatch } from '../services/file-glob';
-import { renderV2Prompt } from '../ui-v2';
+import { renderFramedPrompt } from './shared/input-frame';
 
 const ACCENT = chalk.hex('#00D4AA');
 const DIM = chalk.dim;
 const SELECTED = chalk.bgHex('#1E293B').hex('#E2E8F0');
 
-type FilePromptRenderer = 'legacy' | 'v2';
-let filePromptRenderer: FilePromptRenderer = 'legacy';
+type FilePromptRenderer = 'classic' | 'framed' | 'legacy' | 'v2';
+type NormalizedFilePromptRenderer = 'classic' | 'framed';
+let filePromptRenderer: NormalizedFilePromptRenderer = 'classic';
 
 export function setFileCompletionPromptRenderer(renderer: FilePromptRenderer): void {
-  filePromptRenderer = renderer;
+  filePromptRenderer = renderer === 'framed' || renderer === 'v2' ? 'framed' : 'classic';
 }
 
 // ============================================================================
@@ -235,6 +236,6 @@ function clearPanel(): void {
  */
 export function redrawInputWithFile(input: string): void {
   process.stdout.write('\r\x1b[2K');
-  const prompt = filePromptRenderer === 'v2' ? renderV2Prompt() : ACCENT('❯ ');
+  const prompt = filePromptRenderer === 'framed' ? renderFramedPrompt() : ACCENT('❯ ');
   process.stdout.write(prompt + input);
 }
