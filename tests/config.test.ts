@@ -50,9 +50,6 @@ describe('loadConfig', () => {
   test('returns defaults when no env or overrides', () => {
     jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
       defaultModel: 'gpt-4o',
-      totalSessions: 0,
-      totalTokens: 0,
-      totalCost: 0,
     });
 
     const config = loadConfig();
@@ -89,9 +86,6 @@ describe('loadConfig', () => {
   test('env vars are used when no overrides and no globalConfig', () => {
     jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
       defaultModel: undefined as any,
-      totalSessions: 0,
-      totalTokens: 0,
-      totalCost: 0,
     });
 
     process.env.OPENHORSE_API_KEY = 'env-key';
@@ -141,9 +135,6 @@ describe('loadConfig', () => {
         renderer: 'ink',
         confirmations: 'interactive',
       },
-      totalSessions: 10,
-      totalTokens: 50000,
-      totalCost: 2.50,
     });
 
     const config = loadConfig();
@@ -166,9 +157,6 @@ describe('loadConfig', () => {
         renderer: 'ink',
         confirmations: 'config',
       },
-      totalSessions: 0,
-      totalTokens: 0,
-      totalCost: 0,
     });
 
     const config = loadConfig({ ui: { renderer: 'ink' } });
@@ -178,9 +166,6 @@ describe('loadConfig', () => {
   test('cli renderer override can switch to renderer-owned tui preview', () => {
     jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
       defaultModel: 'gpt-4o',
-      totalSessions: 0,
-      totalTokens: 0,
-      totalCost: 0,
     });
 
     const config = loadConfig({ ui: { renderer: 'tui' } });
@@ -190,9 +175,6 @@ describe('loadConfig', () => {
   test('ignores env renderer so npm run start stays on the stable terminal UI', () => {
     jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
       defaultModel: 'gpt-4o',
-      totalSessions: 0,
-      totalTokens: 0,
-      totalCost: 0,
     });
 
     process.env.OPENHORSE_UI = 'ink';
@@ -206,9 +188,6 @@ describe('loadConfig', () => {
     jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
       defaultModel: 'gpt-4o',
       toolConfirmation: 'invalid',
-      totalSessions: 0,
-      totalTokens: 0,
-      totalCost: 0,
     });
 
     process.env.OPENHORSE_TOOL_CONFIRMATION = 'also-invalid';
@@ -246,9 +225,6 @@ describe('isConfigured', () => {
   test('returns false when no API key', () => {
     jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
       defaultModel: 'gpt-4o',
-      totalSessions: 0,
-      totalTokens: 0,
-      totalCost: 0,
     });
 
     const config = loadConfig();
@@ -265,9 +241,6 @@ describe('getConfigErrors', () => {
   test('returns error when no API key', () => {
     jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
       defaultModel: 'gpt-4o',
-      totalSessions: 0,
-      totalTokens: 0,
-      totalCost: 0,
     });
 
     const config = loadConfig();

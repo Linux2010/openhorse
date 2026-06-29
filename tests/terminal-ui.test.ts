@@ -12,13 +12,18 @@ import {
   TerminalInputComposer,
   normalizeTerminalAnswer,
   parseEditInput,
+  resolveTerminalSessionPickerInput,
   truncateTerminalText,
   visibleLength,
 } from '../src/terminal-ui/launch';
 import { RawTerminalEditor } from '../src/terminal-ui/raw-editor';
 import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
 
-function makeRawEditor(options: { cwd?: string; onSubmit?: (input: string) => void } = {}) {
+function makeRawEditor(options: {
+  cwd?: string;
+  onSubmit?: (input: string) => void;
+  onNotice?: (message: string) => void;
+} = {}) {
   const writes: string[] = [];
   const output = {
     isTTY: true,
@@ -34,6 +39,7 @@ function makeRawEditor(options: { cwd?: string; onSubmit?: (input: string) => vo
     output,
     onSubmit: options.onSubmit ?? (() => undefined),
     onCtrlC: () => undefined,
+    onNotice: options.onNotice,
   });
 
   return { editor, writes };
@@ -123,10 +129,186 @@ describe('terminal UI renderer adapter', () => {
 
     expect(writes.join('')).toContain('Pick a Session');
     expect(writes.join('')).toContain('newer task');
+    expect(writes.join('')).toContain('session id prefix');
     expect(sink.consumePendingSelection('2')).toEqual({
       type: 'select_session',
       sessionId: '22222222-aaaa-bbbb-cccc-222222222222',
       allProjects: true,
+      source: 'picker',
+    });
+  });
+
+  it('resolves session picker input by index, id prefix, and unique title text', () => {
+    const request = {
+      title: 'Pick a Session',
+      allProjects: true,
+      sessions: [
+        {
+          id: '11111111-aaaa-bbbb-cccc-111111111111',
+          projectPath: '/tmp/project-a',
+          model: 'glm-5',
+          startTime: 1,
+          tokenCount: 0,
+          cost: 0,
+          messageCount: 4,
+          historySizeBytes: 1536,
+          taskSummary: 'storage cleanup work',
+        },
+        {
+          id: '22222222-aaaa-bbbb-cccc-222222222222',
+          projectPath: '/tmp/project-b',
+          model: 'glm-5',
+          startTime: 2,
+          tokenCount: 0,
+          cost: 0,
+          messageCount: 8,
+          historySizeBytes: 2048,
+          name: 'terminal ui polish',
+          taskSummary: 'newer task',
+        },
+      ],
+    };
+
+    expect(resolveTerminalSessionPickerInput('#2', request)).toEqual({
+      type: 'selected',
+      sessionId: '22222222-aaaa-bbbb-cccc-222222222222',
+    });
+    expect(resolveTerminalSessionPickerInput('11111111', request)).toEqual({
+      type: 'selected',
+      sessionId: '11111111-aaaa-bbbb-cccc-111111111111',
+    });
+    expect(resolveTerminalSessionPickerInput('terminal ui', request)).toEqual({
+      type: 'selected',
+      sessionId: '22222222-aaaa-bbbb-cccc-222222222222',
+    });
+  });
+
+  it('prefers bare numeric row selection over numeric id-prefix matching', () => {
+    const request = {
+      title: 'Pick a Session',
+      sessions: [
+        {
+          id: '22222222-aaaa-bbbb-cccc-222222222222',
+          projectPath: '/tmp/project-a',
+          model: 'glm-5',
+          startTime: 1,
+          tokenCount: 0,
+          cost: 0,
+          taskSummary: 'numeric id prefix',
+        },
+        {
+          id: 'aaaaaaaa-aaaa-bbbb-cccc-aaaaaaaaaaaa',
+          projectPath: '/tmp/project-b',
+          model: 'glm-5',
+          startTime: 2,
+          tokenCount: 0,
+          cost: 0,
+          taskSummary: 'second visible row',
+        },
+      ],
+    };
+
+    expect(resolveTerminalSessionPickerInput('2', request)).toEqual({
+      type: 'selected',
+      sessionId: 'aaaaaaaa-aaaa-bbbb-cccc-aaaaaaaaaaaa',
+    });
+    expect(resolveTerminalSessionPickerInput('2222', request)).toEqual({
+      type: 'selected',
+      sessionId: '22222222-aaaa-bbbb-cccc-222222222222',
+    });
+  });
+
+  it('limits visible picker rows while keeping hidden sessions selectable by id or title', () => {
+    const { sink, writes } = makeTerminalSink();
+    const request = {
+      title: 'Pick a Session',
+      maxVisibleItems: 2,
+      sessions: [
+        {
+          id: '11111111-aaaa-bbbb-cccc-111111111111',
+          projectPath: '/tmp/project-a',
+          model: 'glm-5',
+          startTime: 1,
+          tokenCount: 0,
+          cost: 0,
+          taskSummary: 'first task',
+        },
+        {
+          id: '22222222-aaaa-bbbb-cccc-222222222222',
+          projectPath: '/tmp/project-b',
+          model: 'glm-5',
+          startTime: 2,
+          tokenCount: 0,
+          cost: 0,
+          taskSummary: 'second task',
+        },
+        {
+          id: '33333333-aaaa-bbbb-cccc-333333333333',
+          projectPath: '/tmp/project-c',
+          model: 'glm-5',
+          startTime: 3,
+          tokenCount: 0,
+          cost: 0,
+          taskSummary: 'hidden task',
+        },
+      ],
+    };
+
+    sink.showSessionPicker(request);
+
+    const output = writes.join('');
+    expect(output).toContain('first task');
+    expect(output).toContain('second task');
+    expect(output).not.toContain('hidden task');
+    expect(output).toContain('Showing 2 of 3');
+    expect(resolveTerminalSessionPickerInput('3', request)).toEqual({
+      type: 'selected',
+      sessionId: '33333333-aaaa-bbbb-cccc-333333333333',
+    });
+    expect(resolveTerminalSessionPickerInput('3333', request)).toEqual({
+      type: 'selected',
+      sessionId: '33333333-aaaa-bbbb-cccc-333333333333',
+    });
+    expect(resolveTerminalSessionPickerInput('hidden', request)).toEqual({
+      type: 'selected',
+      sessionId: '33333333-aaaa-bbbb-cccc-333333333333',
+    });
+  });
+
+  it('keeps ambiguous session picker text local and shows a helpful error', () => {
+    const { sink, writes } = makeTerminalSink();
+
+    sink.showSessionPicker({
+      title: 'Pick a Session',
+      sessions: [
+        {
+          id: '11111111-aaaa-bbbb-cccc-111111111111',
+          projectPath: '/tmp/project-a',
+          model: 'glm-5',
+          startTime: 1,
+          tokenCount: 0,
+          cost: 0,
+          taskSummary: 'ui polish',
+        },
+        {
+          id: '22222222-aaaa-bbbb-cccc-222222222222',
+          projectPath: '/tmp/project-b',
+          model: 'glm-5',
+          startTime: 2,
+          tokenCount: 0,
+          cost: 0,
+          taskSummary: 'ui review',
+        },
+      ],
+    });
+
+    expect(sink.consumePendingSelection('ui')).toBe('');
+    expect(writes.join('')).toContain('Multiple sessions match "ui"');
+    expect(writes.join('')).toContain('Type a number or a longer session id');
+    expect(sink.consumePendingSelection('11111111')).toEqual({
+      type: 'select_session',
+      sessionId: '11111111-aaaa-bbbb-cccc-111111111111',
+      allProjects: undefined,
       source: 'picker',
     });
   });
@@ -168,6 +350,18 @@ describe('terminal UI renderer adapter', () => {
     const output = writes.join('');
     expect(output).toContain('existing transcript');
     expect(output).toContain('Terminal scrollback is preserved.');
+  });
+
+  it('does not print duplicate consecutive status messages', () => {
+    const { sink, writes } = makeTerminalSink();
+
+    sink.setStatus('Thinking...');
+    sink.setStatus('Thinking...');
+    sink.setStatus('Running 2 tools...');
+
+    const output = writes.join('');
+    expect(output.match(/Thinking\.\.\./g)).toHaveLength(1);
+    expect(output).toContain('Running 2 tools...');
   });
 });
 
@@ -221,6 +415,72 @@ describe('raw terminal editor', () => {
     expect(submitted).toEqual(['hello']);
     expect(editor.getBuffer().value).toBe('');
   });
+
+  it('keeps bracketed multiline paste in the buffer and submits it once', () => {
+    const submitted: string[] = [];
+    const notices: string[] = [];
+    const { editor, writes } = makeRawEditor({ onSubmit: input => submitted.push(input), onNotice: message => notices.push(message) });
+    editor.setPrompt('› ');
+
+    editor.feed(Buffer.from('\x1b[200~first line\nsecond line\x1b[201~', 'utf8'));
+
+    expect(submitted).toEqual([]);
+    expect(editor.getBuffer().value).toBe('first line\nsecond line');
+    expect(writes.join('')).toContain('first line⏎ second line');
+    expect(notices).toEqual(['Pasted 2 lines. Enter sends once; Ctrl+U clears.']);
+
+    editor.feed(Buffer.from('\r'));
+
+    expect(submitted).toEqual(['first line\nsecond line']);
+    expect(editor.getBuffer().value).toBe('');
+  });
+
+  it('keeps split bracketed paste chunks inside the parser before applying paste heuristics', () => {
+    const submitted: string[] = [];
+    const notices: string[] = [];
+    const { editor } = makeRawEditor({ onSubmit: input => submitted.push(input), onNotice: message => notices.push(message) });
+    editor.setPrompt('› ');
+
+    editor.feed(Buffer.from('\x1b[200~', 'utf8'));
+    editor.feed(Buffer.from('first line\nsecond line', 'utf8'));
+
+    expect(editor.getBuffer().value).toBe('');
+    expect(notices).toEqual([]);
+
+    editor.feed(Buffer.from('\x1b[201~', 'utf8'));
+
+    expect(submitted).toEqual([]);
+    expect(editor.getBuffer().value).toBe('first line\nsecond line');
+    expect(notices).toEqual(['Pasted 2 lines. Enter sends once; Ctrl+U clears.']);
+  });
+
+  it('treats unbracketed multiline paste chunks as one buffer insert', () => {
+    const submitted: string[] = [];
+    const notices: string[] = [];
+    const { editor } = makeRawEditor({ onSubmit: input => submitted.push(input), onNotice: message => notices.push(message) });
+    editor.setPrompt('› ');
+
+    editor.feed(Buffer.from('one\ntwo\nthree', 'utf8'));
+
+    expect(submitted).toEqual([]);
+    expect(editor.getBuffer().value).toBe('one\ntwo\nthree');
+    expect(notices).toEqual(['Pasted 3 lines. Enter sends once; Ctrl+U clears.']);
+
+    editor.feed(Buffer.from('\r'));
+
+    expect(submitted).toEqual(['one\ntwo\nthree']);
+  });
+
+  it('suggests editor mode for very long pasted drafts', () => {
+    const notices: string[] = [];
+    const { editor } = makeRawEditor({ onNotice: message => notices.push(message) });
+    editor.setPrompt('› ');
+
+    editor.feed(Buffer.from(Array.from({ length: 20 }, (_, index) => `line ${index}`).join('\n'), 'utf8'));
+
+    expect(notices[0]).toContain('Pasted 20 lines');
+    expect(notices[0]).toContain('/edit is better');
+  });
 });
 
 describe('terminal UI multiline composer', () => {
@@ -229,8 +489,11 @@ describe('terminal UI multiline composer', () => {
 
     expect(composer.receive('/paste').input).toBeUndefined();
     expect(composer.isActive()).toBe(true);
+    expect(composer.prompt('› ')).toContain('[paste 1L]');
     expect(composer.receive('第一行').input).toBeUndefined();
+    expect(composer.prompt('› ')).toContain('[paste 2L]');
     expect(composer.receive('second line').input).toBeUndefined();
+    expect(composer.prompt('› ')).toContain('[paste 3L]');
 
     expect(composer.receive('/end')).toEqual({ input: '第一行\nsecond line' });
     expect(composer.isActive()).toBe(false);

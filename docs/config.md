@@ -16,7 +16,7 @@
 |------|------|----------|--------|------|
 | `apiKey` | string | `OPENHORSE_API_KEY` | `""` | LLM API Key |
 | `apiBaseUrl` | string | `OPENHORSE_API_BASE_URL` | `(OpenAI 默认)` | API 地址 |
-| `defaultModel` | string | `OPENHORSE_MODEL` | `gpt-4o` | 默认模型 |
+| `defaultModel` | string | `OPENHORSE_MODEL` | `gpt-4o` | 默认模型，按当前 `apiBaseUrl` 的模型 ID 原样传给 provider。 |
 | `fallbackModel` | string | `OPENHORSE_FALLBACK_MODEL` | `(无)` | 备用模型（主模型过载时自动切换） |
 | `toolConfirmation` | `allow` \| `deny` \| `ask` | `OPENHORSE_TOOL_CONFIRMATION` | `allow` | 工具需要确认时的兜底策略；`ask` 通过统一 runtime permission protocol 交给当前 renderer 展示 |
 | `ui.confirmations` | `config` \| `interactive` | `OPENHORSE_UI_CONFIRMATIONS` | `config` | 工具确认由配置兜底，还是交给交互式 UI |
@@ -39,15 +39,22 @@
 | `maxRetries` | 3 | 指数退避，自动调整 |
 | `retryBaseDelay` | 500ms | 500ms → 1s → 2s → 4s |
 
-## 内部统计（自动生成）
+## 内部标识（自动生成）
 
 | 字段 | 说明 |
 |------|------|
-| `totalSessions` | 总会话数 |
-| `totalTokens` | 累计 token 消耗 |
-| `totalCost` | 累计费用 (USD) |
 | `userId` | 用户唯一 ID（自动生成） |
 | `firstStartTime` | 首次启动时间 |
+
+## 运行状态文件
+
+运行时统计不再写入 `openhorse.json`。它们由 OpenHorse 自动维护在 `~/.openhorse/usage.json`，避免用户配置和状态计数混在一起。
+
+| 文件 | 字段 | 说明 |
+|------|------|------|
+| `usage.json` | `totalSessions` | 累计会话数 |
+| `usage.json` | `totalTokens` | 累计 token 消耗 |
+| `usage.json` | `totalCost` | 累计费用 (USD) |
 
 ## 配置示例
 
@@ -69,6 +76,23 @@
 {
   "apiKey": "sk-xxx",
   "defaultModel": "gpt-4o",
+  "toolConfirmation": "allow"
+}
+```
+
+### Openclaw 风格（可选）
+
+你可参考本机 openclaw 的模型配置同步更新 OpenHorse 的本地配置。OpenHorse 不会自动读取 openclaw 的配置文件；仅作为迁移参考。
+
+注意：openclaw 的 `bailian` provider 当前使用 `anthropic-messages` 协议；OpenHorse 现有 LLM 客户端使用 OpenAI-compatible chat completions，所以应选择 openclaw 中 `api: "openai-completions"` 的 provider，例如 `astroncodingplan`。
+
+示例同步后的 OpenHorse 配置：
+
+```json
+{
+  "apiBaseUrl": "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
+  "defaultModel": "xopglm51",
+  "fallbackModel": "astron-code-latest",
   "toolConfirmation": "allow"
 }
 ```

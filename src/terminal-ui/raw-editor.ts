@@ -1,7 +1,16 @@
 import readline from 'readline';
 import stringWidth from 'string-width';
-import { TuiInputParser, type TuiInputEvent, type TuiKey } from '../tui-core/input-parser';
+import {
+  isLikelyUnbracketedMultilinePaste,
+  normalizePastedText,
+  TuiInputParser,
+  type TuiInputEvent,
+  type TuiKey,
+} from '../tui-core/input-parser';
 import { applyTerminalTabCompletion } from './completion';
+
+const BRACKETED_PASTE_ENABLE = '\x1b[?2004h';
+const BRACKETED_PASTE_DISABLE = '\x1b[?2004l';
 
 type RawModeStream = NodeJS.ReadStream & {
   isRaw?: boolean;
@@ -18,6 +27,7 @@ export interface RawTerminalEditorOptions {
   cwd: string;
   onSubmit: (input: string) => void;
   onCtrlC: () => void;
+  onNotice?: (message: string) => void;
 }
 
 export class RawTerminalEditor {
@@ -49,6 +59,9 @@ export class RawTerminalEditor {
     if (this.input.isTTY && typeof this.input.setRawMode === 'function') {
       this.input.setRawMode(true);
     }
+    if (this.output.isTTY !== false) {
+      this.output.write(BRACKETED_PASTE_ENABLE);
+    }
     this.input.on('data', this.handleData);
   }
 
@@ -56,6 +69,9 @@ export class RawTerminalEditor {
     if (!this.running) return;
     this.running = false;
     this.input.off('data', this.handleData);
+    if (this.output.isTTY !== false) {
+      this.output.write(BRACKETED_PASTE_DISABLE);
+    }
     if (this.input.isTTY && typeof this.input.setRawMode === 'function') {
       this.input.setRawMode(this.wasRaw);
     }
@@ -115,6 +131,13 @@ export class RawTerminalEditor {
   }
 
   feed(chunk: Buffer | string): TuiInputEvent[] {
+    const raw = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk;
+    if (!this.parser.isPasting() && !this.parser.hasPendingEscape() && isLikelyUnbracketedMultilinePaste(raw)) {
+      const event: TuiInputEvent = { type: 'paste', value: normalizePastedText(raw) };
+      this.applyEvent(event);
+      return [event];
+    }
+
     const events = this.parser.feed(chunk);
     for (const event of events) {
       this.applyEvent(event);
@@ -133,9 +156,19 @@ export class RawTerminalEditor {
   private applyEvent(event: TuiInputEvent): void {
     if (event.type === 'text' || event.type === 'paste') {
       this.insert(event.value);
+      if (event.type === 'paste') {
+        this.emitPasteNotice(event.value);
+      }
       return;
     }
     this.applyKey(event.key);
+  }
+
+  private emitPasteNotice(value: string): void {
+    const lines = normalizePastedText(value).split('\n').length;
+    if (lines < 2) return;
+    const suffix = lines >= 20 ? ' /edit is better for very long drafts.' : '';
+    this.options.onNotice?.(`Pasted ${lines} lines. Enter sends once; Ctrl+U clears.${suffix}`);
   }
 
   private applyKey(key: TuiKey): void {
@@ -274,7 +307,9 @@ export class RawTerminalEditor {
     const width = Math.max(20, this.output.columns || 80);
     const promptCells = stringWidth(stripAnsi(prompt));
     const available = Math.max(1, width - promptCells - 1);
-    const window = fitInputWindow(this.value, this.cursor, available);
+    const displayValue = displayInputValue(this.value);
+    const displayCursor = displayInputValue(this.value.slice(0, clampCursor(this.value, this.cursor))).length;
+    const window = fitInputWindow(displayValue, displayCursor, available);
 
     this.clearPromptLine();
     this.output.write(`${prompt}${window.visible}`);
@@ -286,6 +321,10 @@ export class RawTerminalEditor {
     readline.cursorTo(this.output, 0);
     readline.clearLine(this.output, 0);
   }
+}
+
+function displayInputValue(value: string): string {
+  return value.replace(/\n/g, '⏎ ');
 }
 
 function fitInputWindow(value: string, cursor: number, available: number): { visible: string; cursorColumn: number } {

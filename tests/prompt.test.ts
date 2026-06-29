@@ -35,6 +35,25 @@ describe('buildSystemPrompt', () => {
     expect(result.static).toContain('read_file');
   });
 
+  test('static part contains the short execution strategy', () => {
+    const result = buildSystemPrompt(baseContext);
+
+    expect(result.static).toContain('Execution strategy');
+    expect(result.static).toContain('short internal plan');
+    expect(result.static).toContain('one well-planned tool batch');
+  });
+
+  test('static part instructs the model to batch independent read-only tool calls', () => {
+    const result = buildSystemPrompt(baseContext);
+
+    expect(result.static).toContain('Batched tool strategy');
+    expect(result.static).toContain('multiple independent read-only tools');
+    expect(result.static).toContain('use batch_read');
+    expect(result.static).toContain('only git_status, list_files, glob, grep, and read_file');
+    expect(result.static).toContain('Do not put web_search, web_fetch, exec_command, LSP tools, or write/edit tools inside batch_read');
+    expect(result.static).toContain('Do not batch file edits');
+  });
+
   test('dynamic part contains environment info', () => {
     const result = buildSystemPrompt(baseContext);
     expect(result.dynamic).toContain('/test/dir');

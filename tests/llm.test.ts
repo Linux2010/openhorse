@@ -153,6 +153,141 @@ describe('LLMService', () => {
     });
   });
 
+  describe('chatStream tool calls', () => {
+    test('parses multiple tool calls from a single streaming delta chunk', async () => {
+      const llm = new LLMService({
+        apiKey: 'test-key',
+        model: 'gpt-4o',
+      });
+      const create = jest.fn(async function* () {
+        yield {
+          choices: [{
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call-0',
+                  type: 'function',
+                  function: { name: 'read_file', arguments: '{"path":"a.ts"}' },
+                },
+                {
+                  index: 1,
+                  id: 'call-1',
+                  type: 'function',
+                  function: { name: 'grep', arguments: '{"pattern":"foo"}' },
+                },
+              ],
+            },
+          }],
+          model: 'gpt-4o',
+        };
+      });
+
+      (llm as any).client = {
+        chat: {
+          completions: { create },
+        },
+      };
+
+      const response = await llm.chatStream([{ role: 'user', content: 'Inspect' }]);
+
+      expect(response.toolCalls).toHaveLength(2);
+      expect(response.toolCalls?.map(call => call.function.name)).toEqual(['read_file', 'grep']);
+      expect(response.toolCalls?.map(call => JSON.parse(call.function.arguments))).toEqual([
+        { path: 'a.ts' },
+        { pattern: 'foo' },
+      ]);
+    });
+  });
+
+  describe('provider transient errors', () => {
+    test('retries Xunfei busy errors and returns the later stream response', async () => {
+      const llm = new LLMService({
+        apiKey: 'test-key',
+        model: 'xopglm51',
+      });
+      (llm as any).config.retryBaseDelay = 1;
+      (llm as any).config.maxRetries = 1;
+
+      const create = jest.fn()
+        .mockRejectedValueOnce(new Error('Xunfei request failed with Sid: abc code: 10012, msg: EngineInternalError:The system is busy, please try again later.'))
+        .mockImplementationOnce(async function* () {
+          yield {
+            choices: [{ delta: { content: 'ok' } }],
+            model: 'xopglm51',
+          };
+        });
+
+      (llm as any).client = {
+        chat: {
+          completions: { create },
+        },
+      };
+
+      const response = await llm.chatStream([{ role: 'user', content: 'Hi' }]);
+
+      expect(response.content).toBe('ok');
+      expect(create).toHaveBeenCalledTimes(2);
+    });
+
+    test('does not retry Xunfei insufficient credit errors', async () => {
+      const llm = new LLMService({
+        apiKey: 'test-key',
+        model: 'xopglm51',
+      });
+      (llm as any).config.retryBaseDelay = 1;
+      (llm as any).config.maxRetries = 3;
+
+      const create = jest.fn()
+        .mockRejectedValue(new Error('Xunfei request failed with Sid: abc code: 11210, msg: NotEnoughCvError'));
+
+      (llm as any).client = {
+        chat: {
+          completions: { create },
+        },
+      };
+
+      await expect(llm.chatStream([{ role: 'user', content: 'Hi' }]))
+        .rejects
+        .toThrow('NotEnoughCvError');
+      expect(create).toHaveBeenCalledTimes(1);
+    });
+
+    test('abort signal cancels provider retry backoff immediately', async () => {
+      const llm = new LLMService({
+        apiKey: 'test-key',
+        model: 'xopglm51',
+      });
+      (llm as any).config.retryBaseDelay = 10000;
+      (llm as any).config.maxRetries = 2;
+
+      const create = jest.fn()
+        .mockRejectedValue(new Error('Xunfei request failed with Sid: abc code: 10012, msg: EngineInternalError:The system is busy, please try again later.'));
+
+      (llm as any).client = {
+        chat: {
+          completions: { create },
+        },
+      };
+
+      const controller = new AbortController();
+      const response = llm.chatStream(
+        [{ role: 'user', content: 'Hi' }],
+        undefined,
+        undefined,
+        { abortSignal: controller.signal },
+      );
+
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(create).toHaveBeenCalledTimes(1);
+
+      controller.abort();
+
+      await expect(response).rejects.toThrow('Operation cancelled');
+      expect(create).toHaveBeenCalledTimes(1);
+    });
+  });
+
   // Real API tests (only run if API key is available)
   describe('Real API (requires OPENHORSE_API_KEY)', () => {
     if (!hasApiKey) {

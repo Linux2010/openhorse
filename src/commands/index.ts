@@ -57,6 +57,7 @@ import { buildReferencedFilesPrompt } from '../services/file-context';
 import { loadProjectInstructionFiles } from '../services/project-instructions';
 import { refreshProjectInstructions } from '../services/prompt-context';
 import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from '../services/doctor';
+import { resolveModelContext } from '../services/model-context';
 import { collectWorkspaceDiff, formatWorkspaceDiff } from '../services/workspace-diff';
 import { createCommitPlan, formatCommitPlan } from '../services/commit-plan';
 import {
@@ -66,6 +67,7 @@ import {
   formatStorageReport,
   repairProjectMetadata,
 } from '../services/storage-maintenance';
+import { agentStepStatus, runningToolsStatus } from '../runtime/agent-status';
 
 // ============================================================================
 // 颜色常量
@@ -92,6 +94,16 @@ const CATEGORY_ORDER: CommandCategory[] = [
 
 function commandUICapabilities(ctx: CommandContext) {
   return resolveUiRendererCapabilities(ctx.uiCapabilities);
+}
+
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1000)}K`;
+  return String(tokens);
+}
+
+function formatThreshold(value: number): string {
+  return `${Math.round(value * 100)}%`;
 }
 
 const CATEGORY_LABELS: Record<CommandCategory, string> = {
@@ -195,6 +207,12 @@ function showStatus(ctx: CommandContext): CommandResult {
 
   console.log(`  Mode       ${BRAND(ctx.config.mode)}`);
   console.log(`  Log level  ${DIM(ctx.config.logLevel)}`);
+  const modelId = ctx.llm?.getModel() ?? snapshotCurrentModel(ctx);
+  const modelContext = resolveModelContext(modelId);
+  const compactStats = getAutoCompact({ modelId }).getStats();
+  console.log(`  Model      ${BRAND(modelId)}`);
+  console.log(`  Context    ${DIM(`${formatTokenCount(modelContext.contextWindow)} tokens (${modelContext.source}${modelContext.source === 'fuzzy' ? `:${modelContext.matchedId}` : ''})`)}`);
+  console.log(`  Compact    ${compactStats.enabled ? SUCCESS('auto') : WARN('off')} ${DIM(`predict ${formatThreshold(compactStats.predictiveCompactThreshold)}, hard ${formatThreshold(compactStats.threshold)}, used ${compactStats.ctxPercent}%`)}`);
   console.log();
   console.log(`  Agents     ${SUCCESS(brainStatus.agents.length)} registered`);
   console.log(`  Tasks      ${brainStatus.pendingTasks} pending (${brainStatus.strategy} strategy)`);
@@ -242,6 +260,10 @@ function showStatus(ctx: CommandContext): CommandResult {
   }
   console.log();
   return { success: true };
+}
+
+function snapshotCurrentModel(ctx: CommandContext): string {
+  return ctx.store.getSnapshot().currentModel || ctx.config.model;
 }
 
 function showAgents(ctx: CommandContext): CommandResult {
@@ -460,6 +482,18 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
       console.log(DIM('    No prompt assembly stats recorded yet. Run a chat turn first.'));
     }
     console.log();
+    console.log(HEADER('  Auto Compact'));
+    const compactStats = getAutoCompact({
+      modelId: state.promptAssemblyStats?.modelId ?? snapshotCurrentModel(ctx),
+    }).getStats();
+    const contextInfo = resolveModelContext(compactStats.modelId);
+    console.log(`    Model       ${ACCENT(compactStats.modelId)}`);
+    console.log(`    Window      ${DIM(`${formatTokenCount(contextInfo.contextWindow)} tokens (${contextInfo.source}${contextInfo.source === 'fuzzy' ? `:${contextInfo.matchedId}` : ''})`)}`);
+    console.log(`    Thresholds  ${DIM(`predict ${formatThreshold(compactStats.predictiveCompactThreshold)}, hard ${formatThreshold(compactStats.threshold)}, prewarm ${formatThreshold(compactStats.preCompactThreshold)}`)}`);
+    console.log(`    Usage       ${DIM(`${compactStats.lastTokenCount} tokens, ${compactStats.ctxPercent}%`)}`);
+    console.log(`    Armed       ${compactStats.preCompactArmed ? SUCCESS('yes') : DIM('no')}`);
+    console.log(`    Last mode   ${DIM(compactStats.lastCompactMode ?? 'none')}`);
+    console.log();
     return { success: true };
   }
 
@@ -566,6 +600,8 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
     if (ctx.llm) {
       const currentModel = ctx.llm.getModel();
       const aliasEntry = AVAILABLE_MODELS.find(m => m.name === currentModel || m.alias === currentModel);
+      const contextInfo = resolveModelContext(currentModel);
+      const compactStats = getAutoCompact({ modelId: currentModel }).getStats();
       console.log(HEADER('Current Model'));
       console.log(DIM('─'.repeat(40)));
       console.log(`  Model    ${BRAND(currentModel)}`);
@@ -573,6 +609,12 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
         console.log(`  Alias    ${ACCENT(aliasEntry.alias)}`);
         console.log(`  Provider ${DIM(aliasEntry.provider)}`);
       }
+      console.log(`  Context  ${DIM(`${formatTokenCount(contextInfo.contextWindow)} tokens`)}`);
+      if (contextInfo.maxOutputTokens) {
+        console.log(`  Output   ${DIM(`${formatTokenCount(contextInfo.maxOutputTokens)} tokens`)}`);
+      }
+      console.log(`  Source   ${DIM(`${contextInfo.source}${contextInfo.source === 'fuzzy' ? `:${contextInfo.matchedId}` : ''}`)}`);
+      console.log(`  Compact  ${compactStats.enabled ? SUCCESS('auto') : WARN('off')} ${DIM(`predict ${formatThreshold(compactStats.predictiveCompactThreshold)}, hard ${formatThreshold(compactStats.threshold)}`)}`);
     } else {
       console.log(ERROR('LLM not initialized. Set OPENHORSE_API_KEY first.'));
     }
@@ -589,7 +631,8 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
     for (const m of AVAILABLE_MODELS) {
       const isCurrent = m.name === currentModel || m.alias === currentModel;
       const marker = isCurrent ? SUCCESS('●') : DIM('○');
-      console.log(`  ${marker} ${ACCENT(m.name)} ${DIM(`(${m.alias})`)} ${isCurrent ? BRAND('(current)') : ''}`);
+      const contextInfo = resolveModelContext(m.name);
+      console.log(`  ${marker} ${ACCENT(m.name)} ${DIM(`(${m.alias})`)} ${DIM(`${formatTokenCount(contextInfo.contextWindow)} ctx`)} ${isCurrent ? BRAND('(current)') : ''}`);
       console.log(`      ${DIM(m.provider)}`);
     }
     console.log();
@@ -625,8 +668,11 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
   const resolvedModel = MODEL_ALIASES[trimmedArgs] || args.trim();
 
   ctx.llm.setModel(resolvedModel);
+  getAutoCompact({ modelId: resolvedModel });
   ctx.store.setState({ currentModel: resolvedModel });
   console.log(SUCCESS(`✔ Model changed to ${BRAND(resolvedModel)}`));
+  const contextInfo = resolveModelContext(resolvedModel);
+  console.log(DIM(`  Context window ${formatTokenCount(contextInfo.contextWindow)} tokens (${contextInfo.source})`));
   console.log();
   return { success: true };
 }
@@ -970,7 +1016,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           // 停止 spinner，等待 LLM 响应
           spinner.stop();
           writeLine();
-          writeLine(DIM(`Turn ${event.turn}...`));
+          writeLine(DIM(agentStepStatus(event.turn)));
           // 重置流式渲染器
           streamRenderer = createStreamRenderer();
           // Issue #22: 重置工具调用计数器
@@ -979,6 +1025,9 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           break;
 
         case 'assistant_tool_calls':
+          if (event.toolCalls.length > 1) {
+            writeLine(DIM(runningToolsStatus(event.toolCalls.length)));
+          }
           sessionMessagesToRecord.push({
             role: 'assistant',
             content: event.content || '',

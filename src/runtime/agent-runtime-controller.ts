@@ -154,9 +154,13 @@ export class AgentRuntimeController {
       return { type: 'revision_requested' };
     }
 
-    this.activeRun = this.runTurn(submitted).finally(() => {
-      this.activeRun = null;
-    });
+    this.activeRun = this.runTurn(submitted)
+      .catch(error => {
+        this.handleRunLoopError(error);
+      })
+      .finally(() => {
+        this.activeRun = null;
+      });
     return { type: 'started' };
   }
 
@@ -233,6 +237,23 @@ export class AgentRuntimeController {
       if (readyStatus) this.emitStatus(readyStatus);
       this.options.afterTurnLoop?.();
     }
+  }
+
+  private handleRunLoopError(error: unknown): void {
+    if (this.options.onTurnError) {
+      this.options.onTurnError(error);
+    } else {
+      const message = error instanceof Error ? error.message : String(error);
+      this.emitAppend({ role: 'error', content: `Error: ${message}` });
+    }
+
+    this.options.runtime.store.setProcessing(false);
+    this.emitProcessing(false);
+    const readyStatus = typeof this.options.readyStatus === 'function'
+      ? this.options.readyStatus()
+      : this.options.readyStatus;
+    if (readyStatus) this.emitStatus(readyStatus);
+    this.options.afterTurnLoop?.();
   }
 
   private emitAppend(entry: TranscriptAppendEntry): string | void {

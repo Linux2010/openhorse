@@ -32,6 +32,81 @@ function sessionTitle(session: SessionPickerRequest['sessions'][number]): string
   return session.name || session.taskSummary || '(untitled)';
 }
 
+export type TerminalSessionPickerSelection =
+  | { type: 'cancelled' }
+  | { type: 'slash'; input: string }
+  | { type: 'selected'; sessionId: string }
+  | { type: 'error'; message: string };
+
+function normalizePickerText(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function matchingSessionLabels(session: SessionPickerRequest['sessions'][number]): string[] {
+  return [session.name, session.taskSummary].filter((value): value is string => Boolean(value?.trim()));
+}
+
+function findSessionsByText(input: string, sessions: SessionPickerRequest['sessions']): SessionPickerRequest['sessions'] {
+  const query = normalizePickerText(input);
+  if (!query) return [];
+  const canMatchIdPrefix = query.length >= 4;
+
+  return sessions.filter(session => {
+    const id = session.id.toLowerCase();
+    if (id === query || (canMatchIdPrefix && id.startsWith(query))) return true;
+    return matchingSessionLabels(session).some(label => normalizePickerText(label).includes(query));
+  });
+}
+
+export function resolveTerminalSessionPickerInput(
+  input: string,
+  request: SessionPickerRequest
+): TerminalSessionPickerSelection {
+  const trimmed = input.trim();
+  if (!trimmed) return { type: 'cancelled' };
+  if (trimmed.startsWith('/')) return { type: 'slash', input: trimmed };
+
+  const explicitIndex = trimmed.match(/^#(\d+)$/);
+  if (explicitIndex) {
+    const index = Number(explicitIndex[1]) - 1;
+    const selected = request.sessions[index];
+    if (selected) return { type: 'selected', sessionId: selected.id };
+    return { type: 'error', message: `No session at index ${explicitIndex[1]}.` };
+  }
+
+  const numeric = trimmed.match(/^(\d+)$/);
+  if (numeric) {
+    const index = Number(numeric[1]) - 1;
+    const selected = request.sessions[index];
+    if (selected) return { type: 'selected', sessionId: selected.id };
+  }
+
+  const matches = findSessionsByText(trimmed, request.sessions);
+  if (matches.length === 1) {
+    return { type: 'selected', sessionId: matches[0].id };
+  }
+  if (matches.length > 1) {
+    const preview = matches
+      .slice(0, 3)
+      .map(session => `${session.id.slice(0, 8)} ${sessionTitle(session)}`)
+      .join(', ');
+    const suffix = matches.length > 3 ? `, +${matches.length - 3} more` : '';
+    return {
+      type: 'error',
+      message: `Multiple sessions match "${trimmed}": ${preview}${suffix}. Type a number or a longer session id.`,
+    };
+  }
+
+  if (numeric) {
+    return { type: 'error', message: `No session at index ${numeric[1]} or id prefix "${trimmed}".` };
+  }
+
+  return {
+    type: 'error',
+    message: `No session matches "${trimmed}". Type a number, #number, session id prefix, or /resume --last.`,
+  };
+}
+
 function formatTranscriptEntry(entry: TranscriptEntry): string {
   const content = stripTrailingNewlines(entry.content);
   if (!content) return '';
@@ -103,6 +178,7 @@ export class TerminalEventSink implements UiEventSink {
   private idCounter = 0;
   private pendingPicker: SessionPickerRequest | null = null;
   private pendingEditPreview: EditPreviewRequest | null = null;
+  private lastStatusMessage = '';
 
   constructor(
     private readonly runtime: OpenHorseUiRuntime,
@@ -168,6 +244,8 @@ export class TerminalEventSink implements UiEventSink {
 
   setStatus(message: string): void {
     if (!shouldShowStatus(message)) return;
+    if (message === this.lastStatusMessage) return;
+    this.lastStatusMessage = message;
     this.writer.write(`${DIM(message)}\n`);
   }
 
@@ -175,7 +253,9 @@ export class TerminalEventSink implements UiEventSink {
     this.pendingPicker = request;
     this.writer.write(`\n${ACCENT(request.title)}\n`);
     this.writer.write(`${BORDER('─'.repeat(Math.min(process.stdout.columns || 80, 96)))}\n`);
-    request.sessions.forEach((session, index) => {
+    const visibleCount = Math.max(1, Math.min(request.maxVisibleItems ?? request.sessions.length, request.sessions.length));
+    const visibleSessions = request.sessions.slice(0, visibleCount);
+    visibleSessions.forEach((session, index) => {
       const id = session.id.slice(0, 8);
       const size = formatBytes(session.historySizeBytes ?? 0);
       const messages = session.messageCount ?? 0;
@@ -184,7 +264,10 @@ export class TerminalEventSink implements UiEventSink {
         `${String(index + 1).padStart(2, ' ')}. ${ACCENT(id)}  ${sessionTitle(session)}  ${DIM(`${messages} msgs  ${size}  ${session.model}${project}`)}\n`
       );
     });
-    this.writer.write(`${DIM('Type a number, session id/name, or /resume --last. Empty input cancels.')}\n`);
+    if (visibleCount < request.sessions.length) {
+      this.writer.write(`${DIM(`Showing ${visibleCount} of ${request.sessions.length}. Hidden sessions are still selectable by number, id prefix, or unique title text.`)}\n`);
+    }
+    this.writer.write(`${DIM('Type number/#number, session id prefix, unique title text, or /resume --last. Empty input cancels.')}\n`);
   }
 
   showEditPreview(request: EditPreviewRequest): void {
@@ -210,26 +293,22 @@ export class TerminalEventSink implements UiEventSink {
   consumePendingSelection(input: string): string | AgentRuntimeInput | null {
     const picker = this.pendingPicker;
     if (picker) {
-      const trimmed = input.trim();
-      this.pendingPicker = null;
-      if (!trimmed) {
-        this.writer.write(`${DIM('Session picker cancelled.')}\n`);
-        return '';
-      }
-      if (trimmed.startsWith('/')) return trimmed;
-
-      const numeric = trimmed.match(/^#?(\d+)$/);
-      if (numeric) {
-        const index = Number(numeric[1]) - 1;
-        const selected = picker.sessions[index];
-        if (!selected) {
-          this.writer.write(`${ERROR(`No session at index ${numeric[1]}.`)}\n`);
+      const selection = resolveTerminalSessionPickerInput(input, picker);
+      switch (selection.type) {
+        case 'cancelled':
+          this.pendingPicker = null;
+          this.writer.write(`${DIM('Session picker cancelled.')}\n`);
           return '';
-        }
-        return { type: 'select_session', sessionId: selected.id, allProjects: picker.allProjects, source: 'picker' };
+        case 'slash':
+          this.pendingPicker = null;
+          return selection.input;
+        case 'selected':
+          this.pendingPicker = null;
+          return { type: 'select_session', sessionId: selection.sessionId, allProjects: picker.allProjects, source: 'picker' };
+        case 'error':
+          this.writer.write(`${ERROR(selection.message)}\n`);
+          return '';
       }
-
-      return { type: 'select_session', sessionId: trimmed, allProjects: picker.allProjects, source: 'picker' };
     }
 
     // Dismiss pending edit preview on any input
@@ -336,7 +415,10 @@ export class TerminalInputComposer {
   }
 
   prompt(basePrompt: string): string {
-    return this.mode ? `${DIM('[multi]')} ${ACCENT('…')} ` : basePrompt;
+    if (!this.mode) return basePrompt;
+    const lineCount = Math.max(1, this.lines.length + 1);
+    const label = this.mode === 'paste' ? `paste ${lineCount}L` : `multi ${lineCount}L`;
+    return `${DIM(`[${label}]`)} ${ACCENT('…')} `;
   }
 
   receive(input: string): TerminalComposeResult {
@@ -345,7 +427,7 @@ export class TerminalInputComposer {
     if (!this.mode && ['/paste', '/multi', '/multiline'].includes(trimmed)) {
       this.mode = 'paste';
       this.lines.length = 0;
-      return { notice: DIM('Multiline input: finish with /end, cancel with /cancel.') };
+      return { notice: DIM('Multiline input: paste or type lines, finish with /end, cancel with /cancel.') };
     }
 
     if (this.mode === 'paste') {
@@ -511,6 +593,7 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
     cwd: runtime.cwd,
     onSubmit: input => handleInput(input),
     onCtrlC: () => handleSigint(),
+    onNotice: message => writer.write(`${DIM(message)}\n`),
   });
 
   const prompt = (): void => {
@@ -634,7 +717,7 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
   };
 
   try {
-    process.stdout.write(`${DIM('Ready. Stable terminal editor is enabled for CJK input, Backspace, and live revision. Use /paste for multiline, /edit for $EDITOR.')}\n`);
+    process.stdout.write(`${DIM('Ready. Stable terminal editor is enabled for CJK input, Backspace, multiline paste, and live revision. /paste and /edit are available for long input.')}\n`);
     editor.start();
     prompt();
     await new Promise<void>(resolve => {

@@ -74,6 +74,11 @@ export function getSettingsPath(): string {
   return join(getConfigHome(), 'settings.json');
 }
 
+/** Global usage counters state path. */
+export function getUsageStatePath(): string {
+  return join(getConfigHome(), 'usage.json');
+}
+
 /** 用户级 Memory 文件路径 */
 export function getUserMemoryPath(): string {
   return join(getConfigHome(), 'OPENHORSE.md');

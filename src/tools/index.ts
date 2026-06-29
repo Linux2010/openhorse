@@ -47,6 +47,10 @@ import {
   DEFAULT_SANDBOX_OPTIONS,
 } from './bash_security';
 
+const BATCH_READ_ALLOWED_TOOLS = new Set(['git_status', 'list_files', 'glob', 'grep', 'read_file']);
+const BATCH_READ_MAX_STEPS = 8;
+const BATCH_READ_STEP_OUTPUT_MAX_BYTES = 1600;
+
 // ============================================================================
 // 工具集
 // ============================================================================
@@ -94,9 +98,10 @@ export const TOOLS: OpenHorseTool[] = [
       if (!path || typeof path !== 'string') {
         return { success: false, output: '', error: 'read_file requires a path parameter' };
       }
-      return readFileSync_(path, args.maxLines as number | undefined);
+      return readFileSync_(path, args.maxLines as number | undefined, context.cwd);
     },
     isReadOnly: () => true,
+    isConcurrencySafe: () => true,
     userFacingName: (args) => `Read ${args.path as string}`,
     getSummary: (args, result) => {
       const path = args.path as string;
@@ -134,7 +139,7 @@ export const TOOLS: OpenHorseTool[] = [
       if (typeof content !== 'string') {
         return { success: false, output: '', error: 'write_file requires a content parameter' };
       }
-      return writeFileSync_(path, content);
+      return writeFileSync_(path, content, context.cwd);
     },
     isDestructive: () => true,
     checkPermissions: (args, context) => {
@@ -167,13 +172,13 @@ export const TOOLS: OpenHorseTool[] = [
       },
       required: ['path'],
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
       // Ensure path is a valid string
       const path = args.path;
       if (!path || typeof path !== 'string') {
         return { success: false, output: '', error: 'list_files requires a path parameter' };
       }
-      return listFiles_(path, args.maxDepth as number | undefined);
+      return listFiles_(path, args.maxDepth as number | undefined, context.cwd);
     },
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
@@ -218,7 +223,7 @@ export const TOOLS: OpenHorseTool[] = [
         return { success: false, output: '', error: 'exec_command requires a command parameter' };
       }
       // Issue #32 #3.2: 传递 abortSignal
-      return execCommand_(command, args.cwd as string | undefined, args.timeout as number | undefined, args.maxOutput as number | undefined, context.abortSignal);
+      return execCommand_(command, args.cwd as string | undefined, args.timeout as number | undefined, args.maxOutput as number | undefined, context.abortSignal, context.cwd);
     },
     isDestructive: (args) => {
       const cmd = (args.command as string) || '';
@@ -246,6 +251,10 @@ export const TOOLS: OpenHorseTool[] = [
       return { behavior: 'ask', reason: 'Command requires confirmation' };
     },
     isReadOnly: (args) => {
+      const cmd = (args.command as string) || '';
+      return isReadOnlyCommand(cmd);
+    },
+    isConcurrencySafe: (args) => {
       const cmd = (args.command as string) || '';
       return isReadOnlyCommand(cmd);
     },
@@ -327,7 +336,8 @@ export const TOOLS: OpenHorseTool[] = [
         new_string,
         args.replace_all as boolean | undefined,
         args.fuzzy_match as boolean | undefined,
-        args.preview as boolean | undefined
+        args.preview as boolean | undefined,
+        context.cwd
       );
     },
     isDestructive: () => true,
@@ -360,13 +370,13 @@ export const TOOLS: OpenHorseTool[] = [
       },
       required: ['pattern'],
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
       // Ensure pattern is a valid string
       const pattern = args.pattern;
       if (!pattern || typeof pattern !== 'string') {
         return { success: false, output: '', error: 'glob requires a pattern parameter' };
       }
-      return glob_(pattern, args.path as string | undefined);
+      return glob_(pattern, args.path as string | undefined, context.cwd);
     },
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
@@ -404,13 +414,13 @@ export const TOOLS: OpenHorseTool[] = [
       },
       required: ['pattern'],
     },
-    execute: async (args) => {
+    execute: async (args, context) => {
       // Ensure pattern is a valid string
       const pattern = args.pattern;
       if (!pattern || typeof pattern !== 'string') {
         return { success: false, output: '', error: 'grep requires a pattern parameter' };
       }
-      return grep_(pattern, args.path as string | undefined, args.glob as string | undefined, args.context as number | undefined);
+      return grep_(pattern, args.path as string | undefined, args.glob as string | undefined, args.context as number | undefined, context.cwd);
     },
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
@@ -420,6 +430,46 @@ export const TOOLS: OpenHorseTool[] = [
       if (!result.success) return `🔎 grep /${pattern}/ → error`;
       const count = result.output.split('\n').filter(l => l && !l.startsWith('--')).length;
       return `🔎 grep /${pattern}/ → ${count} matches`;
+    },
+  }),
+
+  buildTool({
+    name: 'batch_read',
+    description: 'Run up to 8 read-only exploration tool calls in one ordered batch. Allowed tools: git_status, list_files, glob, grep, read_file.',
+    parameters: {
+      type: 'object',
+      properties: {
+        steps: {
+          type: 'array',
+          description: 'Array of steps: [{ "tool": "read_file", "args": { "path": "package.json" } }]. Max 8 steps.',
+          items: {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', description: 'Allowed read-only tool name' },
+              args: { type: 'object', description: 'Arguments for the tool' },
+            },
+            required: ['tool', 'args'],
+          },
+          maxItems: BATCH_READ_MAX_STEPS,
+        },
+        reason: {
+          type: 'string',
+          description: 'Optional reason for this read-only batch.',
+        },
+      },
+      required: ['steps'],
+    } as any,
+    execute: async (args, context) => executeBatchRead(args, context),
+    isReadOnly: () => true,
+    isConcurrencySafe: () => true,
+    userFacingName: (args) => {
+      const count = Array.isArray(args.steps) ? args.steps.length : 0;
+      return `Batch read ${count} steps`;
+    },
+    getSummary: (args, result) => {
+      if (!result.success) return '📚 batch_read → error';
+      const count = Array.isArray(args.steps) ? args.steps.length : 0;
+      return `📚 batch_read → ${count} steps`;
     },
   }),
 
@@ -765,24 +815,60 @@ export function getRuntimeTools(): OpenHorseTool[] {
 // 工具实现
 // ============================================================================
 
-/** 安全路径解析 — 防止路径遍历攻击 */
-function safePath(input: string): string {
-  const resolved = resolve(input);
-  const cwd = process.cwd();
-  if (relative(cwd, resolved).startsWith('..')) {
-    return cwd;
+/** Normalize model/tool path strings before resolving them on disk. */
+function normalizeToolPath(input: string): string {
+  let value = input.trim();
+
+  const markdownLink = value.match(/^!?\[[^\]]*\]\(([\s\S]+)\)$/u);
+  if (markdownLink) {
+    value = markdownLink[1].trim();
+    if (value.startsWith('<')) {
+      const end = value.indexOf('>');
+      if (end >= 0) {
+        value = value.slice(1, end);
+      }
+    } else {
+      value = value.replace(/\s+["'][\s\S]*["']$/u, '');
+    }
   }
-  return resolved;
+
+  if (
+    (value.startsWith('`') && value.endsWith('`')) ||
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    value = value.slice(1, -1);
+  }
+
+  if (value.startsWith('file://')) {
+    try {
+      return decodeURIComponent(new URL(value).pathname);
+    } catch {
+      value = value.replace(/^file:\/\//u, '');
+    }
+  }
+
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
-async function readFileSync_(path: string, maxLines?: number): Promise<ToolResult> {
+/** Resolve tool path parameters relative to the current tool cwd. */
+function safePath(input: string, cwd = process.cwd()): string {
+  return resolve(cwd, normalizeToolPath(input));
+}
+
+async function readFileSync_(path: string, maxLines?: number, cwd?: string): Promise<ToolResult> {
   try {
-    const resolved = safePath(path);
+    const normalizedPath = normalizeToolPath(path);
+    const resolved = safePath(path, cwd);
     if (!existsSync(resolved)) {
-      return { success: false, output: '', error: `File not found: ${path}` };
+      return { success: false, output: '', error: `File not found: ${normalizedPath}` };
     }
     if (statSync(resolved).isDirectory()) {
-      return { success: false, output: '', error: `Path is a directory, not a file: ${path}` };
+      return { success: false, output: '', error: `Path is a directory, not a file: ${normalizedPath}` };
     }
 
     const content = readFileSync(resolved, 'utf-8');
@@ -815,23 +901,25 @@ async function readFileSync_(path: string, maxLines?: number): Promise<ToolResul
   }
 }
 
-async function writeFileSync_(path: string, content: string): Promise<ToolResult> {
+async function writeFileSync_(path: string, content: string, cwd?: string): Promise<ToolResult> {
   try {
-    const resolved = safePath(path);
+    const normalizedPath = normalizeToolPath(path);
+    const resolved = safePath(path, cwd);
     writeFileSync(resolved, content, 'utf-8');
-    return { success: true, output: `Wrote ${content.split('\n').length} lines to ${path}` };
+    return { success: true, output: `Wrote ${content.split('\n').length} lines to ${normalizedPath}` };
   } catch (err: any) {
     return { success: false, output: '', error: String(err.message) };
   }
 }
 
-async function listFiles_(path: string, maxDepth?: number): Promise<ToolResult> {
-  const resolved = safePath(path);
+async function listFiles_(path: string, maxDepth?: number, cwd?: string): Promise<ToolResult> {
+  const normalizedPath = normalizeToolPath(path);
+  const resolved = safePath(path, cwd);
   if (!existsSync(resolved)) {
-    return { success: false, output: '', error: `Path not found: ${path}` };
+    return { success: false, output: '', error: `Path not found: ${normalizedPath}` };
   }
   if (!statSync(resolved).isDirectory()) {
-    return { success: true, output: path };
+    return { success: true, output: normalizedPath };
   }
 
   const depth = maxDepth ?? 2;
@@ -870,9 +958,16 @@ async function listFiles_(path: string, maxDepth?: number): Promise<ToolResult> 
 }
 
 // Issue #32 #3.2: execCommand_ 支持 abortSignal
-async function execCommand_(command: string, cwd?: string, timeout?: number, maxOutput?: number, abortSignal?: AbortSignal): Promise<ToolResult> {
+async function execCommand_(
+  command: string,
+  cwd?: string,
+  timeout?: number,
+  maxOutput?: number,
+  abortSignal?: AbortSignal,
+  baseCwd?: string
+): Promise<ToolResult> {
   return new Promise((resolve) => {
-    const workdir = cwd ? safePath(cwd) : process.cwd();
+    const workdir = cwd ? safePath(cwd, baseCwd) : baseCwd ?? process.cwd();
     const timeoutMs = timeout ?? 30000;
     const maxBytes = maxOutput ?? 51200; // Default 50KB, Issue #28 fix
 
@@ -1185,14 +1280,23 @@ function fuzzyMatch(content: string, oldString: string): FuzzyMatchResult | null
   return null;
 }
 
-async function editFile_(path: string, old_string: string, new_string: string, replace_all?: boolean, fuzzy_match?: boolean, preview?: boolean): Promise<ToolResult> {
+async function editFile_(
+  path: string,
+  old_string: string,
+  new_string: string,
+  replace_all?: boolean,
+  fuzzy_match?: boolean,
+  preview?: boolean,
+  cwd?: string
+): Promise<ToolResult> {
   try {
-    const resolved = safePath(path);
+    const normalizedPath = normalizeToolPath(path);
+    const resolved = safePath(path, cwd);
     if (!existsSync(resolved)) {
-      return { success: false, output: '', error: `File not found: ${path}` };
+      return { success: false, output: '', error: `File not found: ${normalizedPath}` };
     }
     if (statSync(resolved).isDirectory()) {
-      return { success: false, output: '', error: `Path is a directory, not a file: ${path}` };
+      return { success: false, output: '', error: `Path is a directory, not a file: ${normalizedPath}` };
     }
 
     const content = readFileSync(resolved, 'utf-8');
@@ -1278,7 +1382,7 @@ async function editFile_(path: string, old_string: string, new_string: string, r
       writeFileSync(resolved, newContent, 'utf-8');
       return {
         success: true,
-        output: `Fuzzy edited ${path} (matched by ${fuzzyResult.strategy}, "${match.slice(0, 50)}...")`,
+        output: `Fuzzy edited ${normalizedPath} (matched by ${fuzzyResult.strategy}, "${match.slice(0, 50)}...")`,
       };
     }
 
@@ -1305,7 +1409,7 @@ async function editFile_(path: string, old_string: string, new_string: string, r
 
     return {
       success: true,
-      output: `Replaced ${count} occurrence(s) of old_string with new_string in ${path}`,
+      output: `Replaced ${count} occurrence(s) of old_string with new_string in ${normalizedPath}`,
     };
   } catch (err: any) {
     return { success: false, output: '', error: String(err.message) };
@@ -1325,14 +1429,15 @@ function escapeRegExp(str: string): string {
  * Glob 模式匹配 - 简化版实现
  * 支持: **（递归目录）、*（任意字符）、?（单个字符）
  */
-async function glob_(pattern: string, basePath?: string): Promise<ToolResult> {
+async function glob_(pattern: string, basePath?: string, cwd?: string): Promise<ToolResult> {
   try {
-    const base = basePath ? safePath(basePath) : process.cwd();
+    const normalizedBasePath = basePath ? normalizeToolPath(basePath) : cwd ?? process.cwd();
+    const base = basePath ? safePath(basePath, cwd) : cwd ?? process.cwd();
     if (!existsSync(base)) {
-      return { success: false, output: '', error: `Path not found: ${basePath}` };
+      return { success: false, output: '', error: `Path not found: ${normalizedBasePath}` };
     }
     if (!statSync(base).isDirectory()) {
-      return { success: false, output: '', error: `Path is not a directory: ${basePath}` };
+      return { success: false, output: '', error: `Path is not a directory: ${normalizedBasePath}` };
     }
 
     const results: string[] = [];
@@ -1414,11 +1519,18 @@ async function glob_(pattern: string, basePath?: string): Promise<ToolResult> {
 /**
  * Grep 搜索 - 在文件中搜索正则表达式
  */
-async function grep_(pattern: string, basePath?: string, globPattern?: string, contextLines?: number): Promise<ToolResult> {
+async function grep_(
+  pattern: string,
+  basePath?: string,
+  globPattern?: string,
+  contextLines?: number,
+  cwd?: string
+): Promise<ToolResult> {
   try {
-    const base = basePath ? safePath(basePath) : process.cwd();
+    const normalizedBasePath = basePath ? normalizeToolPath(basePath) : cwd ?? process.cwd();
+    const base = basePath ? safePath(basePath, cwd) : cwd ?? process.cwd();
     if (!existsSync(base)) {
-      return { success: false, output: '', error: `Path not found: ${basePath}` };
+      return { success: false, output: '', error: `Path not found: ${normalizedBasePath}` };
     }
 
     const regex = new RegExp(pattern);
@@ -1516,6 +1628,174 @@ async function grep_(pattern: string, basePath?: string, globPattern?: string, c
   } catch (err: any) {
     return { success: false, output: '', error: String(err.message) };
   }
+}
+
+interface BatchReadStepInput {
+  tool: string;
+  args: Record<string, unknown>;
+}
+
+interface BatchReadStepOutput {
+  index: number;
+  tool: string;
+  args?: Record<string, unknown>;
+  success: boolean;
+  summary?: string;
+  error?: string;
+  output: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseBatchReadSteps(rawSteps: unknown): { steps?: BatchReadStepInput[]; error?: string } {
+  let value = rawSteps;
+
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return { error: 'batch_read steps must be an array or a valid JSON array string' };
+    }
+  }
+
+  if (!Array.isArray(value)) {
+    return { error: 'batch_read requires steps to be an array' };
+  }
+  if (value.length === 0) {
+    return { error: 'batch_read requires at least one step' };
+  }
+  if (value.length > BATCH_READ_MAX_STEPS) {
+    return { error: `batch_read supports at most ${BATCH_READ_MAX_STEPS} steps` };
+  }
+
+  const steps: BatchReadStepInput[] = [];
+  for (let i = 0; i < value.length; i++) {
+    const step = value[i];
+    if (!isRecord(step)) {
+      return { error: `batch_read step ${i + 1} must be an object` };
+    }
+    if (typeof step.tool !== 'string' || !step.tool) {
+      return { error: `batch_read step ${i + 1} requires a tool string` };
+    }
+
+    let stepArgs = step.args;
+    if (typeof stepArgs === 'string') {
+      try {
+        stepArgs = JSON.parse(stepArgs);
+      } catch {
+        return { error: `batch_read step ${i + 1} args must be an object or valid JSON object string` };
+      }
+    }
+    if (!isRecord(stepArgs)) {
+      return { error: `batch_read step ${i + 1} requires args to be an object` };
+    }
+
+    steps.push({ tool: step.tool, args: stepArgs });
+  }
+
+  return { steps };
+}
+
+function buildBatchReadPayload(
+  success: boolean,
+  summary: string,
+  steps: BatchReadStepOutput[],
+  error?: string,
+): ToolResult {
+  const payload: Record<string, unknown> = {
+    success,
+    output: steps.map(step => `${step.index}. ${step.tool}: ${step.summary || (step.success ? 'ok' : step.error || 'error')}`).join('\n'),
+    summary,
+    steps,
+  };
+  if (error) {
+    payload.error = error;
+  }
+
+  return {
+    success,
+    output: JSON.stringify(payload, null, 2),
+    summary,
+    error,
+  };
+}
+
+async function executeBatchRead(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+  const parsed = parseBatchReadSteps(args.steps);
+  if (parsed.error || !parsed.steps) {
+    return buildBatchReadPayload(false, parsed.error || 'Invalid batch_read request', [], parsed.error);
+  }
+
+  const runtimeTools = getRuntimeTools();
+  for (let i = 0; i < parsed.steps.length; i++) {
+    const step = parsed.steps[i];
+    const tool = runtimeTools.find(t => t.name === step.tool);
+    if (!BATCH_READ_ALLOWED_TOOLS.has(step.tool)) {
+      const error = `Tool ${step.tool} is not allowed in batch_read`;
+      return buildBatchReadPayload(false, error, [{
+        index: i + 1,
+        tool: step.tool,
+        args: step.args,
+        success: false,
+        error,
+        output: '',
+      }], error);
+    }
+    if (!tool || tool.isReadOnly?.(step.args) !== true) {
+      const error = `Tool ${step.tool} is unavailable or not read-only`;
+      return buildBatchReadPayload(false, error, [{
+        index: i + 1,
+        tool: step.tool,
+        args: step.args,
+        success: false,
+        error,
+        output: '',
+      }], error);
+    }
+  }
+
+  const stepResults: BatchReadStepOutput[] = [];
+
+  for (let i = 0; i < parsed.steps.length; i++) {
+    const step = parsed.steps[i];
+    try {
+      const rawResult = await executeTool(step.tool, step.args, context.abortSignal, context);
+      const envelope = JSON.parse(rawResult) as {
+        success?: boolean;
+        output?: unknown;
+        summary?: unknown;
+        error?: unknown;
+      };
+      const output = typeof envelope.output === 'string'
+        ? envelope.output
+        : JSON.stringify(envelope.output ?? '');
+      stepResults.push({
+        index: i + 1,
+        tool: step.tool,
+        args: step.args,
+        success: envelope.success === true,
+        summary: typeof envelope.summary === 'string' ? envelope.summary : undefined,
+        error: typeof envelope.error === 'string' ? envelope.error : undefined,
+        output: truncateForContext(output, BATCH_READ_STEP_OUTPUT_MAX_BYTES),
+      });
+    } catch (err: any) {
+      stepResults.push({
+        index: i + 1,
+        tool: step.tool,
+        args: step.args,
+        success: false,
+        error: err?.message || String(err),
+        output: '',
+      });
+    }
+  }
+
+  const okCount = stepResults.filter(step => step.success).length;
+  const success = okCount === stepResults.length;
+  const summary = `batch_read completed ${okCount}/${stepResults.length} steps`;
+  return buildBatchReadPayload(success, summary, stepResults, success ? undefined : summary);
 }
 
 // ============================================================================

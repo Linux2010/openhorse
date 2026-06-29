@@ -69,6 +69,8 @@ export interface ToolSchedulerOptions {
   toolContext?: ToolContext;
   /** Abort signal */
   abortSignal?: AbortSignal;
+  /** Maximum number of concurrency-safe tools to run at once. */
+  maxParallelToolCalls?: number;
   /** Start a tracking approach for strategy tracker (returns attemptId) */
   startApproach?: (toolName: string) => string;
   /** Add tool to strategy tracker */
@@ -285,9 +287,11 @@ export async function* executeToolCalls(
     permissionMode?: string;
     toolConfirmation?: string;
     harnessBlockedResult?: ToolSchedulerOptions['harnessBlockedResult'];
+    maxParallelToolCalls?: number;
   },
 ): AsyncGenerator<ExecutedToolCall> {
   let parallelGroup: PreparedToolCall[] = [];
+  const maxParallelToolCalls = Math.max(1, options.maxParallelToolCalls ?? 6);
 
   const runParallelGroup = async (group: PreparedToolCall[]): Promise<ExecutedToolCall[]> => {
     const settled = await Promise.allSettled(
@@ -309,6 +313,14 @@ export async function* executeToolCalls(
   for (const prepared of preparedCalls) {
     if (prepared.canRunConcurrently) {
       parallelGroup.push(prepared);
+      if (parallelGroup.length >= maxParallelToolCalls) {
+        const executedGroup = await runParallelGroup(parallelGroup);
+        executedGroup.sort((a, b) => a.prepared.index - b.prepared.index);
+        for (const executed of executedGroup) {
+          yield executed;
+        }
+        parallelGroup = [];
+      }
       continue;
     }
 

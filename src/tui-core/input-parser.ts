@@ -69,6 +69,14 @@ export class TuiInputParser {
     };
   }
 
+  isPasting(): boolean {
+    return this.state.mode === 'paste';
+  }
+
+  hasPendingEscape(): boolean {
+    return this.state.pendingEscape.length > 0;
+  }
+
   feed(chunk: Buffer | string): TuiInputEvent[] {
     const { complete, incomplete } = splitCompleteUtf8(
       Buffer.concat([
@@ -125,6 +133,12 @@ export class TuiInputParser {
         continue;
       }
 
+      const incompleteEscapePrefix = readIncompleteEscapePrefix(slice);
+      if (incompleteEscapePrefix) {
+        this.state.pendingEscape = incompleteEscapePrefix;
+        break;
+      }
+
       const char = text[index];
       if (char === '\x1b') {
         if (index === text.length - 1) {
@@ -161,6 +175,13 @@ export class TuiInputParser {
 
     return coalesceTextEvents(events);
   }
+}
+
+function readIncompleteEscapePrefix(value: string): string | null {
+  if (!value.startsWith('\x1b')) return null;
+
+  const knownSequences = [PASTE_START, PASTE_END, ...Object.keys(CSI_KEYS)];
+  return knownSequences.some(sequence => sequence.startsWith(value)) ? value : null;
 }
 
 function readCsiKey(value: string): { key: TuiKey; raw: string } | null {
@@ -204,8 +225,21 @@ function coalesceTextEvents(events: TuiInputEvent[]): TuiInputEvent[] {
   return coalesced;
 }
 
-function normalizePastedText(value: string): string {
+export function normalizePastedText(value: string): string {
   return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+export function isLikelyUnbracketedMultilinePaste(value: string): boolean {
+  if (!value || value.includes('\x1b')) {
+    return false;
+  }
+
+  const normalized = normalizePastedText(value);
+  if (!normalized.includes('\n')) return false;
+
+  // Keep ordinary typed "text + Enter" behavior intact. Treat it as paste only
+  // when there is content after a newline or more than one newline in the chunk.
+  return /\n[^\n]/u.test(normalized) || (normalized.match(/\n/g)?.length ?? 0) > 1;
 }
 
 function splitCompleteUtf8(input: Buffer): { complete: Buffer; incomplete: Buffer } {

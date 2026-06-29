@@ -1,6 +1,7 @@
 import { getAutoCompact, resetAutoCompact, AutoCompact } from '../src/services/compact/auto-compact';
 import { compactMessages } from '../src/services/compact/compact';
 import { createContextHarness } from '../src/harness';
+import { resolveModelContext } from '../src/services/model-context';
 import type { Message } from '../src/services/llm';
 
 function createMessages(count: number): Message[] {
@@ -131,6 +132,34 @@ describe('AutoCompact', () => {
       autoCompact.setModel('gpt-4o'); // 128000
       // 100k is 78% of gpt-4o's 128000
       expect(autoCompact.getCtxPercent(100000)).toBe(78);
+    });
+
+    test('resolves provider-prefixed model aliases to known context windows', () => {
+      const info = resolveModelContext('bailian/qwen3.7-plus');
+
+      expect(info.source).toBe('builtin');
+      expect(info.matchedId).toBe('qwen3.7-plus');
+      expect(info.contextWindow).toBe(131072);
+    });
+
+    test('predictive compact triggers before the hard threshold', async () => {
+      const onCompact = jest.fn();
+      const autoCompact = getAutoCompact({
+        modelId: 'test-model',
+        maxMessages: 3,
+        predictiveCompactThreshold: 0.88,
+        threshold: 0.95,
+        onCompact,
+      });
+
+      const msgs = createMessages(30);
+      const result = await autoCompact.checkPredictiveAndCompact(msgs, 114000);
+
+      expect(result.length).toBeLessThan(msgs.length);
+      expect(onCompact).toHaveBeenCalledWith(expect.objectContaining({
+        mode: 'predictive',
+      }));
+      expect(autoCompact.getStats().preCompactArmed).toBe(true);
     });
 
     test('passes configured LLM to compact summary generation', async () => {

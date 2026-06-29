@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { AgentRuntimeController, type AgentRuntimeRunner } from '../src/runtime/agent-runtime-controller';
@@ -15,6 +15,9 @@ import {
   type UiEventSink,
 } from '../src/runtime/ui-events';
 import { appendSessionMessage, createSession, type SessionMeta } from '../src/services/session-storage';
+import { Store } from '../src/framework/store';
+import { TOOLS } from '../src/tools';
+import { loadConfig } from '../src/services/config';
 
 function createRuntime(overrides: Partial<OpenHorseUiRuntime> = {}): OpenHorseUiRuntime {
   return {
@@ -233,6 +236,32 @@ describe('AgentRuntimeController', () => {
     expect(processing).toEqual([true, false]);
     expect(runtime.store.setProcessing).toHaveBeenCalledWith(true);
     expect(runtime.store.setProcessing).toHaveBeenCalledWith(false);
+  });
+
+  it('keeps the runtime alive when a runner throws', async () => {
+    const runtime = createRuntime();
+    const { events, appended, statuses, processing } = createEvents();
+    const runner: AgentRuntimeRunner = {
+      runInput: jest.fn(async () => {
+        throw new Error('Xunfei request failed with Sid: sid code: 11210, msg: NotEnoughCvError');
+      }),
+    };
+    const controller = new AgentRuntimeController({
+      runtime,
+      events,
+      runner,
+      readyStatus: 'ready',
+    });
+
+    expect(controller.submit('hello')).toEqual({ type: 'started' });
+    await expect(controller.waitForIdle()).resolves.toBeUndefined();
+
+    expect(appended).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'error', content: expect.stringContaining('NotEnoughCvError') }),
+    ]));
+    expect(processing).toEqual([true, false]);
+    expect(statuses).toContain('ready');
+    expect(controller.hasActiveTurn()).toBe(false);
   });
 
   it('aborts an active turn and restarts only the latest revision', async () => {
@@ -459,6 +488,127 @@ describe('AgentRuntimeController', () => {
       'processing_changed',
       'processing_changed',
     ]);
+  });
+
+  it('renders provider request failures without throwing from chat runtime', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      const config = loadConfig({
+        apiKey: 'test-key',
+        model: 'xopglm51',
+      });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'xopglm51',
+      });
+      const llm = {
+        getModel: jest.fn(() => 'xopglm51'),
+        chatStream: jest.fn(async () => {
+          throw new Error('Xunfei request failed with Sid: cht000d6760 code: 11210, msg: NotEnoughCvError');
+        }),
+      };
+      let session: SessionMeta | null = null;
+      const runtime = createRuntime({
+        cwd: projectDir,
+        config,
+        store,
+        llm: llm as any,
+        isConfigured: true,
+        ensureSession: jest.fn(() => {
+          session ??= createSession(projectDir, 'xopglm51');
+          return session;
+        }),
+        getSession: jest.fn(() => session),
+        setSession: jest.fn(nextSession => {
+          session = nextSession;
+        }),
+      });
+      const { events, appended, statuses } = createEvents();
+      const controller = new AgentChatController(runtime, events);
+
+      await expect(controller.runInput('hello')).resolves.toBeUndefined();
+
+      expect(llm.chatStream).toHaveBeenCalledTimes(1);
+      expect(appended).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          role: 'error',
+          content: expect.stringContaining('Provider quota or credit appears insufficient'),
+        }),
+      ]));
+      expect(statuses).toContain('Turn failed. Ready for the next input.');
+    });
+  });
+
+  it('emits intentful statuses for model thinking and batched tool phases', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      writeFileSync(join(projectDir, 'a.txt'), 'alpha', 'utf-8');
+      writeFileSync(join(projectDir, 'b.txt'), 'bravo', 'utf-8');
+
+      const config = loadConfig({
+        apiKey: 'test-key',
+        model: 'test-model',
+      });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'test-model',
+      });
+      const toolCalls = [
+        {
+          id: 'call-a',
+          type: 'function' as const,
+          function: { name: 'read_file', arguments: JSON.stringify({ path: 'a.txt' }) },
+        },
+        {
+          id: 'call-b',
+          type: 'function' as const,
+          function: { name: 'read_file', arguments: JSON.stringify({ path: 'b.txt' }) },
+        },
+      ];
+      const llm = {
+        getModel: jest.fn(() => 'test-model'),
+        chatStream: jest.fn()
+          .mockResolvedValueOnce({
+            content: '',
+            model: 'test-model',
+            toolCalls,
+            usage: { promptTokens: 10, completionTokens: 1 },
+          })
+          .mockResolvedValueOnce({
+            content: 'done',
+            model: 'test-model',
+            usage: { promptTokens: 12, completionTokens: 2 },
+          }),
+      };
+      let session: SessionMeta | null = null;
+      const runtime = createRuntime({
+        cwd: projectDir,
+        config,
+        store,
+        llm: llm as any,
+        isConfigured: true,
+        ensureSession: jest.fn(() => {
+          session ??= createSession(projectDir, 'test-model');
+          return session;
+        }),
+        getSession: jest.fn(() => session),
+        setSession: jest.fn(nextSession => {
+          session = nextSession;
+        }),
+      });
+      const { events, statuses } = createEvents();
+      const controller = new AgentChatController(runtime, events);
+
+      await expect(controller.runInput('read both files')).resolves.toBeUndefined();
+
+      expect(statuses).toEqual(expect.arrayContaining([
+        'Thinking...',
+        'Running 2 tools...',
+        'Reading tool results...',
+      ]));
+      expect(llm.chatStream).toHaveBeenCalledTimes(2);
+    });
   });
 
   it('bridges structured runtime events to the legacy UI event sink contract', () => {

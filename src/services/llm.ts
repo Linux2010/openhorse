@@ -40,6 +40,8 @@ export interface RetryConfig {
   baseDelayMs: number;
   /** 最大延迟 ms */
   maxDelayMs?: number;
+  /** Abort retries and retry backoff when the current turn is interrupted */
+  abortSignal?: AbortSignal;
   /** 重试回调 */
   onRetry?: (attempt: number, error: Error, delayMs: number) => void;
 }
@@ -153,7 +155,11 @@ function isRetryableError(error: unknown): boolean {
 
   if (error instanceof Error) {
     const msg = error.message.toLowerCase();
-    return msg.includes('timeout') || msg.includes('connection') || msg.includes('econnreset') || msg.includes('epipe');
+    return msg.includes('timeout')
+      || msg.includes('connection')
+      || msg.includes('econnreset')
+      || msg.includes('epipe')
+      || isProviderBusyMessage(msg);
   }
 
   return false;
@@ -162,6 +168,20 @@ function isRetryableError(error: unknown): boolean {
 /** 判断是否为 529 错误 */
 function is529Error(error: unknown): boolean {
   return error instanceof OpenAI.APIError && error.status === 529;
+}
+
+function isProviderBusyMessage(message: string): boolean {
+  const msg = message.toLowerCase();
+  return msg.includes('code: 10012')
+    || msg.includes('engineinternalerror')
+    || msg.includes('system is busy')
+    || msg.includes('service is busy')
+    || msg.includes('server is busy')
+    || msg.includes('try again later');
+}
+
+function isProviderBusyError(error: unknown): boolean {
+  return error instanceof Error && isProviderBusyMessage(error.message);
 }
 
 function createAbortError(): Error {
@@ -206,8 +226,27 @@ function exponentialBackoff(attempt: number, baseDelayMs: number, maxDelayMs?: n
 }
 
 /** Sleep 函数 */
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function sleep(ms: number, abortSignal?: AbortSignal): Promise<void> {
+  if (!abortSignal) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  return new Promise((resolve, reject) => {
+    if (abortSignal.aborted) {
+      reject(createAbortError());
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      abortSignal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timeout);
+      reject(createAbortError());
+    };
+    abortSignal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 /** 带重试的操作 */
@@ -219,6 +258,7 @@ async function withRetry<T>(
 
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt++) {
     try {
+      throwIfAborted(config.abortSignal);
       return await operation();
     } catch (error: unknown) {
       lastError = error instanceof Error ? error : new Error(String(error));
@@ -240,7 +280,7 @@ async function withRetry<T>(
 
       config.onRetry?.(attempt, lastError, delayMs);
 
-      await sleep(delayMs);
+      await sleep(delayMs, config.abortSignal);
     }
   }
 
@@ -373,9 +413,10 @@ export class LLMService {
       maxRetries: this.config.maxRetries,
       baseDelayMs: this.config.retryBaseDelay,
       maxDelayMs: 10000,
+      abortSignal: options?.abortSignal,
       onRetry: (_attempt, error, _delayMs) => {
-        // 529 错误计数
-        if (is529Error(error)) {
+        // Provider overload/busy errors can often recover by retrying or using fallback.
+        if (is529Error(error) || isProviderBusyError(error)) {
           this.consecutive529Errors++;
           if (this.consecutive529Errors >= MAX_529_RETRIES && this.config.fallbackModel) {
             this.triggerFallback();
@@ -437,24 +478,21 @@ export class LLMService {
             onChunk?.(text);
           }
 
-          // Handle tool_calls from delta (OpenAI standard streaming format)
-          // Note: Some APIs (like DashScope) send id AND arguments in the same chunk
-          const tc = delta?.tool_calls?.[0];
-          if (tc) {
+          // Handle tool_calls from delta (OpenAI standard streaming format).
+          // A single stream chunk may contain multiple tool call deltas.
+          for (const tc of delta?.tool_calls ?? []) {
             const idx = tc.index ?? 0;
-            // Create or update entry
-            if (tc.id) {
+            const existing = toolCallsMap.get(idx);
+            if (!existing) {
               toolCallsMap.set(idx, {
-                id: tc.id,
+                id: tc.id ?? `call_${idx}`,
                 type: 'function',
                 function: { name: tc.function?.name ?? '', arguments: tc.function?.arguments ?? '' },
               });
-            } else if (tc.function?.arguments) {
-              // Arguments chunk (no id, just adding arguments)
-              const entry = toolCallsMap.get(idx);
-              if (entry) {
-                entry.function.arguments += tc.function.arguments;
-              }
+            } else {
+              if (tc.id) existing.id = tc.id;
+              if (tc.function?.name) existing.function.name = tc.function.name;
+              if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
             }
           }
 
@@ -487,7 +525,9 @@ export class LLMService {
           }
         }
 
-        const toolCalls = Array.from(toolCallsMap.values());
+        const toolCalls = Array.from(toolCallsMap.entries())
+          .sort(([a], [b]) => Number(a) - Number(b))
+          .map(([, value]) => value);
 
         for (const tc of toolCalls) {
           if (!tc.function.arguments || tc.function.arguments.trim() === '') {

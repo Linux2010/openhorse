@@ -86,11 +86,6 @@ export interface GlobalConfig {
   /** Terminal UI configuration. */
   ui?: UIConfig;
 
-  // ---- 内部统计 (自动生成，不由用户配置) ----
-  totalSessions: number;
-  totalTokens: number;
-  totalCost: number;
-
   // ---- 内部标识 ----
   userId?: string;
   firstStartTime?: string;
@@ -106,13 +101,22 @@ export interface GlobalConfig {
 const DEFAULT_CONFIG: GlobalConfig = {
   defaultModel: 'gpt-4o',
   toolConfirmation: 'allow',
-  totalSessions: 0,
-  totalTokens: 0,
-  totalCost: 0,
 };
 
-function sanitizeGlobalConfig(config: GlobalConfig): GlobalConfig {
-  const { ui, ...rest } = config;
+interface LegacyUsageFields {
+  totalSessions?: unknown;
+  totalTokens?: unknown;
+  totalCost?: unknown;
+}
+
+function sanitizeGlobalConfig(config: GlobalConfig & LegacyUsageFields): GlobalConfig {
+  const {
+    ui,
+    totalSessions: _totalSessions,
+    totalTokens: _totalTokens,
+    totalCost: _totalCost,
+    ...rest
+  } = config;
   const sanitized: GlobalConfig = { ...rest };
 
   // UI renderer is a runtime choice, not persisted global configuration.
@@ -151,7 +155,7 @@ export function loadGlobalConfig(): GlobalConfig {
 /**
  * 保存全局配置
  */
-export function saveGlobalConfig(config: GlobalConfig): void {
+export function saveGlobalConfig(config: GlobalConfig & LegacyUsageFields): void {
   ensureConfigDir();
   const path = getGlobalConfigPath();
   writeFileSync(path, JSON.stringify(sanitizeGlobalConfig(config), null, 2), { mode: 0o600 });
@@ -208,22 +212,7 @@ export function recordFirstStartTime(): void {
   }
 }
 
-// ============================================================================
-// 统计更新
-// ============================================================================
-
-export function incrementSessionCount(): void {
-  const config = loadGlobalConfig();
-  updateGlobalConfig({ totalSessions: config.totalSessions + 1 });
-}
-
-export function updateTokenStats(tokens: number, cost: number): void {
-  const config = loadGlobalConfig();
-  updateGlobalConfig({
-    totalTokens: config.totalTokens + tokens,
-    totalCost: config.totalCost + cost,
-  });
-}
+export { incrementSessionCount, updateTokenStats } from './usage-state';
 
 // ============================================================================
 // 输入历史

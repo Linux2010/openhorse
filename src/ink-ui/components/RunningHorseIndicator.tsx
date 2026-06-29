@@ -1,6 +1,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import stringWidth from 'string-width';
+import { isLegacyTurnStatus } from '../../runtime/agent-status';
 
 const HORSE_FRAMES = [
   { horse: '╭◔╮▰╱╲', dust: '·  ' },
@@ -38,7 +39,7 @@ function truncateVisual(text: string, maxWidth: number): string {
 
 export function runningHorseLabel(statusMessage?: string): string {
   const trimmed = statusMessage?.trim() ?? '';
-  if (!trimmed || /^Turn\s+\d+\.\.\.$/.test(trimmed)) return 'working';
+  if (!trimmed || isLegacyTurnStatus(trimmed)) return 'working';
   return trimmed;
 }
 
