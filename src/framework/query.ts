@@ -19,6 +19,7 @@ import { createStrategyTracker, type StrategyTracker, type StrategyResult } from
 import { getAutoCompact } from '../services/compact/auto-compact';
 import type { ContextHarness } from '../harness';
 import { prepareToolCalls, executeToolCalls, type PreparedToolCall, type ExecutedToolCall } from './tool-scheduler';
+import { estimateMessagesTokens } from '../utils/token-estimate';
 
 function isAborted(signal?: AbortSignal): boolean {
   return signal?.aborted === true;
@@ -30,6 +31,53 @@ function cancelledEvent(llm: LLMService): QueryEvent {
     content: 'Operation cancelled.',
     model: llm.getModel(),
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseRecord(raw: unknown): Record<string, unknown> | undefined {
+  if (isRecord(raw)) return raw;
+  if (typeof raw !== 'string') return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+interface BatchReadEvidenceStep {
+  tool: string;
+  args: Record<string, unknown>;
+  success: boolean;
+  summary?: string;
+  error?: string;
+  output: string;
+}
+
+function parseBatchReadEvidenceSteps(result: string): BatchReadEvidenceStep[] {
+  const envelope = parseRecord(result);
+  const inner = parseRecord(envelope?.output);
+  const steps = inner?.steps;
+  if (!Array.isArray(steps)) return [];
+
+  return steps.flatMap(step => {
+    if (!isRecord(step) || typeof step.tool !== 'string') return [];
+    const args = isRecord(step.args) ? step.args : {};
+    const output = typeof step.output === 'string'
+      ? step.output
+      : JSON.stringify(step.output ?? '');
+    return [{
+      tool: step.tool,
+      args,
+      success: step.success === true,
+      summary: typeof step.summary === 'string' ? step.summary : undefined,
+      error: typeof step.error === 'string' ? step.error : undefined,
+      output,
+    }];
+  });
 }
 
 // ============================================================================
@@ -100,6 +148,8 @@ export interface QueryParams {
   harness?: ContextHarness;
   /** Current user input, used by Context Harness for evidence ranking */
   input?: string;
+  /** Maximum number of concurrency-safe tools to execute at once (default 6). */
+  maxParallelToolCalls?: number;
 }
 
 // ============================================================================
@@ -134,6 +184,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     strategyTracker = createStrategyTracker({ maxAttempts: 5 }),  // 增加到 5 次
     harness,
     input,
+    maxParallelToolCalls = 6,
   } = params;
 
   const openaiTools = toOpenAITools(tools) as unknown as Tool[];
@@ -162,11 +213,33 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       return;
     }
 
+    const autoCompact = getAutoCompact({
+      modelId: llm.getModel(),
+      getContextCapsule: harness ? () => harness.getCapsule() : undefined,
+      getHarnessState: harness ? () => harness.toJSON() : undefined,
+      llm,
+    });
+
     // Stream the LLM response. Harness context is injected into a cloned
     // request payload so the durable conversation history stays clean.
-    const requestMessages = harness
+    let requestMessages = harness
       ? harness.assembleMessages(messages, { input, tools: tools.map(tool => ({ name: tool.name, description: tool.description })) })
       : messages;
+    const predictedTokens = estimateMessagesTokens(requestMessages);
+    const preCompacted = await autoCompact.checkPredictiveAndCompact(messages, predictedTokens);
+    if (preCompacted !== messages) {
+      messages.length = 0;
+      messages.push(...preCompacted);
+      requestMessages = harness
+        ? harness.assembleMessages(messages, { input, tools: tools.map(tool => ({ name: tool.name, description: tool.description })) })
+        : messages;
+    }
+
+    if (isAborted(abortSignal)) {
+      yield cancelledEvent(llm);
+      return;
+    }
+
     const response = await llm.chatStream(requestMessages, streamCallbacks, openaiTools, { abortSignal });
 
     if (isAborted(abortSignal)) {
@@ -227,6 +300,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         permissionMode: params.permissionMode,
         toolConfirmation: params.toolConfirmation,
         harnessBlockedResult: harness ? (drift) => harness.asToolBlockedResult(drift) : undefined,
+        maxParallelToolCalls,
       })) {
         if (isAborted(abortSignal)) {
           yield cancelledEvent(llm);
@@ -246,6 +320,24 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           error: executed.error,
           summary: executed.summary,
         });
+        if (harness && tc.function.name === 'batch_read') {
+          for (const step of parseBatchReadEvidenceSteps(executed.result)) {
+            harness.recordToolResult({
+              name: step.tool,
+              args: step.args,
+              result: JSON.stringify({
+                success: step.success,
+                output: step.output,
+                summary: step.summary,
+                error: step.error,
+              }),
+              duration: executed.duration,
+              success: step.success,
+              error: step.error,
+              summary: step.summary,
+            });
+          }
+        }
 
         yield {
           type: 'tool_result',
@@ -309,14 +401,14 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
     // Auto-compact at 95% context usage (token-based)
     const totalTokens = response.usage?.promptTokens ?? 0;
-    const autoCompact = getAutoCompact({
+    autoCompact.configure({
       modelId: response.model || llm.getModel(),
       getContextCapsule: harness ? () => harness.getCapsule() : undefined,
       getHarnessState: harness ? () => harness.toJSON() : undefined,
       llm,
     });
     const compacted = await autoCompact.checkAndCompact(messages, totalTokens);
-    if (compacted.length < messages.length) {
+    if (compacted !== messages) {
       messages.length = 0;
       messages.push(...compacted);
     }

@@ -68,6 +68,30 @@ describe('tui-ui runner', () => {
     expect(runner.getLastFrame()?.cursor).toEqual({ row: 7, column: 4, visible: true });
   });
 
+  it('keeps unbracketed multiline paste as one prompt value instead of submitting per line', () => {
+    const { output } = createOutput();
+    const submitted: string[] = [];
+    const runner = new TuiRunner({
+      output,
+      width: 52,
+      height: 10,
+      onSubmit: input => {
+        submitted.push(input);
+      },
+    });
+
+    expect(runner.feedInput(Buffer.from('one\ntwo\nthree'))).toEqual([
+      { type: 'paste', value: 'one\ntwo\nthree' },
+    ]);
+
+    expect(submitted).toEqual([]);
+    expect(runner.getState().prompt.value).toBe('one\ntwo\nthree');
+
+    runner.feedInput(Buffer.from('\r'));
+
+    expect(submitted).toEqual(['one\ntwo\nthree']);
+  });
+
   it('routes UI event sink updates through the same frame instead of stdout side channels', () => {
     const { output } = createOutput();
     const runner = new TuiRunner({ output, width: 50, height: 10 });

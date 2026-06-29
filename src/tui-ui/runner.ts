@@ -1,5 +1,11 @@
 import { renderFrameRows, type TuiFrame } from '../tui-core/frame';
-import { TuiInputParser, type TuiInputEvent, type TuiKey } from '../tui-core/input-parser';
+import {
+  isLikelyUnbracketedMultilinePaste,
+  normalizePastedText,
+  TuiInputParser,
+  type TuiInputEvent,
+  type TuiKey,
+} from '../tui-core/input-parser';
 import { TuiTerminalWriter, type TuiTerminalRenderResult } from '../tui-core/terminal-writer';
 import type { UiEventSink } from '../runtime/ui-events';
 import { getCommands } from '../commands';
@@ -70,6 +76,13 @@ export class TuiRunner {
   }
 
   feedInput(chunk: Buffer | string): TuiInputEvent[] {
+    const raw = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk;
+    if (isLikelyUnbracketedMultilinePaste(raw)) {
+      const event: TuiInputEvent = { type: 'paste', value: normalizePastedText(raw) };
+      this.applyInputEvent(event);
+      return [event];
+    }
+
     const events = this.parser.feed(chunk);
     for (const event of events) {
       this.applyInputEvent(event);

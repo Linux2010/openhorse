@@ -25,6 +25,7 @@ import { buildReferencedFilesPrompt } from '../services/file-context';
 import { refreshProjectInstructions } from '../services/prompt-context';
 import type { OpenHorseUiRuntime, TranscriptEntry, UiEventSink, UiRendererCapabilities } from './ui-events';
 import { resolveUiRendererCapabilities } from './ui-events';
+import { agentStepStatus, runningToolsStatus } from './agent-status';
 
 const ANSI_PATTERN = /\x1b\[[0-9;?]*[A-Za-z]/g;
 
@@ -38,6 +39,18 @@ function isAbortError(error: unknown, abortSignal?: AbortSignal): boolean {
     return error.name === 'AbortError' || error.message.toLowerCase().includes('aborted');
   }
   return false;
+}
+
+function formatChatError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/NotEnoughCvError|code:\s*11210/i.test(message)) {
+    return [
+      message,
+      '',
+      'Provider quota or credit appears insufficient. The OpenHorse session is still active; switch model/provider or recharge the provider account, then continue.',
+    ].join('\n');
+  }
+  return message;
 }
 
 function compactToolArgs(args: Record<string, unknown>): string {
@@ -598,11 +611,14 @@ export class AgentChatController {
         switch (event.type) {
           case 'request_start':
             assistantStream.discardSegment();
-            this.events.setStatus(`Turn ${event.turn}...`);
+            this.events.setStatus(agentStepStatus(event.turn));
             break;
           case 'assistant_tool_calls':
             assistantStream.ensureMessage(event.content || '');
             assistantStream.closeSegment();
+            if (event.toolCalls.length > 1) {
+              this.events.setStatus(runningToolsStatus(event.toolCalls.length));
+            }
             sessionMessagesToRecord.push({
               role: 'assistant',
               content: event.content || '',
@@ -699,8 +715,9 @@ export class AgentChatController {
         return;
       }
 
-      const message = error instanceof Error ? error.message : String(error);
-      this.events.append({ role: 'error', content: message });
+      assistantStream.discardSegment();
+      this.events.append({ role: 'error', content: formatChatError(error) });
+      this.events.setStatus('Turn failed. Ready for the next input.');
       const history = this.runtime.store.getSnapshot().conversationHistory;
       if (history.length > 0) {
         this.runtime.store.setState({ conversationHistory: history.slice(0, -1) });

@@ -18,6 +18,11 @@ export interface ModelContextInfo {
   discovered?: boolean; // true = 来自 /models 端点
 }
 
+export interface ModelContextResolution extends ModelContextInfo {
+  source: 'discovered' | 'builtin' | 'fuzzy' | 'default';
+  matchedId: string;
+}
+
 // ============================================================================
 // 内置数据库（兜底）
 // ============================================================================
@@ -25,11 +30,22 @@ export interface ModelContextInfo {
 export const BUILTIN_MODELS: Record<string, ModelContextInfo> = {
   // DashScope (coding + standard)
   'glm-5': { id: 'glm-5', label: 'GLM-5', contextWindow: 202752, maxOutputTokens: 8192, provider: 'glm' },
+  'glm-4.7': { id: 'glm-4.7', label: 'GLM-4.7', contextWindow: 131072, maxOutputTokens: 8192, provider: 'glm' },
   'glm-4': { id: 'glm-4', label: 'GLM-4', contextWindow: 131072, maxOutputTokens: 4096, provider: 'glm' },
+  'qwen3.7-plus': { id: 'qwen3.7-plus', label: 'Qwen 3.7 Plus', contextWindow: 131072, maxOutputTokens: 8192, provider: 'qwen' },
+  'qwen3.6-plus': { id: 'qwen3.6-plus', label: 'Qwen 3.6 Plus', contextWindow: 131072, maxOutputTokens: 8192, provider: 'qwen' },
+  'qwen3.5-plus': { id: 'qwen3.5-plus', label: 'Qwen 3.5 Plus', contextWindow: 131072, maxOutputTokens: 8192, provider: 'qwen' },
+  'qwen3-max-2026-01-23': { id: 'qwen3-max-2026-01-23', label: 'Qwen 3 Max', contextWindow: 131072, maxOutputTokens: 8192, provider: 'qwen' },
+  'qwen3-coder-plus': { id: 'qwen3-coder-plus', label: 'Qwen 3 Coder Plus', contextWindow: 131072, maxOutputTokens: 8192, provider: 'qwen' },
+  'qwen3-coder-next': { id: 'qwen3-coder-next', label: 'Qwen 3 Coder Next', contextWindow: 131072, maxOutputTokens: 8192, provider: 'qwen' },
   'qwen-turbo': { id: 'qwen-turbo', label: 'Qwen Turbo', contextWindow: 131072, maxOutputTokens: 8192, provider: 'qwen' },
   'qwen-plus': { id: 'qwen-plus', label: 'Qwen Plus', contextWindow: 131072, maxOutputTokens: 8192, provider: 'qwen' },
   'qwen-max': { id: 'qwen-max', label: 'Qwen Max', contextWindow: 32768, maxOutputTokens: 8192, provider: 'qwen' },
   'qwen-long': { id: 'qwen-long', label: 'Qwen Long', contextWindow: 1000000, maxOutputTokens: 8192, provider: 'qwen' },
+  'kimi-k2.5': { id: 'kimi-k2.5', label: 'Kimi K2.5', contextWindow: 131072, maxOutputTokens: 8192, provider: 'moonshot' },
+  'minimax-m2.5': { id: 'minimax-m2.5', label: 'MiniMax M2.5', contextWindow: 131072, maxOutputTokens: 8192, provider: 'minimax' },
+  'xopglm51': { id: 'xopglm51', label: 'XOP GLM 5.1', contextWindow: 204800, maxOutputTokens: 16384, provider: 'astroncodingplan' },
+  'astron-code-latest': { id: 'astron-code-latest', label: 'Astron Code Latest', contextWindow: 92160, maxOutputTokens: 32768, provider: 'astroncodingplan' },
 
   // OpenAI
   'gpt-4o': { id: 'gpt-4o', label: 'GPT-4o', contextWindow: 128000, maxOutputTokens: 16384, provider: 'openai' },
@@ -57,6 +73,18 @@ export const AUTO_COMPACT_THRESHOLD = 0.95;
 
 /** 运行时发现的模型上下文窗口 */
 const discoveredModels: Map<string, ModelContextInfo> = new Map();
+
+export function normalizeModelId(modelId: string): string {
+  return modelId.trim().toLowerCase().replace(/^.*\//, '');
+}
+
+function registerDiscoveredModel(info: ModelContextInfo): void {
+  discoveredModels.set(info.id, info);
+  const normalized = normalizeModelId(info.id);
+  if (normalized && normalized !== info.id) {
+    discoveredModels.set(normalized, { ...info, id: normalized, label: info.label || normalized });
+  }
+}
 
 /**
  * 尝试从 API 端点动态发现模型上下文
@@ -91,7 +119,7 @@ export async function discoverModelContexts(
           contextWindow: Number(contextWindow),
           discovered: true,
         };
-        discoveredModels.set(id, info);
+        registerDiscoveredModel(info);
         models.push(info);
       }
     }
@@ -103,35 +131,55 @@ export async function discoverModelContexts(
 }
 
 /**
- * 获取模型上下文窗口
- * 优先级：动态发现 > 内置数据库 > 默认值
+ * 解析模型上下文窗口
+ * 优先级：动态发现 > 内置数据库 > 模糊/别名匹配 > 默认值
  */
-export function getModelContextWindow(modelId: string): number {
+export function resolveModelContext(modelId: string): ModelContextResolution {
+  const normalized = normalizeModelId(modelId);
+
   // 1. 动态发现的模型
-  const discovered = discoveredModels.get(modelId);
-  if (discovered) return discovered.contextWindow;
+  const discovered = discoveredModels.get(modelId) ?? discoveredModels.get(normalized);
+  if (discovered) {
+    return { ...discovered, source: 'discovered', matchedId: discovered.id };
+  }
 
   // 2. 内置数据库
-  const builtin = BUILTIN_MODELS[modelId];
-  if (builtin) return builtin.contextWindow;
+  const builtin = BUILTIN_MODELS[modelId] ?? BUILTIN_MODELS[normalized];
+  if (builtin) {
+    return { ...builtin, source: 'builtin', matchedId: builtin.id };
+  }
 
   // 3. 模糊匹配
-  const normalized = modelId.toLowerCase();
   for (const [id, model] of Object.entries(BUILTIN_MODELS)) {
     if (normalized.includes(id) || id.includes(normalized.split(':')[0])) {
-      return model.contextWindow;
+      return { ...model, source: 'fuzzy', matchedId: id };
     }
   }
 
   // 4. 默认值
-  return DEFAULT_CONTEXT_WINDOW;
+  return {
+    id: modelId,
+    label: modelId || 'unknown',
+    contextWindow: DEFAULT_CONTEXT_WINDOW,
+    maxOutputTokens: 8192,
+    source: 'default',
+    matchedId: 'default',
+  };
+}
+
+/**
+ * 获取模型上下文窗口
+ */
+export function getModelContextWindow(modelId: string): number {
+  return resolveModelContext(modelId).contextWindow;
 }
 
 /**
  * 获取模型信息
  */
 export function getModelInfo(modelId: string): ModelContextInfo | null {
-  return discoveredModels.get(modelId) || BUILTIN_MODELS[modelId] || null;
+  const resolved = resolveModelContext(modelId);
+  return resolved.source === 'default' ? null : resolved;
 }
 
 /**

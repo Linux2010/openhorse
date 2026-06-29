@@ -169,6 +169,36 @@ describe('executeToolCalls', () => {
     expect(executionOrder).toHaveLength(3);
   });
 
+  test('limits concurrent-safe tools to maxParallelToolCalls batches', async () => {
+    let active = 0;
+    let maxActive = 0;
+
+    const prepared = prepareToolCalls({
+      toolCalls: toolCalls(['read_file', 'read_file', 'read_file', 'read_file']),
+      tools,
+      toolExecutor: async () => '',
+      toolContext,
+    });
+
+    const results: any[] = [];
+    for await (const executed of executeToolCalls(prepared, {
+      maxParallelToolCalls: 2,
+      toolExecutor: async () => {
+        active++;
+        maxActive = Math.max(maxActive, active);
+        await new Promise(resolve => setTimeout(resolve, 10));
+        active--;
+        return JSON.stringify({ success: true, output: 'ok' });
+      },
+    })) {
+      results.push(executed);
+    }
+
+    expect(results).toHaveLength(4);
+    expect(maxActive).toBe(2);
+    expect(results.map(result => result.prepared.index)).toEqual([0, 1, 2, 3]);
+  });
+
   test('executes serial tools one at a time', async () => {
     const executionOrder: string[] = [];
 

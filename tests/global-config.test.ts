@@ -11,6 +11,7 @@ import {
   type GlobalConfig,
   type ProjectConfig,
 } from '../src/services/global-config';
+import { loadUsageState } from '../src/services/usage-state';
 import { existsSync, rmSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -48,9 +49,6 @@ describe('global-config', () => {
       expect(config.defaultModel).toBe('gpt-4o');
       expect(config.toolConfirmation).toBe('allow');
       expect(config.ui).toBeUndefined();
-      expect(config.totalSessions).toBe(0);
-      expect(config.totalTokens).toBe(0);
-      expect(config.totalCost).toBe(0);
     });
 
     test('loads existing config file', () => {
@@ -117,23 +115,39 @@ describe('global-config', () => {
       expect(parsed.ui.renderer).toBeUndefined();
       expect(loadGlobalConfig().ui).toEqual({ confirmations: 'interactive' });
     });
+
+    test('does not persist legacy usage counters in openhorse.json', () => {
+      saveGlobalConfig({
+        ...loadGlobalConfig(),
+        totalSessions: 7,
+        totalTokens: 1000,
+        totalCost: 0.25,
+      });
+
+      const path = join(testDir, 'openhorse.json');
+      const parsed = JSON.parse(readFileSync(path, 'utf-8'));
+
+      expect(parsed.totalSessions).toBeUndefined();
+      expect(parsed.totalTokens).toBeUndefined();
+      expect(parsed.totalCost).toBeUndefined();
+    });
   });
 
   describe('updateGlobalConfig', () => {
     test('updates specific fields', () => {
-      updateGlobalConfig({ totalSessions: 5 });
+      updateGlobalConfig({ defaultModel: 'glm-5' });
 
       const config = loadGlobalConfig();
-      expect(config.totalSessions).toBe(5);
+      expect(config.defaultModel).toBe('glm-5');
     });
 
     test('preserves existing fields', () => {
-      updateGlobalConfig({ totalSessions: 10 });
-      updateGlobalConfig({ totalCost: 0.5 });
+      updateGlobalConfig({ defaultModel: 'glm-5' });
+      updateGlobalConfig({ fallbackModel: 'qwen-plus' });
 
       const config = loadGlobalConfig();
-      expect(config.totalSessions).toBe(10);
-      expect(config.totalCost).toBe(0.5);
+      expect(config.defaultModel).toBe('glm-5');
+      expect(config.fallbackModel).toBe('qwen-plus');
     });
   });
 
@@ -190,18 +204,43 @@ describe('global-config', () => {
   });
 
   describe('stats updates', () => {
+    test('migrates legacy config counters to usage state', () => {
+      const configPath = join(testDir, 'openhorse.json');
+      const usagePath = join(testDir, 'usage.json');
+      if (existsSync(usagePath)) {
+        rmSync(usagePath);
+      }
+
+      writeFileSync(configPath, JSON.stringify({
+        defaultModel: 'gpt-4o',
+        totalSessions: 12,
+        totalTokens: 3456,
+        totalCost: 0.78,
+      }, null, 2));
+
+      const usage = loadUsageState();
+      const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+
+      expect(usage.totalSessions).toBe(12);
+      expect(usage.totalTokens).toBe(3456);
+      expect(usage.totalCost).toBe(0.78);
+      expect(config.totalSessions).toBeUndefined();
+      expect(config.totalTokens).toBeUndefined();
+      expect(config.totalCost).toBeUndefined();
+    });
+
     test('incrementSessionCount', () => {
-      const before = loadGlobalConfig().totalSessions;
+      const before = loadUsageState().totalSessions;
       incrementSessionCount();
-      const after = loadGlobalConfig().totalSessions;
+      const after = loadUsageState().totalSessions;
       expect(after).toBe(before + 1);
     });
 
     test('updateTokenStats', () => {
-      const before = loadGlobalConfig();
+      const before = loadUsageState();
       updateTokenStats(1000, 0.01);
 
-      const after = loadGlobalConfig();
+      const after = loadUsageState();
       expect(after.totalTokens).toBe(before.totalTokens + 1000);
       expect(after.totalCost).toBe(before.totalCost + 0.01);
     });

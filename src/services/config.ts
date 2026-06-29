@@ -120,6 +120,12 @@ function parsePositiveInt(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function toNonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 function loadWebSearchConfig(
   globalConfig: GlobalConfig,
   overrides: Partial<OpenHorseCLIConfig>
@@ -184,13 +190,26 @@ export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHor
   const config: OpenHorseCLIConfig = {
     // 用户核心配置
     apiKey:
-      overrides.apiKey ?? globalConfig.apiKey ?? process.env.OPENHORSE_API_KEY ?? '',
+      toNonEmptyString(overrides.apiKey)
+      ?? globalConfig.apiKey
+      ?? toNonEmptyString(process.env.OPENHORSE_API_KEY)
+      ?? '',
     apiBaseUrl:
-      overrides.apiBaseUrl ?? globalConfig.apiBaseUrl ?? process.env.OPENHORSE_API_BASE_URL ?? process.env.OPENHORSE_BASE_URL ?? undefined,
+      toNonEmptyString(overrides.apiBaseUrl)
+      ?? globalConfig.apiBaseUrl
+      ?? toNonEmptyString(process.env.OPENHORSE_API_BASE_URL)
+      ?? toNonEmptyString(process.env.OPENHORSE_BASE_URL)
+      ?? undefined,
     model:
-      overrides.model ?? globalConfig.defaultModel ?? process.env.OPENHORSE_MODEL ?? 'gpt-4o',
+      toNonEmptyString(overrides.model)
+      ?? toNonEmptyString(globalConfig.defaultModel)
+      ?? toNonEmptyString(process.env.OPENHORSE_MODEL)
+      ?? 'gpt-4o',
     fallbackModel:
-      overrides.fallbackModel ?? globalConfig.fallbackModel ?? process.env.OPENHORSE_FALLBACK_MODEL ?? undefined,
+      toNonEmptyString(overrides.fallbackModel)
+      ?? toNonEmptyString(globalConfig.fallbackModel)
+      ?? toNonEmptyString(process.env.OPENHORSE_FALLBACK_MODEL)
+      ?? undefined,
     toolConfirmation:
       normalizeToolConfirmationPolicy(overrides.toolConfirmation)
       ?? normalizeToolConfirmationPolicy(globalConfig.toolConfirmation)

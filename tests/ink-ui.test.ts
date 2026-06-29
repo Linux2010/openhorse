@@ -513,6 +513,9 @@ describe('Ink UI helpers', () => {
 
   it('normalizes running status into a horse animation label', () => {
     expect(runningHorseLabel('Turn 2...')).toBe('working');
+    expect(runningHorseLabel('Thinking...')).toBe('Thinking...');
+    expect(runningHorseLabel('Reading tool results...')).toBe('Reading tool results...');
+    expect(runningHorseLabel('Running 4 tools...')).toBe('Running 4 tools...');
     expect(runningHorseLabel('Revision received. Interrupting current response...')).toBe('Revision received. Interrupting current response...');
   });
 

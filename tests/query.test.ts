@@ -3,6 +3,7 @@ import type { QueryEvent } from '../src/framework/query';
 import { buildTool } from '../src/framework/tool';
 import type { OpenHorseTool, ToolContext } from '../src/framework/tool';
 import type { LLMService, LLMResponse, Message, Tool } from '../src/services/llm';
+import { resetAutoCompact } from '../src/services/compact/auto-compact';
 
 const mockTool: OpenHorseTool = buildTool({
   name: 'read_file',
@@ -27,21 +28,35 @@ const askTool: OpenHorseTool = buildTool({
   checkPermissions: () => ({ behavior: 'ask', reason: 'External query' }),
 });
 
+const batchReadTool: OpenHorseTool = buildTool({
+  name: 'batch_read',
+  description: 'Batch read-only exploration',
+  parameters: {
+    type: 'object',
+    properties: { steps: { type: 'array', description: 'Steps' } },
+    required: ['steps'],
+  },
+  execute: async () => ({ success: true, output: '' }),
+  isReadOnly: () => true,
+  isConcurrencySafe: () => true,
+});
+
 const toolContext: ToolContext = {
   cwd: '/tmp/project',
   config: { name: 'test', mode: 'development' },
 };
 
-function makeMockLLM(responses: LLMResponse[]): jest.Mocked<LLMService> {
+function makeMockLLM(responses: LLMResponse[], model = 'test-model'): jest.Mocked<LLMService> {
   let callIndex = 0;
   return {
+    chat: jest.fn(async () => ({ content: 'compact summary', model })),
     chatStream: jest.fn(async () => {
       const resp = responses[callIndex++];
-      return resp ?? { content: 'done', model: 'test-model' };
+      return resp ?? { content: 'done', model };
     }),
-    getModel: jest.fn(() => 'test-model'),
+    getModel: jest.fn(() => model),
     setModel: jest.fn(),
-    getConfigSummary: jest.fn(() => ({ model: 'test-model' })),
+    getConfigSummary: jest.fn(() => ({ model })),
   } as unknown as jest.Mocked<LLMService>;
 }
 
@@ -51,6 +66,10 @@ function collectEvents(params: Parameters<typeof query>[0]) {
 }
 
 describe('query generator', () => {
+  beforeEach(() => {
+    resetAutoCompact();
+  });
+
   test('yields request_start, message, complete on simple response', async () => {
     const llm = makeMockLLM([
       { content: 'Hello!', model: 'test-model' },
@@ -161,6 +180,100 @@ describe('query generator', () => {
     const toolResult = events.find(event => event.type === 'tool_result') as Extract<QueryEvent, { type: 'tool_result' }>;
     expect(toolResult.summary).toBe('read /test (1L, 12B)');
     expect(toolResult.outputBytes).toBe(12);
+  });
+
+  test('records batch_read inner steps as harness evidence without changing tool protocol', async () => {
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          {
+            id: 'call-batch',
+            type: 'function',
+            function: {
+              name: 'batch_read',
+              arguments: JSON.stringify({
+                steps: [
+                  { tool: 'read_file', args: { path: 'src/index.ts' } },
+                  { tool: 'grep', args: { pattern: 'TODO', path: 'src' } },
+                ],
+              }),
+            },
+          },
+        ],
+      },
+      { content: 'Done', model: 'test-model' },
+    ]);
+    const harness = {
+      assembleMessages: jest.fn((messages: Message[]) => messages),
+      getCapsule: jest.fn(() => ({ summary: '' })),
+      toJSON: jest.fn(() => ({})),
+      recordAssistantResponse: jest.fn(),
+      beforeToolUse: jest.fn(() => undefined),
+      asToolBlockedResult: jest.fn(),
+      beforeComplete: jest.fn(() => ({ canComplete: true })),
+      asCompletionBlockedMessage: jest.fn(),
+      recordToolResult: jest.fn(),
+    };
+    const batchPayload = {
+      success: true,
+      output: '1. read_file: read src/index.ts\n2. grep: grep TODO',
+      summary: 'batch_read completed 2/2 steps',
+      steps: [
+        {
+          index: 1,
+          tool: 'read_file',
+          args: { path: 'src/index.ts' },
+          success: true,
+          summary: 'read src/index.ts (10L, 100B)',
+          output: 'file content',
+        },
+        {
+          index: 2,
+          tool: 'grep',
+          args: { pattern: 'TODO', path: 'src' },
+          success: true,
+          summary: 'grep /TODO/ -> 3 matches',
+          output: 'src/index.ts:1:TODO',
+        },
+      ],
+    };
+    const events: QueryEvent[] = [];
+
+    for await (const event of query({
+      messages: [
+        { role: 'system', content: 'You are a bot.' },
+        { role: 'user', content: 'Inspect project' },
+      ],
+      tools: [batchReadTool],
+      toolExecutor: async () => JSON.stringify({
+        success: true,
+        output: JSON.stringify(batchPayload),
+        summary: batchPayload.summary,
+        outputBytes: 120,
+      }),
+      llm,
+      harness: harness as any,
+    })) {
+      events.push(event);
+    }
+
+    expect(events.filter(event => event.type === 'tool_result')).toHaveLength(1);
+    expect(harness.recordToolResult).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'batch_read',
+      summary: batchPayload.summary,
+    }));
+    expect(harness.recordToolResult).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'read_file',
+      args: { path: 'src/index.ts' },
+      summary: 'read src/index.ts (10L, 100B)',
+    }));
+    expect(harness.recordToolResult).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'grep',
+      args: { pattern: 'TODO', path: 'src' },
+      summary: 'grep /TODO/ -> 3 matches',
+    }));
   });
 
   test('runs concurrency-safe tool calls in parallel and preserves result order', async () => {
@@ -375,6 +488,35 @@ describe('query generator', () => {
 
     const complete = events.find(e => e.type === 'complete') as any;
     expect(complete.usage).toEqual({ promptTokens: 10, completionTokens: 20 });
+  });
+
+  test('runs predictive compact before sending an oversized request', async () => {
+    const llm = makeMockLLM([
+      { content: 'Answer', model: 'gpt-4' },
+    ], 'gpt-4');
+
+    const messages: Message[] = [
+      { role: 'system', content: 'You are a bot.' },
+      ...Array.from({ length: 30 }, (_, index) => ({
+        role: 'user' as const,
+        content: `large historical message ${index} ${'x'.repeat(4000)}`,
+      })),
+    ];
+    const originalLength = messages.length;
+
+    for await (const _event of query({
+      messages,
+      tools: [mockTool],
+      toolExecutor: async () => 'result',
+      llm,
+    })) {
+      // consume
+    }
+
+    expect(llm.chat).toHaveBeenCalled();
+    const requestMessages = (llm.chatStream as jest.Mock).mock.calls[0][0] as Message[];
+    expect(requestMessages.length).toBeLessThan(originalLength);
+    expect(requestMessages.map(message => message.content).join('\n')).toContain('[Context Summary]');
   });
 
   test('increments turn counter correctly', async () => {

@@ -20,6 +20,8 @@ import type { Store } from '../framework/store';
 import type { LLMService } from './llm';
 import type { OpenHorseRuntime } from '../init';
 import { getWarningState } from '../core/warn-dedup';
+import { getAutoCompact } from './compact/auto-compact';
+import { resolveModelContext } from './model-context';
 
 export type DoctorStatus = 'ok' | 'warn' | 'fail';
 
@@ -98,6 +100,37 @@ function summarizeMcpStatus(): DoctorCheck {
     label: 'MCP',
     summary: `${connected}/${status.length} connected, ${tools} tools`,
     detail,
+  };
+}
+
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1000)}K`;
+  return String(tokens);
+}
+
+function summarizeAutoCompact(ctx: DoctorContext): DoctorCheck {
+  const modelId = ctx.llm?.getModel() ?? ctx.config.model;
+  const modelContext = resolveModelContext(modelId);
+  const stats = getAutoCompact({ modelId }).getStats();
+  const sourceText = modelContext.source === 'fuzzy'
+    ? `${modelContext.source}:${modelContext.matchedId}`
+    : modelContext.source;
+
+  return {
+    id: 'auto-compact',
+    status: modelContext.source === 'default' ? 'warn' : 'ok',
+    label: 'Auto Compact',
+    summary: `${stats.enabled ? 'enabled' : 'disabled'}, ${formatTokenCount(modelContext.contextWindow)} context, predict ${Math.round(stats.predictiveCompactThreshold * 100)}%, hard ${Math.round(stats.threshold * 100)}%`,
+    detail: [
+      `model=${modelId}`,
+      `source=${sourceText}`,
+      `lastTokenCount=${stats.lastTokenCount}`,
+      `ctxPercent=${stats.ctxPercent}%`,
+      `preCompactArmed=${stats.preCompactArmed}`,
+      `compactCount=${stats.compactCount}`,
+      `lastCompactMode=${stats.lastCompactMode ?? 'none'}`,
+    ].join('\n'),
   };
 }
 
@@ -323,6 +356,7 @@ export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
       label: 'LLM',
       summary: ctx.llm ? `Initialized ${ctx.llm.getModel()}` : 'LLM service is not initialized',
     },
+    summarizeAutoCompact(ctx),
     {
       id: 'permissions',
       status: 'ok',

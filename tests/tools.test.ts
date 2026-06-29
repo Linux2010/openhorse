@@ -40,6 +40,7 @@ describe('TOOLS array', () => {
     expect(names).toContain('edit_file');
     expect(names).toContain('glob');
     expect(names).toContain('grep');
+    expect(names).toContain('batch_read');
     expect(names).toContain('memory_save');
     expect(names).toContain('memory_recall');
     expect(names).toContain('memory_forget');
@@ -125,10 +126,44 @@ describe('read_file tool', () => {
     expect(tool.isReadOnly?.({})).toBe(true);
   });
 
+  test('isConcurrencySafe returns true', () => {
+    expect(tool.isConcurrencySafe?.({})).toBe(true);
+  });
+
   test('reads existing file successfully', async () => {
     const result = await tool.execute({ path: 'package.json' }, ctx);
     expect(result.success).toBe(true);
     expect(result.output).toContain('openhorse');
+  });
+
+  test('reads markdown link paths outside the project', async () => {
+    const dir = fs.mkdtempSync(path.join(tmpdir(), 'openhorse-tool-path-'));
+    const file = path.join(dir, 'SKILL.md');
+    fs.writeFileSync(file, 'skill body', 'utf-8');
+
+    try {
+      const result = await tool.execute({ path: `[$imagegen](${file})` }, ctx);
+
+      expect(result.success).toBe(true);
+      expect(result.output).toBe('skill body');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('reads file URL paths with encoded characters', async () => {
+    const dir = fs.mkdtempSync(path.join(tmpdir(), 'openhorse-tool-url-'));
+    const file = path.join(dir, 'space file.md');
+    fs.writeFileSync(file, 'url body', 'utf-8');
+
+    try {
+      const result = await tool.execute({ path: `file://${encodeURI(file)}` }, ctx);
+
+      expect(result.success).toBe(true);
+      expect(result.output).toBe('url body');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('returns error for nonexistent file', async () => {
@@ -217,6 +252,20 @@ describe('list_files tool', () => {
     expect(result.output).toContain('cli.ts');
   });
 
+  test('lists markdown link paths outside the project', async () => {
+    const dir = fs.mkdtempSync(path.join(tmpdir(), 'openhorse-tool-list-'));
+    fs.writeFileSync(path.join(dir, 'item.txt'), 'listed', 'utf-8');
+
+    try {
+      const result = await tool.execute({ path: `[fixture](${dir})`, maxDepth: 1 }, ctx);
+
+      expect(result.success).toBe(true);
+      expect(result.output).toContain('item.txt');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('returns error for nonexistent path', async () => {
     const result = await tool.execute({ path: 'tests/nonexistent-path-xyz' }, ctx);
     expect(result.success).toBe(false);
@@ -231,6 +280,11 @@ describe('list_files tool', () => {
 
 describe('exec_command tool', () => {
   const tool = TOOLS.find(t => t.name === 'exec_command')!;
+
+  test('isConcurrencySafe only for read-only commands', () => {
+    expect(tool.isConcurrencySafe?.({ command: 'git status --short' })).toBe(true);
+    expect(tool.isConcurrencySafe?.({ command: 'npm test' })).toBe(false);
+  });
 
   test('executes simple command', async () => {
     const result = await tool.execute({ command: 'echo hello' }, ctx);
@@ -294,6 +348,23 @@ describe('exec_command tool', () => {
     expect(result.output).toContain('small output');
     expect(result.output).not.toContain('[... output truncated');
   });
+
+  test('resolves relative cwd from ToolContext.cwd', async () => {
+    const dir = fs.mkdtempSync(path.join(tmpdir(), 'openhorse-tool-exec-'));
+    fs.mkdirSync(path.join(dir, 'child'));
+
+    try {
+      const result = await tool.execute({ command: 'pwd', cwd: 'child' }, {
+        ...ctx,
+        cwd: dir,
+      });
+
+      expect(result.success).toBe(true);
+      expect(fs.realpathSync(result.output.trim())).toBe(fs.realpathSync(path.join(dir, 'child')));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('executeTool', () => {
@@ -324,6 +395,91 @@ describe('getToolNames', () => {
     expect(names).toContain('edit_file');
     expect(names).toContain('glob');
     expect(names).toContain('grep');
+    expect(names).toContain('batch_read');
+  });
+});
+
+describe('batch_read tool', () => {
+  const tool = TOOLS.find(t => t.name === 'batch_read')!;
+
+  async function runBatchRead(steps: Array<{ tool: string; args: Record<string, unknown> }>) {
+    const outer = JSON.parse(await executeTool('batch_read', { steps }, undefined, ctx));
+    return {
+      outer,
+      inner: JSON.parse(outer.output),
+    };
+  }
+
+  test('isReadOnly and concurrency safe', () => {
+    expect(tool.isReadOnly?.({})).toBe(true);
+    expect(tool.isConcurrencySafe?.({})).toBe(true);
+  });
+
+  test('executes allowed read-only tools in order', async () => {
+    const dir = fs.mkdtempSync(path.join(tmpdir(), 'openhorse-batch-read-'));
+    fs.writeFileSync(path.join(dir, 'note.txt'), 'needle in batch', 'utf-8');
+
+    try {
+      const { outer, inner } = await runBatchRead([
+        { tool: 'list_files', args: { path: dir, maxDepth: 1 } },
+        { tool: 'read_file', args: { path: path.join(dir, 'note.txt') } },
+        { tool: 'grep', args: { pattern: 'needle', path: dir } },
+      ]);
+
+      expect(outer.success).toBe(true);
+      expect(inner.success).toBe(true);
+      expect(inner.steps.map((step: any) => step.tool)).toEqual(['list_files', 'read_file', 'grep']);
+      expect(inner.steps[0].output).toContain('note.txt');
+      expect(inner.steps[1].output).toContain('needle in batch');
+      expect(inner.steps[2].output).toContain('note.txt:1');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects disallowed write tools before execution', async () => {
+    const dir = fs.mkdtempSync(path.join(tmpdir(), 'openhorse-batch-read-deny-'));
+    const target = path.join(dir, 'blocked.txt');
+
+    try {
+      const { outer, inner } = await runBatchRead([
+        { tool: 'write_file', args: { path: target, content: 'nope' } },
+      ]);
+
+      expect(outer.success).toBe(false);
+      expect(inner.success).toBe(false);
+      expect(inner.error).toContain('not allowed');
+      expect(fs.existsSync(target)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects more than eight steps', async () => {
+    const steps = Array.from({ length: 9 }, () => ({ tool: 'list_files', args: { path: 'src', maxDepth: 0 } }));
+    const { outer, inner } = await runBatchRead(steps);
+
+    expect(outer.success).toBe(false);
+    expect(inner.error).toContain('at most 8 steps');
+    expect(inner.steps).toEqual([]);
+  });
+
+  test('truncates large per-step output', async () => {
+    const dir = fs.mkdtempSync(path.join(tmpdir(), 'openhorse-batch-read-big-'));
+    const file = path.join(dir, 'big.txt');
+    fs.writeFileSync(file, 'a'.repeat(5000), 'utf-8');
+
+    try {
+      const { inner } = await runBatchRead([
+        { tool: 'read_file', args: { path: file } },
+      ]);
+
+      expect(inner.success).toBe(true);
+      expect(inner.steps[0].output.length).toBeLessThan(2500);
+      expect(inner.steps[0].output).toContain('bytes truncated');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -493,6 +649,25 @@ describe('edit_file tool', () => {
     expect(result.success).toBe(true);
     expect(fs.readFileSync(testFile, 'utf-8')).toBe('world');
   });
+
+  test('edits markdown link paths outside the project', async () => {
+    const dir = fs.mkdtempSync(path.join(tmpdir(), 'openhorse-tool-edit-'));
+    const file = path.join(dir, 'SKILL.md');
+    fs.writeFileSync(file, 'old skill body', 'utf-8');
+
+    try {
+      const result = await tool.execute({
+        path: `[$imagegen](${file})`,
+        old_string: 'old',
+        new_string: 'new',
+      }, ctx);
+
+      expect(result.success).toBe(true);
+      expect(fs.readFileSync(file, 'utf-8')).toBe('new skill body');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('glob tool', () => {
@@ -510,6 +685,24 @@ describe('glob tool', () => {
     const result = await tool.execute({ pattern: '**/*.ts', path: 'src' }, ctx);
     expect(result.success).toBe(true);
     expect(result.output).toContain('cli.ts');
+  });
+
+  test('resolves search path from ToolContext.cwd', async () => {
+    const dir = fs.mkdtempSync(path.join(tmpdir(), 'openhorse-tool-glob-'));
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.writeFileSync(path.join(dir, 'src', 'local.ts'), 'export {}', 'utf-8');
+
+    try {
+      const result = await tool.execute({ pattern: '**/*.ts', path: 'src' }, {
+        ...ctx,
+        cwd: dir,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.output).toContain('local.ts');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('returns message when no matches', async () => {
@@ -542,6 +735,24 @@ describe('grep tool', () => {
     const result = await tool.execute({ pattern: 'openhorse', path: 'package.json' }, ctx);
     expect(result.success).toBe(true);
     expect(result.output).toContain('openhorse');
+  });
+
+  test('resolves search path from ToolContext.cwd', async () => {
+    const dir = fs.mkdtempSync(path.join(tmpdir(), 'openhorse-tool-grep-'));
+    fs.mkdirSync(path.join(dir, 'docs'));
+    fs.writeFileSync(path.join(dir, 'docs', 'note.txt'), 'needle from cwd', 'utf-8');
+
+    try {
+      const result = await tool.execute({ pattern: 'needle', path: 'docs' }, {
+        ...ctx,
+        cwd: dir,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.output).toContain('note.txt');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('returns message when no matches', async () => {

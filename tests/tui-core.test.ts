@@ -42,6 +42,26 @@ describe('tui-core input parser', () => {
       { type: 'paste', value: 'one\ntwo' },
     ]);
   });
+
+  it('keeps split bracketed paste delimiters intact across chunks', () => {
+    const parser = new TuiInputParser();
+
+    expect(parser.feed(Buffer.from('\x1b[2'))).toEqual([]);
+    expect(parser.feed(Buffer.from('00~one\n'))).toEqual([]);
+    expect(parser.feed(Buffer.from('two\x1b[20'))).toEqual([]);
+    expect(parser.feed(Buffer.from('1~'))).toEqual([
+      { type: 'paste', value: 'one\ntwo' },
+    ]);
+  });
+
+  it('keeps split CSI keys intact across chunks', () => {
+    const parser = new TuiInputParser();
+
+    expect(parser.feed(Buffer.from('\x1b['))).toEqual([]);
+    expect(parser.feed(Buffer.from('D'))).toEqual([
+      { type: 'key', key: 'left', raw: '\x1b[D' },
+    ]);
+  });
 });
 
 describe('tui-core frame model', () => {

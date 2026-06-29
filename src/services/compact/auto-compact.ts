@@ -8,7 +8,7 @@
 import type { Message } from '../llm';
 import type { LLMService } from '../llm';
 import { compactMessages, type CompactOptions } from './compact';
-import { getModelContextWindow, AUTO_COMPACT_THRESHOLD } from '../model-context';
+import { getModelContextWindow, resolveModelContext, AUTO_COMPACT_THRESHOLD } from '../model-context';
 import type { ContextCapsule, HarnessState } from '../../harness';
 import { estimateMessagesTokens } from '../../utils/token-estimate';
 
@@ -26,9 +26,16 @@ export interface AutoCompactConfig {
   /** 是否启用自动压缩 */
   enabled?: boolean;
   /** 压缩回调（通知用户） */
-  onCompact?: (result: { originalCount: number; compactedCount: number; ctxPercent: number }) => void;
+  onCompact?: (result: {
+    originalCount: number;
+    compactedCount: number;
+    ctxPercent: number;
+    mode: 'predictive' | 'threshold' | 'manual';
+  }) => void;
   /** 提前准备可恢复上下文的阈值（0-1，默认 0.8） */
   preCompactThreshold?: number;
+  /** 预测触发阈值（0-1，默认 0.88），用于 LLM 调用前压缩 */
+  predictiveCompactThreshold?: number;
   /** 获取最新 Context Capsule */
   getContextCapsule?: () => ContextCapsule | undefined | null;
   /** 获取最新完整 Harness State */
@@ -42,7 +49,7 @@ export interface AutoCompactConfig {
 // ============================================================================
 
 export class AutoCompact {
-  private config: Required<Pick<AutoCompactConfig, 'threshold' | 'modelId' | 'maxMessages' | 'enabled' | 'preCompactThreshold'>> & {
+  private config: Required<Pick<AutoCompactConfig, 'threshold' | 'modelId' | 'maxMessages' | 'enabled' | 'preCompactThreshold' | 'predictiveCompactThreshold'>> & {
     onCompact?: AutoCompactConfig['onCompact'];
     getContextCapsule?: AutoCompactConfig['getContextCapsule'];
     getHarnessState?: AutoCompactConfig['getHarnessState'];
@@ -52,6 +59,10 @@ export class AutoCompact {
   private compactCount: number = 0;
   /** 最后一次计算的 token 使用量 */
   private lastTokenCount: number = 0;
+  private lastCtxPercent: number = 0;
+  private preCompactArmed: boolean = false;
+  private lastCompactFingerprint: string | null = null;
+  private lastCompactMode: 'predictive' | 'threshold' | 'manual' | null = null;
 
   constructor(config?: AutoCompactConfig) {
     this.config = {
@@ -60,6 +71,7 @@ export class AutoCompact {
       maxMessages: config?.maxMessages ?? 20,
       enabled: config?.enabled ?? true,
       preCompactThreshold: config?.preCompactThreshold ?? 0.8,
+      predictiveCompactThreshold: config?.predictiveCompactThreshold ?? 0.88,
       onCompact: config?.onCompact,
       getContextCapsule: config?.getContextCapsule,
       getHarnessState: config?.getHarnessState,
@@ -78,6 +90,7 @@ export class AutoCompact {
     if (config.maxMessages !== undefined) this.config.maxMessages = config.maxMessages;
     if (config.enabled !== undefined) this.config.enabled = config.enabled;
     if (config.preCompactThreshold !== undefined) this.config.preCompactThreshold = config.preCompactThreshold;
+    if (config.predictiveCompactThreshold !== undefined) this.config.predictiveCompactThreshold = config.predictiveCompactThreshold;
     if (config.onCompact !== undefined) this.config.onCompact = config.onCompact;
     if (config.getContextCapsule !== undefined) this.config.getContextCapsule = config.getContextCapsule;
     if (config.getHarnessState !== undefined) this.config.getHarnessState = config.getHarnessState;
@@ -97,27 +110,48 @@ export class AutoCompact {
    * @param usedTokens 当前已使用的 token 数（来自 API usage 响应）
    */
   async checkAndCompact(messages: Message[], usedTokens?: number): Promise<Message[]> {
+    return this.compactIfNeeded(messages, usedTokens, this.config.threshold, 'threshold');
+  }
+
+  /**
+   * LLM 调用前的预测压缩。用于避免下一次请求已经接近模型上下文上限。
+   */
+  async checkPredictiveAndCompact(messages: Message[], predictedTokens?: number): Promise<Message[]> {
+    return this.compactIfNeeded(messages, predictedTokens, this.config.predictiveCompactThreshold, 'predictive');
+  }
+
+  private async compactIfNeeded(
+    messages: Message[],
+    usedTokens: number | undefined,
+    threshold: number,
+    mode: 'predictive' | 'threshold',
+  ): Promise<Message[]> {
     if (!this.config.enabled) {
       return messages;
     }
 
-    const ctxPercent = this.calculateCtxPercent(usedTokens);
+    const ctxPercent = this.calculateCtxPercent(usedTokens, messages);
+    this.preCompactArmed = ctxPercent >= this.config.preCompactThreshold * 100;
     const contextCapsule =
-      ctxPercent >= this.config.preCompactThreshold * 100
+      this.preCompactArmed
         ? this.config.getContextCapsule?.() ?? undefined
         : undefined;
     const harnessState =
-      ctxPercent >= this.config.preCompactThreshold * 100
+      this.preCompactArmed
         ? this.config.getHarnessState?.() ?? undefined
         : undefined;
 
     // 达到阈值才触发
-    if (ctxPercent < this.config.threshold * 100) {
+    if (ctxPercent < threshold * 100) {
       return messages;
     }
 
     // 避免频繁压缩（至少间隔 30 秒）
     const now = Date.now();
+    const fingerprint = this.getMessagesFingerprint(messages);
+    if (fingerprint === this.lastCompactFingerprint && now - this.lastCompactTime < 30000) {
+      return messages;
+    }
     if (now - this.lastCompactTime < 30000) {
       return messages;
     }
@@ -134,6 +168,8 @@ export class AutoCompact {
     // 更新状态
     this.lastCompactTime = now;
     this.compactCount++;
+    this.lastCompactFingerprint = this.getMessagesFingerprint(result.messages);
+    this.lastCompactMode = mode;
 
     // 通知回调
     if (this.config.onCompact) {
@@ -141,10 +177,23 @@ export class AutoCompact {
         originalCount: result.originalCount,
         compactedCount: result.compactedCount,
         ctxPercent,
+        mode,
       });
     }
 
     return result.messages;
+  }
+
+  private getMessagesFingerprint(messages: Message[]): string {
+    const first = messages[0];
+    const last = messages[messages.length - 1];
+    const totalChars = messages.reduce((sum, message) => sum + message.content.length, 0);
+    return [
+      messages.length,
+      totalChars,
+      first ? `${first.role}:${first.content.length}` : 'none',
+      last ? `${last.role}:${last.content.length}` : 'none',
+    ].join(':');
   }
 
   /**
@@ -154,12 +203,14 @@ export class AutoCompact {
     const contextWindow = getModelContextWindow(this.config.modelId);
     if (usedTokens) {
       this.lastTokenCount = usedTokens;
-      return Math.min(100, Math.round((usedTokens / contextWindow) * 100));
+      this.lastCtxPercent = Math.min(100, Math.round((usedTokens / contextWindow) * 100));
+      return this.lastCtxPercent;
     }
     // Fallback: 估算 token 数（使用 CJK 感知的准确估算）
     const estimated = messages ? estimateMessagesTokens(messages) : 0;
     this.lastTokenCount = estimated;
-    return Math.min(100, Math.round((estimated / contextWindow) * 100));
+    this.lastCtxPercent = Math.min(100, Math.round((estimated / contextWindow) * 100));
+    return this.lastCtxPercent;
   }
 
   /**
@@ -182,12 +233,16 @@ export class AutoCompact {
     });
 
     this.compactCount++;
+    this.lastCompactTime = Date.now();
+    this.lastCompactFingerprint = this.getMessagesFingerprint(result.messages);
+    this.lastCompactMode = 'manual';
 
     if (this.config.onCompact) {
       this.config.onCompact({
         originalCount: result.originalCount,
         compactedCount: result.compactedCount,
         ctxPercent: this.getCtxPercent(),
+        mode: 'manual',
       });
     }
 
@@ -202,18 +257,31 @@ export class AutoCompact {
     lastCompactTime: number;
     threshold: number;
     preCompactThreshold: number;
+    predictiveCompactThreshold: number;
     enabled: boolean;
     modelId: string;
+    contextWindow: number;
+    maxOutputTokens?: number;
     ctxPercent: number;
+    lastTokenCount: number;
+    preCompactArmed: boolean;
+    lastCompactMode: 'predictive' | 'threshold' | 'manual' | null;
   } {
+    const model = resolveModelContext(this.config.modelId);
     return {
       compactCount: this.compactCount,
       lastCompactTime: this.lastCompactTime,
       threshold: this.config.threshold,
       preCompactThreshold: this.config.preCompactThreshold,
+      predictiveCompactThreshold: this.config.predictiveCompactThreshold,
       enabled: this.config.enabled,
       modelId: this.config.modelId,
-      ctxPercent: this.getCtxPercent(),
+      contextWindow: model.contextWindow,
+      maxOutputTokens: model.maxOutputTokens,
+      ctxPercent: this.lastCtxPercent,
+      lastTokenCount: this.lastTokenCount,
+      preCompactArmed: this.preCompactArmed,
+      lastCompactMode: this.lastCompactMode,
     };
   }
 
