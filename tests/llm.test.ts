@@ -230,6 +230,35 @@ describe('LLMService', () => {
       expect(create).toHaveBeenCalledTimes(2);
     });
 
+    test('retries generic provider rate-limit messages', async () => {
+      const llm = new LLMService({
+        apiKey: 'test-key',
+        model: 'xopglm51',
+      });
+      (llm as any).config.retryBaseDelay = 1;
+      (llm as any).config.maxRetries = 1;
+
+      const create = jest.fn()
+        .mockRejectedValueOnce(new Error('API_LIMIT'))
+        .mockImplementationOnce(async function* () {
+          yield {
+            choices: [{ delta: { content: 'ok' } }],
+            model: 'xopglm51',
+          };
+        });
+
+      (llm as any).client = {
+        chat: {
+          completions: { create },
+        },
+      };
+
+      const response = await llm.chatStream([{ role: 'user', content: 'Hi' }]);
+
+      expect(response.content).toBe('ok');
+      expect(create).toHaveBeenCalledTimes(2);
+    });
+
     test('does not retry Xunfei insufficient credit errors', async () => {
       const llm = new LLMService({
         apiKey: 'test-key',
@@ -250,6 +279,29 @@ describe('LLMService', () => {
       await expect(llm.chatStream([{ role: 'user', content: 'Hi' }]))
         .rejects
         .toThrow('NotEnoughCvError');
+      expect(create).toHaveBeenCalledTimes(1);
+    });
+
+    test('does not retry quota exhaustion errors', async () => {
+      const llm = new LLMService({
+        apiKey: 'test-key',
+        model: 'xopglm51',
+      });
+      (llm as any).config.retryBaseDelay = 1;
+      (llm as any).config.maxRetries = 3;
+
+      const create = jest.fn()
+        .mockRejectedValue(new Error('429 insufficient_quota: credit exhausted'));
+
+      (llm as any).client = {
+        chat: {
+          completions: { create },
+        },
+      };
+
+      await expect(llm.chatStream([{ role: 'user', content: 'Hi' }]))
+        .rejects
+        .toThrow('insufficient_quota');
       expect(create).toHaveBeenCalledTimes(1);
     });
 

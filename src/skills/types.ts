@@ -35,7 +35,7 @@ export interface SkillDefinition {
   /** Skill source path */
   source?: string;
   /** Source type after discovery. */
-  sourceType?: 'builtin' | 'user' | 'project';
+  sourceType?: 'builtin' | 'user' | 'configured' | 'project';
   /** Root directory for resolving relative skill resources. */
   resourceRoot?: string;
   /** Tags for categorization */
@@ -73,7 +73,7 @@ export interface SkillSource {
   /** Skill directory path */
   path: string;
   /** Source type */
-  type: 'builtin' | 'user' | 'project';
+  type: 'builtin' | 'user' | 'configured' | 'project';
   /** SKILL.md file path */
   skillFile?: string;
 }

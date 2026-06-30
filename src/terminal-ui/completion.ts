@@ -56,10 +56,37 @@ export function createTerminalCompleter(cwd: string): ReadlineCompleter {
   };
 }
 
+export interface TerminalTabCompletionResult {
+  value: string;
+  matches: string[];
+  changed: boolean;
+}
+
+export function applySingleTerminalTabCompletion(input: string, cwd: string): TerminalTabCompletionResult {
+  const completer = createTerminalCompleter(cwd);
+  const [matches] = completer(input);
+  if (matches.length === 1) {
+    return { value: matches[0], matches, changed: matches[0] !== input };
+  }
+
+  const prefix = commonPrefix(matches);
+  if (prefix && prefix.length > input.length) {
+    return { value: prefix, matches, changed: true };
+  }
+
+  return { value: input, matches, changed: false };
+}
+
+export function summarizeTerminalCompletions(matches: string[], maxItems = 8): string {
+  if (matches.length === 0) return 'No completions.';
+  const visible = matches.slice(0, maxItems).map(match => match.trim()).join('  ');
+  const suffix = matches.length > maxItems ? `  +${matches.length - maxItems} more` : '';
+  return `Completions: ${visible}${suffix}`;
+}
+
 export function applyTerminalTabCompletion(input: string, cwd: string): string {
   if (!input.includes('\t')) return input;
 
-  const completer = createTerminalCompleter(cwd);
   let current = '';
   for (const chunk of input.split(/(\t+)/u)) {
     if (!chunk) continue;
@@ -69,16 +96,7 @@ export function applyTerminalTabCompletion(input: string, cwd: string): string {
     }
 
     for (let i = 0; i < chunk.length; i++) {
-      const [matches] = completer(current);
-      if (matches.length === 1) {
-        current = matches[0];
-        continue;
-      }
-
-      const prefix = commonPrefix(matches);
-      if (prefix && prefix.length > current.length) {
-        current = prefix;
-      }
+      current = applySingleTerminalTabCompletion(current, cwd).value;
     }
   }
 

@@ -1,4 +1,4 @@
-import { getSkillsLoader, parseSkillFile } from '../src/skills/loader';
+import { getSkillsLoader, normalizeSkillSourcePath, parseSkillFile } from '../src/skills/loader';
 import { getSkillsRegistry, resetSkillsRegistry } from '../src/skills/registry';
 import { resolveSkillResourcePath, resolveSkillsForTurn } from '../src/skills/runtime';
 import type { SkillDefinition } from '../src/skills/types';
@@ -54,10 +54,55 @@ This is a test skill prompt.`;
     expect(skill?.prompt).toContain('Test Skill');
   });
 
+  test('parseSkillFile normalizes markdown link source locators', () => {
+    const content = `---
+name: chronicle
+description: Screen history
+---
+# Chronicle`;
+
+    const source = '[$chronicle](/Users/hope/.codex/skills/chronicle/SKILL.md)';
+    const skill = parseSkillFile(content, source);
+
+    expect(normalizeSkillSourcePath(source)).toBe('/Users/hope/.codex/skills/chronicle/SKILL.md');
+    expect(skill?.name).toBe('chronicle');
+    expect(skill?.source).toBe('/Users/hope/.codex/skills/chronicle/SKILL.md');
+  });
+
+  test('parseSkillFile accepts BOM and CRLF frontmatter', () => {
+    const content = '\uFEFF---\r\nname: crlf-skill\r\ndescription: CRLF skill\r\n---\r\n# Body';
+
+    const skill = parseSkillFile(content, '/path/to/crlf/SKILL.md');
+
+    expect(skill?.name).toBe('crlf-skill');
+    expect(skill?.description).toBe('CRLF skill');
+    expect(skill?.prompt).toBe('# Body');
+  });
+
+  test('parseSkillFile accepts legacy markdown-only skills without warning', () => {
+    const content = `# GitHub Contribution Skill
+
+Automated GitHub contribution workflow.
+
+## Usage
+Run the workflow.`;
+
+    const skill = parseSkillFile(content, '/Users/hope/.openhorse/skills/github-contribution/SKILL.md');
+
+    expect(skill?.name).toBe('github-contribution');
+    expect(skill?.description).toBe('Automated GitHub contribution workflow.');
+    expect(skill?.prompt).toContain('GitHub Contribution Skill');
+  });
+
   test('parseSkillFile returns null for invalid skill', () => {
     const content = 'No frontmatter here';
-    const skill = parseSkillFile(content, '/path/to/SKILL.md');
-    expect(skill).toBeNull();
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const skill = parseSkillFile(content, '/path/to/SKILL.md');
+      expect(skill).toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test('loader loads skills', () => {
@@ -203,6 +248,96 @@ Project skill prompt`);
 
     expect(skill?.description).toBe('Project review');
     expect(skill?.prompt).toContain('Project skill prompt');
+    expect(skill?.sourceType).toBe('project');
+
+    process.chdir(originalCwd);
+    rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  test('configured skills paths load external roots and direct skill directories', () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'openhorse-skills-extra-'));
+    const configDir = join(tempRoot, 'home');
+    const projectDir = join(tempRoot, 'project');
+    const externalRoot = join(tempRoot, 'external-root');
+    const directSkillDir = join(tempRoot, 'direct-skill');
+    mkdirSync(configDir, { recursive: true });
+    mkdirSync(projectDir, { recursive: true });
+
+    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    process.chdir(projectDir);
+
+    writeFileSync(join(configDir, 'openhorse.json'), JSON.stringify({
+      defaultModel: 'gpt-4o',
+      skills: {
+        paths: [externalRoot, directSkillDir],
+      },
+    }), 'utf-8');
+
+    writeSkill(externalRoot, 'coding-squad', `---
+name: coding-squad
+description: External squad workflow
+trigger: coding-squad
+---
+External squad prompt`);
+
+    mkdirSync(directSkillDir, { recursive: true });
+    writeFileSync(join(directSkillDir, 'SKILL.md'), `---
+name: direct-skill
+description: Direct skill path
+trigger: direct-skill
+---
+Direct prompt`, 'utf-8');
+
+    resetSkillsRegistry();
+    const registry = getSkillsRegistry();
+
+    expect(registry.getSkill('coding-squad')?.description).toBe('External squad workflow');
+    expect(registry.getSkill('coding-squad')?.sourceType).toBe('configured');
+    expect(registry.getSkill('direct-skill')?.description).toBe('Direct skill path');
+    expect(registry.getSkill('direct-skill')?.sourceType).toBe('configured');
+
+    process.chdir(originalCwd);
+    rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  test('project skills override configured skills with the same name', () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'openhorse-skills-priority-'));
+    const configDir = join(tempRoot, 'home');
+    const projectDir = join(tempRoot, 'project');
+    const externalRoot = join(tempRoot, 'external-root');
+    mkdirSync(configDir, { recursive: true });
+    mkdirSync(projectDir, { recursive: true });
+
+    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    process.chdir(projectDir);
+
+    writeFileSync(join(configDir, 'openhorse.json'), JSON.stringify({
+      defaultModel: 'gpt-4o',
+      skills: {
+        paths: [externalRoot],
+      },
+    }), 'utf-8');
+
+    writeSkill(externalRoot, 'code-review', `---
+name: code-review
+description: Configured review
+trigger: /review
+priority: 100
+---
+Configured skill prompt`);
+
+    writeSkill(join(projectDir, '.openhorse', 'skills'), 'code-review', `---
+name: code-review
+description: Project review
+trigger: /review
+priority: 1
+---
+Project skill prompt`);
+
+    resetSkillsRegistry();
+    const skill = getSkillsRegistry().getSkill('code-review');
+
+    expect(skill?.description).toBe('Project review');
     expect(skill?.sourceType).toBe('project');
 
     process.chdir(originalCwd);

@@ -32,6 +32,35 @@ describe('Context Harness v2 intent and assembly', () => {
     expect(afterNewTask.taskEpoch).toBe(2);
   });
 
+  test('keeps root objective stable through realistic long-session feedback', () => {
+    const harness = createContextHarness({ cwd: '/repo/openhorse', modelId: 'bailian/qwen3.7-plus' });
+
+    harness.updateContractFromUserInput('v0.2.11 聚焦稳定 agent runtime、tools、harness、session 和 terminal UI');
+    const initial = harness.toJSON();
+
+    for (const input of [
+      '继续',
+      '挺好的',
+      '不对吧',
+      '先验证后继续',
+      '检查一下当前变更',
+      '这个版本主要稳定 terminal UI',
+    ]) {
+      harness.updateContractFromUserInput(input);
+    }
+
+    const state = harness.toJSON();
+    expect(state.rootObjective).toBe(initial.rootObjective);
+    expect(state.contract?.objective).toBe(initial.contract?.objective);
+    expect(state.taskEpoch).toBe(1);
+    expect(state.activeInstruction).toContain('这个版本主要稳定 terminal UI');
+    expect((state.intentHistory ?? []).map(intent => intent.kind)).toEqual(expect.arrayContaining([
+      'continue_current_task',
+      'casual_or_feedback',
+      'verify_or_test',
+    ]));
+  });
+
   test('ranks evidence by keyword, verification, path, and recency', () => {
     const now = Date.now();
     const records: EvidenceRecord[] = [

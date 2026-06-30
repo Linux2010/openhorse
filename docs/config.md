@@ -27,6 +27,7 @@
 | `webSearch.authType` | `bearer` \| `header` \| `query` \| `none` | `OPENHORSE_WEBSEARCH_AUTH_TYPE` | `bearer` | API Key 注入方式 |
 | `webSearch.apiKeyHeader` | string | `OPENHORSE_WEBSEARCH_API_KEY_HEADER` | `Authorization` | `bearer` / `header` 模式下使用的 header 名 |
 | `webSearch.apiKeyQueryParam` | string | `OPENHORSE_WEBSEARCH_API_KEY_QUERY_PARAM` | provider 默认值 | `query` 模式下使用的查询参数名 |
+| `skills.paths` | string[] | `OPENHORSE_SKILLS_PATHS` | `[]` | 额外加载的 skills 根目录或单个 skill 目录 |
 
 ## Agent 内部控制（用户无需关心）
 
@@ -66,9 +67,32 @@
   "apiBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
   "defaultModel": "glm-5",
   "fallbackModel": "qwen-plus",
-  "toolConfirmation": "allow"
+  "toolConfirmation": "allow",
+  "skills": {
+    "paths": [
+      "~/project-skills/agents"
+    ]
+  }
 }
 ```
+
+## Skills
+
+OpenHorse 启动时会自动加载以下 skills 来源：
+
+1. 内置 skills；
+2. 用户级 `~/.openhorse/skills/<name>/SKILL.md`；
+3. 配置项 `skills.paths` 或环境变量 `OPENHORSE_SKILLS_PATHS` 指定的额外路径；
+4. 项目级 `<project>/.openhorse/skills/<name>/SKILL.md`。
+
+优先级为：project > configured paths > user > builtin。
+
+`skills.paths` 中的每一项可以是：
+
+- skills 根目录，例如 `~/project-skills/agents`，其下包含多个 `<name>/SKILL.md`；
+- 单个 skill 目录，例如 `~/project-skills/agents/coding-squad`。
+
+`OPENHORSE_SKILLS_PATHS` 使用系统路径分隔符分隔多个路径；macOS/Linux 为 `:`，Windows 为 `;`。
 
 ### OpenAI
 

@@ -66,6 +66,12 @@ export interface WebSearchMcpConfig {
   headers?: Record<string, string>;
 }
 
+/** Additional skills roots loaded at startup. */
+export interface SkillsConfig {
+  /** Paths to skill roots or direct skill directories. */
+  paths?: string[];
+}
+
 /**
  * 全局配置 — 用户只需关注少量核心项
  * maxTokens/temperature/retries 等由 Agent 智能控制
@@ -85,6 +91,8 @@ export interface GlobalConfig {
   webSearch?: WebSearchMcpConfig;
   /** Terminal UI configuration. */
   ui?: UIConfig;
+  /** Additional user-managed skills roots. */
+  skills?: SkillsConfig;
 
   // ---- 内部标识 ----
   userId?: string;

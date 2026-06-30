@@ -7,7 +7,10 @@ import {
   type TuiInputEvent,
   type TuiKey,
 } from '../tui-core/input-parser';
-import { applyTerminalTabCompletion } from './completion';
+import {
+  applySingleTerminalTabCompletion,
+  summarizeTerminalCompletions,
+} from './completion';
 
 const BRACKETED_PASTE_ENABLE = '\x1b[?2004h';
 const BRACKETED_PASTE_DISABLE = '\x1b[?2004l';
@@ -177,7 +180,7 @@ export class RawTerminalEditor {
         this.submit();
         return;
       case 'tab':
-        this.setValue(applyTerminalTabCompletion(`${this.value}\t`, this.options.cwd));
+        this.completeInput();
         return;
       case 'backspace':
         this.deleteBeforeCursor();
@@ -229,6 +232,19 @@ export class RawTerminalEditor {
     this.cursor = safeCursor + text.length;
     this.historyIndex = null;
     this.render();
+  }
+
+  private completeInput(): void {
+    const result = applySingleTerminalTabCompletion(this.value, this.options.cwd);
+    if (result.changed) {
+      this.setValue(result.value);
+      return;
+    }
+
+    if (result.matches.length > 0) {
+      this.options.onNotice?.(summarizeTerminalCompletions(result.matches));
+      this.render();
+    }
   }
 
   private submit(): void {

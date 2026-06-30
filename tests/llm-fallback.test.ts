@@ -119,6 +119,94 @@ describe('LLMService fallback model', () => {
     expect(result.content).toBe('recovered');
   });
 
+  test('chatStream triggers fallback after consecutive 429 rate-limit errors', async () => {
+    const llm = new LLMService({
+      apiKey: 'test',
+      model: 'primary-model',
+      fallbackModel: 'fallback-model',
+    });
+    (llm as any).config.retryBaseDelay = 1;
+
+    const make429 = () => new OpenAI.APIError(
+      429,
+      { error: { message: 'rate limit exceeded' } },
+      'rate limit exceeded',
+      {} as any,
+    );
+
+    let callCount = 0;
+    const createSpy = jest.fn(async () => {
+      callCount++;
+      if (callCount <= 3) throw make429();
+
+      async function* stream() {
+        yield {
+          choices: [{ delta: { content: 'recovered' } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+          model: 'fallback-model',
+        };
+      }
+      return stream() as any;
+    });
+
+    (llm as any).client.chat.completions.create = createSpy;
+
+    const result = await llm.chatStream([{ role: 'user', content: 'hi' }]);
+
+    expect(llm.isUsingFallback()).toBe(true);
+    expect(llm.getModel()).toBe('fallback-model');
+    expect(createSpy).toHaveBeenCalledTimes(4);
+    expect((createSpy.mock.calls as any[])[3][0].model).toBe('fallback-model');
+    expect(result.content).toBe('recovered');
+  });
+
+  test('chatStream resets consecutive rate-limit fallback counter after success', async () => {
+    const llm = new LLMService({
+      apiKey: 'test',
+      model: 'primary-model',
+      fallbackModel: 'fallback-model',
+    });
+    (llm as any).config.retryBaseDelay = 1;
+
+    const make429 = () => new OpenAI.APIError(
+      429,
+      { error: { message: 'rate limit exceeded' } },
+      'rate limit exceeded',
+      {} as any,
+    );
+
+    let callCount = 0;
+    const createSpy = jest.fn(async () => {
+      callCount++;
+      if (callCount === 1 || callCount === 2 || callCount === 4) {
+        throw make429();
+      }
+
+      async function* stream() {
+        yield {
+          choices: [{ delta: { content: 'recovered' } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+          model: 'primary-model',
+        };
+      }
+      return stream() as any;
+    });
+
+    (llm as any).client.chat.completions.create = createSpy;
+
+    await expect(llm.chatStream([{ role: 'user', content: 'first' }]))
+      .resolves
+      .toMatchObject({ content: 'recovered' });
+    await expect(llm.chatStream([{ role: 'user', content: 'second' }]))
+      .resolves
+      .toMatchObject({ content: 'recovered' });
+
+    expect(llm.isUsingFallback()).toBe(false);
+    expect(llm.getModel()).toBe('primary-model');
+    expect(createSpy).toHaveBeenCalledTimes(5);
+    expect((createSpy.mock.calls as any[])[4][0].model).toBe('primary-model');
+  });
+
   test('FallbackTriggeredError contains both model names', () => {
     const err = new FallbackTriggeredError('opus', 'haiku');
     expect(err.originalModel).toBe('opus');

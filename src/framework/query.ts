@@ -361,13 +361,6 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           tool_call_id: tc.id,
         });
 
-        if (!executed.success) {
-          messages.push({
-            role: 'user',
-            content: `[System] Tool ${tc.function.name} failed: ${executed.error}. Consider alternative approaches or inform the user.`,
-          });
-        }
-
         if (strategyTracker.isExhausted()) {
           const suggestion = strategyTracker.suggestAlternative();
           if (suggestion) {

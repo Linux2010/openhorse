@@ -22,9 +22,11 @@ import {
   type UIRenderer,
   type UIConfirmationMode,
   type WebSearchMcpConfig,
+  type SkillsConfig,
 } from './global-config';
+import { delimiter } from 'path';
 
-export type { ToolConfirmationPolicy, UIConfig, UIRenderer, UIConfirmationMode, WebSearchMcpConfig };
+export type { ToolConfirmationPolicy, UIConfig, UIRenderer, UIConfirmationMode, WebSearchMcpConfig, SkillsConfig };
 
 export const STABLE_UI_RENDERER: UIRenderer = 'terminal';
 export const BETA_UI_RENDERERS = ['tui', 'ink'] as const satisfies readonly UIRenderer[];
@@ -55,6 +57,8 @@ export interface OpenHorseCLIConfig {
   webSearch?: WebSearchMcpConfig;
   /** Terminal UI configuration. loadConfig() fills defaults when loading app config. */
   ui?: UIConfig;
+  /** Additional user-managed skills roots. */
+  skills?: SkillsConfig;
 
   // ---- Agent 内部参数 (不由用户配置) ----
   /** 实例名称 */
@@ -124,6 +128,29 @@ function toNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const paths = value
+    .map(item => toNonEmptyString(item))
+    .filter((item): item is string => Boolean(item));
+  return [...new Set(paths)];
+}
+
+function loadSkillsConfig(
+  globalConfig: GlobalConfig,
+  overrides: Partial<OpenHorseCLIConfig>
+): SkillsConfig | undefined {
+  const paths = normalizeStringList([
+    ...normalizeStringList(globalConfig.skills?.paths),
+    ...(process.env.OPENHORSE_SKILLS_PATHS
+      ? process.env.OPENHORSE_SKILLS_PATHS.split(delimiter)
+      : []),
+    ...normalizeStringList(overrides.skills?.paths),
+  ]);
+
+  return paths.length > 0 ? { paths } : undefined;
 }
 
 function loadWebSearchConfig(
@@ -217,6 +244,7 @@ export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHor
       ?? INTERNAL_DEFAULTS.toolConfirmation,
     webSearch: loadWebSearchConfig(globalConfig, overrides),
     ui: loadUIConfig(globalConfig, overrides),
+    skills: loadSkillsConfig(globalConfig, overrides),
 
     // Agent 内部参数
     name:

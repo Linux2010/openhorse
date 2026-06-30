@@ -3,5 +3,10 @@
   "apiBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
   "defaultModel": "glm-5",
   "fallbackModel": "qwen-plus",
-  "toolConfirmation": "allow"
+  "toolConfirmation": "allow",
+  "skills": {
+    "paths": [
+      "~/project-skills/agents"
+    ]
+  }
 }

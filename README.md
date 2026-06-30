@@ -99,7 +99,12 @@ Minimal user config — the agent controls internal parameters.
   "apiBaseUrl": "https://coding.dashscope.aliyuncs.com/v1",
   "defaultModel": "glm-5",
   "fallbackModel": "qwen-plus",
-  "toolConfirmation": "allow"
+  "toolConfirmation": "allow",
+  "skills": {
+    "paths": [
+      "~/project-skills/agents"
+    ]
+  }
 }
 ```
 
@@ -111,6 +116,7 @@ Minimal user config — the agent controls internal parameters.
 | `fallbackModel` | Fallback model on failure |
 | `toolConfirmation` | Tool confirmation mode: `allow`, `deny`, or `ask` |
 | `webSearch` | WebSearch mode/provider: `auto`, `tavily`, `brave`, `ddg` |
+| `skills.paths` | Extra skill roots or direct skill directories loaded at startup |
 
 Configuration priority: `CLI flags > ~/.openhorse/openhorse.json > env vars > defaults`
 

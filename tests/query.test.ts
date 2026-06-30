@@ -146,6 +146,72 @@ describe('query generator', () => {
     expect(executedTools[0].args).toEqual({ path: '/test' });
   });
 
+  test('emits multi-tool event sequence in stable runtime order', async () => {
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/one"}' } },
+          { id: 'call-2', type: 'function', function: { name: 'read_file', arguments: '{"path":"/two"}' } },
+        ],
+      },
+      { content: 'Read both files', model: 'test-model' },
+    ]);
+
+    const events: QueryEvent[] = [];
+    for await (const event of query({
+      messages: [
+        { role: 'system', content: 'You are a bot.' },
+        { role: 'user', content: 'Read two files' },
+      ],
+      tools: [mockTool],
+      toolExecutor: async (_name, args) => JSON.stringify({
+        success: true,
+        output: `content:${args.path}`,
+      }),
+      llm,
+    })) {
+      events.push(event);
+    }
+
+    expect(events.map(event => event.type)).toEqual([
+      'request_start',
+      'assistant_tool_calls',
+      'tool_call',
+      'tool_call',
+      'tool_result',
+      'tool_result',
+      'request_start',
+      'message',
+      'complete',
+    ]);
+    expect(events[2]).toMatchObject({
+      type: 'tool_call',
+      callId: 'call-1',
+      batchCount: 2,
+      batchIndex: 0,
+    });
+    expect(events[3]).toMatchObject({
+      type: 'tool_call',
+      callId: 'call-2',
+      batchCount: 2,
+      batchIndex: 1,
+    });
+    expect(events[4]).toMatchObject({
+      type: 'tool_result',
+      callId: 'call-1',
+      batchCount: 2,
+      batchIndex: 0,
+    });
+    expect(events[5]).toMatchObject({
+      type: 'tool_result',
+      callId: 'call-2',
+      batchCount: 2,
+      batchIndex: 1,
+    });
+  });
+
   test('propagates structured tool result summary metadata', async () => {
     const llm = makeMockLLM([
       {
@@ -625,6 +691,48 @@ describe('query generator', () => {
     expect(toolExecutor).not.toHaveBeenCalled();
     expect(toolResult.success).toBe(false);
     expect(toolResult.error).toContain('toolConfirmation=deny');
+  });
+
+  test('does not inject extra user noise after failed tool results', async () => {
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/missing"}' } },
+        ],
+      },
+      { content: 'The file is missing.', model: 'test-model' },
+    ]);
+
+    const messages: Message[] = [
+      { role: 'system', content: 'You are a bot.' },
+      { role: 'user', content: 'Read the file' },
+    ];
+
+    for await (const _event of query({
+      messages,
+      tools: [mockTool],
+      toolExecutor: async () => JSON.stringify({
+        success: false,
+        output: '',
+        error: 'not found',
+      }),
+      llm,
+    })) {
+      // consume
+    }
+
+    expect(messages.map(message => message.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'tool',
+      'assistant',
+    ]);
+    expect(messages.map(message => message.content).join('\n')).not.toContain('[System] Tool read_file failed');
+    const secondRequest = (llm.chatStream as jest.Mock).mock.calls[1][0] as Message[];
+    expect(secondRequest.map(message => message.content).join('\n')).not.toContain('[System] Tool read_file failed');
   });
 
   test('uses interactive confirmation hook for ask-permission tools', async () => {

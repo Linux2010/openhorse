@@ -58,6 +58,14 @@ function findSessionsByText(input: string, sessions: SessionPickerRequest['sessi
   });
 }
 
+function findSessionsByExactLabel(input: string, sessions: SessionPickerRequest['sessions']): SessionPickerRequest['sessions'] {
+  const query = normalizePickerText(input);
+  if (!query) return [];
+  return sessions.filter(session =>
+    matchingSessionLabels(session).some(label => normalizePickerText(label) === query)
+  );
+}
+
 export function resolveTerminalSessionPickerInput(
   input: string,
   request: SessionPickerRequest
@@ -149,6 +157,14 @@ export function visibleLength(text: string): number {
   return stringWidth(stripTrailingNewlines(text).replace(ANSI_PATTERN, ''));
 }
 
+export function terminalContentWidth(fallback = 88): number {
+  const columns = process.stdout.columns;
+  if (typeof columns === 'number' && columns > 0) {
+    return Math.max(1, Math.min(columns, 200));
+  }
+  return Math.max(60, Math.min(fallback, 200));
+}
+
 export function truncateTerminalText(text: string, maxWidth: number): string {
   if (maxWidth <= 0) return '';
   if (stringWidth(text) <= maxWidth) return text;
@@ -177,6 +193,7 @@ export class TerminalEventSink implements UiEventSink {
   private readonly pendingAssistantOutput = new Map<string, string>();
   private idCounter = 0;
   private pendingPicker: SessionPickerRequest | null = null;
+  private pickerOffset = 0;
   private pendingEditPreview: EditPreviewRequest | null = null;
   private lastStatusMessage = '';
 
@@ -225,7 +242,7 @@ export class TerminalEventSink implements UiEventSink {
     this.pendingAssistantOutput.clear();
     if (entries.length === 0) return;
 
-    this.writer.write(`\n${BORDER('─'.repeat(Math.min(process.stdout.columns || 80, 96)))}\n`);
+    this.writer.write(`\n${BORDER('─'.repeat(terminalContentWidth(80)))}\n`);
     this.writer.write(`${DIM('Restored conversation')}\n\n`);
     for (const entry of entries) {
       const formatted = formatTranscriptEntry(entry);
@@ -251,30 +268,15 @@ export class TerminalEventSink implements UiEventSink {
 
   showSessionPicker(request: SessionPickerRequest): void {
     this.pendingPicker = request;
-    this.writer.write(`\n${ACCENT(request.title)}\n`);
-    this.writer.write(`${BORDER('─'.repeat(Math.min(process.stdout.columns || 80, 96)))}\n`);
-    const visibleCount = Math.max(1, Math.min(request.maxVisibleItems ?? request.sessions.length, request.sessions.length));
-    const visibleSessions = request.sessions.slice(0, visibleCount);
-    visibleSessions.forEach((session, index) => {
-      const id = session.id.slice(0, 8);
-      const size = formatBytes(session.historySizeBytes ?? 0);
-      const messages = session.messageCount ?? 0;
-      const project = request.showProject ? `  ${session.projectPath}` : '';
-      this.writer.write(
-        `${String(index + 1).padStart(2, ' ')}. ${ACCENT(id)}  ${sessionTitle(session)}  ${DIM(`${messages} msgs  ${size}  ${session.model}${project}`)}\n`
-      );
-    });
-    if (visibleCount < request.sessions.length) {
-      this.writer.write(`${DIM(`Showing ${visibleCount} of ${request.sessions.length}. Hidden sessions are still selectable by number, id prefix, or unique title text.`)}\n`);
-    }
-    this.writer.write(`${DIM('Type number/#number, session id prefix, unique title text, or /resume --last. Empty input cancels.')}\n`);
+    this.pickerOffset = 0;
+    this.printSessionPickerPage();
   }
 
   showEditPreview(request: EditPreviewRequest): void {
     this.pendingEditPreview = request;
     const kindLabel = request.kind === 'fuzzy' ? `fuzzy (${request.strategy ?? 'match'})` : 'exact';
     this.writer.write(`\n${ACCENT(`Edit Preview: ${request.path} (${kindLabel})`)}\n`);
-    this.writer.write(`${BORDER('─'.repeat(Math.min(process.stdout.columns || 80, 96)))}\n`);
+    this.writer.write(`${BORDER('─'.repeat(terminalContentWidth(80)))}\n`);
     request.candidates.slice(0, 10).forEach(c => {
       const matchPreview = c.match.length > 60 ? c.match.slice(0, 57) + '...' : c.match;
       const newPreview = request.newString.length > 40 ? request.newString.slice(0, 37) + '...' : request.newString;
@@ -293,17 +295,31 @@ export class TerminalEventSink implements UiEventSink {
   consumePendingSelection(input: string): string | AgentRuntimeInput | null {
     const picker = this.pendingPicker;
     if (picker) {
+      const navigation = normalizePickerText(input);
+      const direction = navigation === 'n' || navigation === 'next'
+        ? 1
+        : navigation === 'p' || navigation === 'prev' || navigation === 'previous'
+          ? -1
+          : 0;
+      if (direction !== 0 && findSessionsByExactLabel(input, picker.sessions).length === 0) {
+        this.moveSessionPickerPage(direction);
+        return '';
+      }
+
       const selection = resolveTerminalSessionPickerInput(input, picker);
       switch (selection.type) {
         case 'cancelled':
           this.pendingPicker = null;
+          this.pickerOffset = 0;
           this.writer.write(`${DIM('Session picker cancelled.')}\n`);
           return '';
         case 'slash':
           this.pendingPicker = null;
+          this.pickerOffset = 0;
           return selection.input;
         case 'selected':
           this.pendingPicker = null;
+          this.pickerOffset = 0;
           return { type: 'select_session', sessionId: selection.sessionId, allProjects: picker.allProjects, source: 'picker' };
         case 'error':
           this.writer.write(`${ERROR(selection.message)}\n`);
@@ -318,6 +334,63 @@ export class TerminalEventSink implements UiEventSink {
     }
 
     return null;
+  }
+
+  hasPendingInteraction(): boolean {
+    return Boolean(this.pendingPicker || this.pendingEditPreview);
+  }
+
+  private printSessionPickerPage(): void {
+    const request = this.pendingPicker;
+    if (!request) return;
+
+    const total = request.sessions.length;
+    const visibleLimit = Math.max(1, Math.min(request.maxVisibleItems ?? 10, Math.max(1, total)));
+    const maxOffset = Math.max(0, Math.ceil(total / visibleLimit) - 1) * visibleLimit;
+    this.pickerOffset = Math.max(0, Math.min(this.pickerOffset, maxOffset));
+    const visibleSessions = request.sessions.slice(this.pickerOffset, this.pickerOffset + visibleLimit);
+    const page = total === 0 ? 1 : Math.floor(this.pickerOffset / visibleLimit) + 1;
+    const pages = total === 0 ? 1 : Math.ceil(total / visibleLimit);
+
+    this.writer.write(`\n${ACCENT(request.title)} ${DIM(`page ${page}/${pages}`)}\n`);
+    this.writer.write(`${BORDER('─'.repeat(terminalContentWidth(80)))}\n`);
+
+    if (visibleSessions.length === 0) {
+      this.writer.write(`${DIM('No saved sessions found.')}\n`);
+    }
+
+    visibleSessions.forEach((session, index) => {
+      const globalIndex = this.pickerOffset + index + 1;
+      const id = session.id.slice(0, 8);
+      const size = formatBytes(session.historySizeBytes ?? 0);
+      const messages = session.messageCount ?? 0;
+      const project = request.showProject ? `  ${session.projectPath}` : '';
+      this.writer.write(
+        `${String(globalIndex).padStart(2, ' ')}. ${ACCENT(id)}  ${sessionTitle(session)}  ${DIM(`${messages} msgs  ${size}  ${session.model}${project}`)}\n`
+      );
+    });
+
+    if (total > visibleLimit) {
+      this.writer.write(`${DIM(`Showing ${this.pickerOffset + 1}-${this.pickerOffset + visibleSessions.length} of ${total}. Type n/next or p/prev to page.`)}\n`);
+    }
+    this.writer.write(`${DIM('Type number/#number, session id prefix, unique title text, or /resume --last. Empty input cancels.')}\n`);
+  }
+
+  private moveSessionPickerPage(delta: -1 | 1): void {
+    const request = this.pendingPicker;
+    if (!request) return;
+    const visibleLimit = Math.max(1, Math.min(request.maxVisibleItems ?? 10, Math.max(1, request.sessions.length)));
+    const maxOffset = Math.max(0, Math.ceil(request.sessions.length / visibleLimit) - 1) * visibleLimit;
+    const nextOffset = Math.max(
+      0,
+      Math.min(this.pickerOffset + delta * visibleLimit, maxOffset)
+    );
+    if (nextOffset === this.pickerOffset) {
+      this.writer.write(`${DIM(delta > 0 ? 'Already at last session page.' : 'Already at first session page.')}\n`);
+      return;
+    }
+    this.pickerOffset = nextOffset;
+    this.printSessionPickerPage();
   }
 
   private printEntry(entry: TranscriptEntry, finalized: boolean): void {
@@ -362,7 +435,7 @@ export class TerminalEventSink implements UiEventSink {
 }
 
 function printBanner(runtime: OpenHorseUiRuntime): void {
-  const width = Math.min(process.stdout.columns || 88, 112);
+  const width = terminalContentWidth(88);
   const line = '─'.repeat(Math.max(20, width - 2));
   const firstLine = ` ${ACCENT.bold('OPENHORSE')} ${DIM(`v${runtime.version}`)} ${DIM('stable terminal UI')}`;
   const projectPrefix = ` ${DIM('Model')} ${ACCENT(runtime.config.model)}  ${DIM('Project')} `;
@@ -384,7 +457,8 @@ function summarizeToolArgs(args: Record<string, unknown>): string {
     .slice(0, 4)
     .map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`);
   const summary = entries.join(' ');
-  return summary.length > 120 ? `${summary.slice(0, 117)}...` : summary;
+  const maxLength = Math.max(120, terminalContentWidth(120) - 24);
+  return summary.length > maxLength ? `${summary.slice(0, maxLength - 3)}...` : summary;
 }
 
 function isExitInput(input: string): boolean {
@@ -398,6 +472,23 @@ export function parseEditInput(input: string): { isEdit: boolean; initialContent
     return { isEdit: true, initialContent: trimmed.slice('/edit '.length) };
   }
   return { isEdit: false, initialContent: '' };
+}
+
+export function renderTerminalShortcuts(): string {
+  const rows = [
+    `${ACCENT('Terminal shortcuts')}`,
+    `${BORDER('─'.repeat(48))}`,
+    `${DIM('Enter')}      send current input`,
+    `${DIM('Tab')}        complete slash command or @file mention`,
+    `${DIM('↑/↓')}        navigate local input history`,
+    `${DIM('Ctrl+U')}     clear current input`,
+    `${DIM('Ctrl+W')}     delete previous word`,
+    `${DIM('Ctrl+C')}     interrupt current turn; press twice to exit`,
+    `${DIM('/paste')}     collect multiline input until /end`,
+    `${DIM('/edit')}      open $VISUAL or $EDITOR for long input`,
+    `${DIM('/resume')}    pick a session; use n/p to page results`,
+  ];
+  return `\n${rows.join('\n')}\n`;
 }
 
 export interface TerminalComposeResult {
@@ -646,6 +737,12 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
     }
 
     agentController.handle({ type: 'clear_exit_intent' });
+
+    if (!composer.isActive() && !events.hasPendingInteraction() && submitted === '?') {
+      writer.write(renderTerminalShortcuts());
+      prompt();
+      return;
+    }
 
     let input = !composer.isActive() ? events.consumePendingSelection(answer) : null;
     if (input === '') {

@@ -199,6 +199,59 @@ describe('executeToolCalls', () => {
     expect(results.map(result => result.prepared.index)).toEqual([0, 1, 2, 3]);
   });
 
+  test('flushes parallel read group before serial tools and resumes reads after', async () => {
+    const calls: NonNullable<Message['tool_calls']> = [
+      {
+        id: 'call-0',
+        type: 'function',
+        function: { name: 'read_file', arguments: '{"path":"0"}' },
+      },
+      {
+        id: 'call-1',
+        type: 'function',
+        function: { name: 'read_file', arguments: '{"path":"1"}' },
+      },
+      {
+        id: 'call-2',
+        type: 'function',
+        function: { name: 'edit_file', arguments: '{"path":"2","old":"x","new":"y"}' },
+      },
+      {
+        id: 'call-3',
+        type: 'function',
+        function: { name: 'read_file', arguments: '{"path":"3"}' },
+      },
+    ];
+    const log: string[] = [];
+
+    const prepared = prepareToolCalls({
+      toolCalls: calls,
+      tools,
+      toolExecutor: async () => '',
+      toolContext,
+    });
+
+    const results: any[] = [];
+    for await (const executed of executeToolCalls(prepared, {
+      toolExecutor: async (name, args) => {
+        const label = `${name}:${String(args.path)}`;
+        log.push(`start:${label}`);
+        if (name === 'read_file' && args.path !== '3') {
+          await new Promise(resolve => setTimeout(resolve, args.path === '0' ? 20 : 5));
+        }
+        log.push(`end:${label}`);
+        return JSON.stringify({ success: true, output: label });
+      },
+    })) {
+      results.push(executed);
+    }
+
+    expect(results.map(result => result.prepared.index)).toEqual([0, 1, 2, 3]);
+    expect(log.indexOf('start:edit_file:2')).toBeGreaterThan(log.indexOf('end:read_file:0'));
+    expect(log.indexOf('start:edit_file:2')).toBeGreaterThan(log.indexOf('end:read_file:1'));
+    expect(log.indexOf('start:read_file:3')).toBeGreaterThan(log.indexOf('end:edit_file:2'));
+  });
+
   test('executes serial tools one at a time', async () => {
     const executionOrder: string[] = [];
 

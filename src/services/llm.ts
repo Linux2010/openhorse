@@ -147,6 +147,7 @@ const MAX_529_RETRIES = 3;
 /** 判断错误是否可重试 */
 function isRetryableError(error: unknown): boolean {
   if (!error) return false;
+  if (isQuotaExhaustedError(error)) return false;
 
   if (error instanceof OpenAI.APIError) {
     const status = error.status;
@@ -159,6 +160,7 @@ function isRetryableError(error: unknown): boolean {
       || msg.includes('connection')
       || msg.includes('econnreset')
       || msg.includes('epipe')
+      || isRateLimitMessage(msg)
       || isProviderBusyMessage(msg);
   }
 
@@ -182,6 +184,41 @@ function isProviderBusyMessage(message: string): boolean {
 
 function isProviderBusyError(error: unknown): boolean {
   return error instanceof Error && isProviderBusyMessage(error.message);
+}
+
+function isRateLimitMessage(message: string): boolean {
+  const msg = message.toLowerCase();
+  return msg.includes('rate limit')
+    || msg.includes('too many requests')
+    || msg.includes('api-limit')
+    || msg.includes('api_limit')
+    || msg.includes('api limit')
+    || msg.includes('request limit')
+    || msg.includes('requests per minute')
+    || msg.includes('tokens per minute')
+    || msg.includes('temporarily throttled')
+    || /\b429\b/.test(msg);
+}
+
+function isRateLimitError(error: unknown): boolean {
+  return error instanceof OpenAI.APIError && error.status === 429
+    || error instanceof Error && isRateLimitMessage(error.message);
+}
+
+function isQuotaExhaustedMessage(message: string): boolean {
+  const msg = message.toLowerCase();
+  return msg.includes('not enough cverror')
+    || msg.includes('notenoughcverror')
+    || msg.includes('insufficient_quota')
+    || msg.includes('insufficient quota')
+    || msg.includes('quota exceeded')
+    || msg.includes('credit exhausted')
+    || msg.includes('insufficient credit')
+    || msg.includes('billing hard limit');
+}
+
+function isQuotaExhaustedError(error: unknown): boolean {
+  return error instanceof Error && isQuotaExhaustedMessage(error.message);
 }
 
 function createAbortError(): Error {
@@ -276,6 +313,8 @@ async function withRetry<T>(
       const retryAfter = getRetryAfterMs(error);
       if (retryAfter !== null) {
         delayMs = retryAfter;
+      } else if (isRateLimitError(error)) {
+        delayMs = Math.max(delayMs, Math.min(2000, config.baseDelayMs * 4));
       }
 
       config.onRetry?.(attempt, lastError, delayMs);
@@ -416,7 +455,7 @@ export class LLMService {
       abortSignal: options?.abortSignal,
       onRetry: (_attempt, error, _delayMs) => {
         // Provider overload/busy errors can often recover by retrying or using fallback.
-        if (is529Error(error) || isProviderBusyError(error)) {
+        if (is529Error(error) || isProviderBusyError(error) || isRateLimitError(error)) {
           this.consecutive529Errors++;
           if (this.consecutive529Errors >= MAX_529_RETRIES && this.config.fallbackModel) {
             this.triggerFallback();
@@ -542,6 +581,7 @@ export class LLMService {
           }
         }
 
+        this.consecutive529Errors = 0;
         return {
           content,
           model: usedModel,

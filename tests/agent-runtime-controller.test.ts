@@ -7,7 +7,7 @@ import {
   createAgentRuntimeEventSinkFromUiEvents,
   createUiEventSinkFromAgentRuntimeEvents,
 } from '../src/runtime/agent-runtime-protocol';
-import { AgentChatController } from '../src/runtime/chat-controller';
+import { AgentChatController, createToolEventPresenter } from '../src/runtime/chat-controller';
 import {
   resolveUiRendererCapabilities,
   type OpenHorseUiRuntime,
@@ -642,6 +642,23 @@ describe('AgentRuntimeController', () => {
     expect(processing).toEqual([true]);
     expect(events.toolStarted).toHaveBeenCalledWith({ callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } });
     expect(events.toolFinished).toHaveBeenCalledWith(expect.objectContaining({ callId: 'call-1', success: true }));
+  });
+
+  it('prints full exec_command text in tool transcript entries', () => {
+    const { events, appended } = createEvents();
+    const presenter = createToolEventPresenter(events);
+    const command = 'cd /Users/hope/ai-project/a2a-python && export PATH="$HOME/.local/bin:$PATH" && ./scripts/lint.sh --all';
+
+    presenter.start({
+      type: 'tool_call',
+      callId: 'call-exec',
+      name: 'exec_command',
+      args: { command },
+      batchCount: 1,
+      batchIndex: 0,
+    });
+
+    expect(appended[0].content).toBe(`Running exec_command\n  $ ${command}`);
   });
 
   it('adapts a protocol event sink back into UiEventSink for renderer compatibility', () => {
