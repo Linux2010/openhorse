@@ -5,7 +5,14 @@
  */
 
 import { getSkillsLoader, type SkillsLoader } from './loader';
-import type { SkillDefinition, SkillContext, SkillResult } from './types';
+import { join } from 'path';
+import {
+  SKILL_FILE_NAME,
+  type SkillDefinition,
+  type SkillContext,
+  type SkillDuplicateDiagnostic,
+  type SkillResult,
+} from './types';
 
 // ============================================================================
 // Skills Registry
@@ -31,6 +38,11 @@ export class SkillsRegistry {
   /** Get skill by name */
   getSkill(name: string): SkillDefinition | undefined {
     return this.loader.getSkill(name);
+  }
+
+  /** Get source metadata for a skill. */
+  getSource(name: string) {
+    return this.loader.getSource(name);
   }
 
   /** Check if skill exists */
@@ -99,11 +111,19 @@ export class SkillsRegistry {
     lines.push('## Available Skills');
     lines.push('');
     lines.push('The following skills are available for specialized tasks:');
+    lines.push('Use the exact Skill file and Resource root shown below when asked to inspect, load, or use a skill.');
+    lines.push('Do not guess a skill path from another agent such as ~/.codex/skills unless it is explicitly listed here.');
     lines.push('');
 
     for (const skill of skills) {
       lines.push(`### ${skill.name}`);
       lines.push(`Description: ${skill.description}`);
+      if (skill.sourceType) lines.push(`Source type: ${skill.sourceType}`);
+      const resourceRoot = skill.resourceRoot || skill.source;
+      if (resourceRoot) {
+        lines.push(`Skill file: ${skillFilePath(resourceRoot)}`);
+        lines.push(`Resource root: ${resourceRoot}`);
+      }
       if (skill.trigger) {
         const triggerStr = typeof skill.trigger === 'string'
           ? skill.trigger
@@ -122,16 +142,31 @@ export class SkillsRegistry {
   }
 
   /** Get skills summary */
-  getSummary(): { count: number; names: string[]; autoCount: number } {
+  getSummary(): {
+    count: number;
+    names: string[];
+    autoCount: number;
+    duplicateCount: number;
+    duplicates: SkillDuplicateDiagnostic[];
+  } {
     const skills = this.getAllSkills();
     const autoSkills = this.getAutoSkills();
+    const duplicates = this.loader.getDuplicateDiagnostics();
 
     return {
       count: skills.length,
       names: skills.map(s => s.name),
       autoCount: autoSkills.length,
+      duplicateCount: duplicates.length,
+      duplicates,
     };
   }
+}
+
+function skillFilePath(resourceRoot: string): string {
+  return resourceRoot.toLowerCase().endsWith(`/${SKILL_FILE_NAME.toLowerCase()}`)
+    ? resourceRoot
+    : join(resourceRoot, SKILL_FILE_NAME);
 }
 
 // ============================================================================

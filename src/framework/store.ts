@@ -12,6 +12,7 @@ import type { PermissionMode } from '../commands/types';
 import { CostTracker } from '../core/cost-tracker';
 import type { TodoItem } from './tool-state';
 import type { HarnessState } from '../harness';
+import type { LoopStats } from './query';
 
 // ============================================================================
 // 状态结构
@@ -40,6 +41,8 @@ export interface AppState {
   currentPlan: string | null;
   /** Context Harness serializable state */
   harnessState?: HarnessState;
+  /** Last completed agent-loop stats for diagnostics. */
+  lastLoopStats?: LoopStats;
 }
 
 // ============================================================================
@@ -111,6 +114,11 @@ export class Store {
   /** Convenience: update token usage */
   setTokenUsage(usage: { promptTokens: number; completionTokens: number }): void {
     this.setState({ tokenUsage: usage });
+  }
+
+  /** Convenience: update the latest agent-loop stats */
+  setLastLoopStats(stats: LoopStats): void {
+    this.setState({ lastLoopStats: stats });
   }
 
   /** Convenience: set permission mode */

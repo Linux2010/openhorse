@@ -11,6 +11,7 @@ import {
   appendSessionMessage,
   appendSessionMessages,
   readSessionMessages,
+  loadSessionHistory,
   truncateSessionToLastComplete,
   listProjectSessions,
   findSession,
@@ -322,6 +323,47 @@ describe('session-storage', () => {
       expect(messages.length).toBe(2);
       expect(messages[0].role).toBe('user');
       expect(messages[1].role).toBe('assistant');
+    });
+
+    test('loadSessionHistory uses model-visible content while transcript keeps full tool output', () => {
+      const session = createSession('/tmp/project-model-visible-history', 'gpt-4o');
+      const fullToolOutput = JSON.stringify({
+        success: true,
+        output: 'full line\n'.repeat(500),
+        summary: 'full result',
+      });
+      const compactToolOutput = JSON.stringify({
+        success: true,
+        output: 'compact result',
+        summary: 'compact result',
+        metadata: { modelVisibleCompressed: true },
+      });
+
+      appendSessionMessages(session.id, [
+        {
+          role: 'assistant',
+          content: '',
+          timestamp: 1000,
+          tool_calls: [
+            { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/large"}' } },
+          ],
+        },
+        {
+          role: 'tool',
+          content: fullToolOutput,
+          modelVisibleContent: compactToolOutput,
+          timestamp: 1001,
+          toolCallId: 'call-1',
+        },
+      ]);
+
+      const persisted = readSessionMessages(session.id);
+      const history = loadSessionHistory(session.id);
+
+      expect(persisted[1].content).toBe(fullToolOutput);
+      expect(history[1].content).toBe(compactToolOutput);
+      expect(history[1].content).toContain('modelVisibleCompressed');
+      expect(history[1].content).not.toContain('full line');
     });
 
     test('readSessionMessages returns empty array for non-existent session', () => {

@@ -92,6 +92,27 @@ function toolSummary(name: string, args: Record<string, unknown>, success: boole
   return `${success ? '✓' : '✗'} ${name}${suffix} (${duration}ms)`;
 }
 
+function toolFinishContent(event: ToolResultEvent): string {
+  const summary = event.summary || toolSummary(event.name, event.args, event.success, event.duration);
+  const lines = [summary];
+
+  if (event.name === 'exec_command' && typeof event.args.command === 'string') {
+    lines.push(`  $ ${event.args.command}`);
+  }
+
+  if (event.artifactRef) {
+    lines.push(`  artifact ${event.artifactRef.id} (${event.artifactRef.outputBytes}B full output)`);
+  } else if (typeof event.outputBytes === 'number') {
+    lines.push(`  output ${event.outputBytes}B`);
+  }
+
+  if (event.error) {
+    lines.push(`Error: ${event.error}`);
+  }
+
+  return lines.filter(Boolean).join('\n');
+}
+
 function isSyntheticCompactContext(content: string): boolean {
   return content.startsWith('[OpenHorse Context State v2]')
     || content.startsWith('[Context Summary]')
@@ -315,11 +336,10 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
         duration: event.duration,
         summary: event.summary,
         error: event.error,
+        outputBytes: event.outputBytes,
+        artifactRef: event.artifactRef,
       });
-      const content = [
-        event.summary || toolSummary(event.name, event.args, event.success, event.duration),
-        event.error ? `Error: ${event.error}` : '',
-      ].filter(Boolean).join('\n');
+      const content = toolFinishContent(event);
       const existingEntryId = runningToolEntries.get(event.callId);
 
       if (existingEntryId) {
@@ -653,6 +673,7 @@ export class AgentChatController {
             sessionMessagesToRecord.push({
               role: 'tool',
               content: event.result,
+              modelVisibleContent: event.modelVisibleResult,
               timestamp: Date.now(),
               toolCallId: event.callId,
             });
@@ -676,6 +697,9 @@ export class AgentChatController {
             finalContent = event.content;
             finalUsage = event.usage;
             finalModel = event.model;
+            if (event.stats) {
+              this.runtime.store.setLastLoopStats(event.stats);
+            }
             break;
         }
       }

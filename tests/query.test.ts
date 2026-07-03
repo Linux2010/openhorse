@@ -14,6 +14,7 @@ const mockTool: OpenHorseTool = buildTool({
     required: ['path'],
   },
   execute: async () => ({ success: true, output: 'file content' }),
+  isReadOnly: () => true,
 });
 
 const askTool: OpenHorseTool = buildTool({
@@ -248,6 +249,141 @@ describe('query generator', () => {
     expect(toolResult.outputBytes).toBe(12);
   });
 
+  test('reports loop stats on complete events', async () => {
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/test"}' } },
+        ],
+      },
+      { content: 'Done', model: 'test-model' },
+    ]);
+
+    const events: QueryEvent[] = [];
+    for await (const event of query({
+      messages: [
+        { role: 'system', content: 'You are a bot.' },
+        { role: 'user', content: 'Read the file' },
+      ],
+      tools: [mockTool],
+      toolExecutor: async () => JSON.stringify({
+        success: true,
+        output: 'file content',
+        summary: 'read /test',
+        outputBytes: 12,
+      }),
+      llm,
+    })) {
+      events.push(event);
+    }
+
+    const complete = events.find(event => event.type === 'complete') as Extract<QueryEvent, { type: 'complete' }>;
+    expect(complete.stats).toMatchObject({
+      finishReason: 'completed',
+      turnsStarted: 2,
+      llmRequests: 2,
+      toolCalls: 1,
+      readOnlyToolCalls: 1,
+      unsafeToolCalls: 0,
+      toolResultBytes: 12,
+    });
+    expect(complete.stats?.modelVisibleToolBytes).toBeGreaterThan(0);
+  });
+
+  test('compresses model-visible tool results while preserving full UI event results', async () => {
+    const largeOutput = 'line with details\n'.repeat(1000);
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/large"}' } },
+        ],
+      },
+      { content: 'Done', model: 'test-model' },
+    ]);
+    const messages: Message[] = [
+      { role: 'system', content: 'You are a bot.' },
+      { role: 'user', content: 'Read the large file' },
+    ];
+    const events: QueryEvent[] = [];
+
+    for await (const event of query({
+      messages,
+      tools: [mockTool],
+      toolExecutor: async () => JSON.stringify({
+        success: true,
+        output: largeOutput,
+        summary: 'read /large (1000L)',
+        outputBytes: Buffer.byteLength(largeOutput, 'utf8'),
+        artifactRef: { id: 'read_file-large', outputBytes: Buffer.byteLength(largeOutput, 'utf8') },
+      }),
+      llm,
+      maxModelVisibleToolResultBytes: 700,
+    })) {
+      events.push(event);
+    }
+
+    const toolResult = events.find(event => event.type === 'tool_result') as Extract<QueryEvent, { type: 'tool_result' }>;
+    expect(JSON.parse(toolResult.result).output).toContain(largeOutput.slice(0, 100));
+    expect(Buffer.byteLength(toolResult.modelVisibleResult, 'utf8')).toBeLessThanOrEqual(700);
+    expect(toolResult.modelVisibleResult).not.toBe(toolResult.result);
+    expect(toolResult.artifactRef).toEqual({ id: 'read_file-large', outputBytes: Buffer.byteLength(largeOutput, 'utf8') });
+
+    const toolMessage = messages.find(message => message.role === 'tool');
+    expect(toolMessage?.content.length).toBeLessThan(toolResult.result.length);
+    expect(Buffer.byteLength(toolMessage?.content ?? '', 'utf8')).toBeLessThanOrEqual(700);
+    expect(toolMessage?.content).toContain('modelVisibleCompressed');
+    expect(toolMessage?.content).toContain('read_file-large');
+
+    const complete = events.find(event => event.type === 'complete') as Extract<QueryEvent, { type: 'complete' }>;
+    expect(complete.stats?.toolResultBytes).toBe(Buffer.byteLength(largeOutput, 'utf8'));
+    expect(complete.stats?.modelVisibleToolBytes).toBeLessThan(complete.stats?.toolResultBytes ?? 0);
+    expect(complete.stats?.summarizedBytes).toBeGreaterThan(0);
+  });
+
+  test('keeps model-visible tool result under byte budget for CJK output and long metadata', async () => {
+    const largeOutput = '中文输出🙂'.repeat(1000);
+    const longSummary = '摘要🙂'.repeat(300);
+    const longError = '错误🙂'.repeat(300);
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/large"}' } },
+        ],
+      },
+      { content: 'Done', model: 'test-model' },
+    ]);
+    const messages: Message[] = [
+      { role: 'system', content: 'You are a bot.' },
+      { role: 'user', content: 'Read the large file' },
+    ];
+
+    for await (const _event of query({
+      messages,
+      tools: [mockTool],
+      toolExecutor: async () => JSON.stringify({
+        success: false,
+        output: largeOutput,
+        summary: longSummary,
+        error: longError,
+        outputBytes: Buffer.byteLength(largeOutput, 'utf8'),
+      }),
+      llm,
+      maxModelVisibleToolResultBytes: 700,
+    })) {
+      // consume
+    }
+
+    const toolMessage = messages.find(message => message.role === 'tool');
+    expect(Buffer.byteLength(toolMessage?.content ?? '', 'utf8')).toBeLessThanOrEqual(700);
+    expect(toolMessage?.content).toContain('modelVisibleCompressed');
+  });
+
   test('records batch_read inner steps as harness evidence without changing tool protocol', async () => {
     const llm = makeMockLLM([
       {
@@ -426,6 +562,49 @@ describe('query generator', () => {
     expect(llm.chatStream).not.toHaveBeenCalled();
   });
 
+  test('reports cancelled stats when aborted after tool execution', async () => {
+    const controller = new AbortController();
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/test"}' } },
+        ],
+      },
+    ]);
+    const events: QueryEvent[] = [];
+
+    for await (const event of query({
+      messages: [
+        { role: 'system', content: 'You are a bot.' },
+        { role: 'user', content: 'Read' },
+      ],
+      tools: [mockTool],
+      toolExecutor: async () => {
+        controller.abort();
+        return JSON.stringify({ success: true, output: 'late output' });
+      },
+      llm,
+      abortSignal: controller.signal,
+    })) {
+      events.push(event);
+    }
+
+    const complete = events.find(event => event.type === 'complete') as Extract<QueryEvent, { type: 'complete' }>;
+    expect(complete).toMatchObject({
+      type: 'complete',
+      content: 'Operation cancelled.',
+      stats: {
+        finishReason: 'cancelled',
+        turnsStarted: 1,
+        llmRequests: 1,
+        toolCalls: 1,
+      },
+    });
+    expect(events.some(event => event.type === 'tool_result')).toBe(false);
+  });
+
   test('passes abort signal to chatStream', async () => {
     const controller = new AbortController();
     const llm = makeMockLLM([
@@ -526,6 +705,12 @@ describe('query generator', () => {
     expect(complete).toBeDefined();
 
     expect((complete as any).content).toContain('Reached maximum turns');
+    expect(events.filter(e => e.type === 'request_start')).toHaveLength(1);
+    expect((complete as Extract<QueryEvent, { type: 'complete' }>).stats).toMatchObject({
+      finishReason: 'max_turns',
+      turnsStarted: 1,
+      llmRequests: 1,
+    });
   });
 
   test('passes usage info in complete event', async () => {

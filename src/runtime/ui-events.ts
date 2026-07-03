@@ -117,6 +117,8 @@ export interface RuntimeToolFinishedEvent {
   duration: number;
   summary?: string;
   error?: string;
+  outputBytes?: number;
+  artifactRef?: { id: string; outputBytes: number };
 }
 
 export interface RuntimeSessionAccessors {

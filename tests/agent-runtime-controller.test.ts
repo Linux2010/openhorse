@@ -187,6 +187,71 @@ describe('AgentRuntimeController', () => {
     });
   });
 
+  it('routes /skill commands through chat with active skill injection', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const config = loadConfig({
+        apiKey: 'test-key',
+        model: 'test-model',
+      });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'test-model',
+      });
+      const llm = {
+        getModel: jest.fn(() => 'test-model'),
+        chatStream: jest.fn(async (
+          messages: Array<{ role: string; content: string }>,
+          callbacks?: { onChunk?: (chunk: string) => void },
+          tools?: Array<{ function: { name: string } }>,
+        ) => {
+          callbacks?.onChunk?.('done');
+          return {
+            content: 'done',
+            model: 'test-model',
+            usage: { promptTokens: 10, completionTokens: 2 },
+          };
+        }),
+      };
+      let session: SessionMeta | null = null;
+      const runtime = createRuntime({
+        cwd: projectDir,
+        config,
+        store,
+        llm: llm as any,
+        isConfigured: true,
+        ensureSession: jest.fn(() => {
+          session ??= createSession(projectDir, 'test-model');
+          return session;
+        }),
+        getSession: jest.fn(() => session),
+        setSession: jest.fn(nextSession => {
+          session = nextSession;
+        }),
+      });
+      const { events, appended } = createEvents();
+      const controller = new AgentChatController(runtime, events);
+
+      await expect(controller.runInput('/skill code-review inspect src')).resolves.toBeUndefined();
+
+      expect(llm.chatStream).toHaveBeenCalled();
+      const [messages, , scopedTools] = llm.chatStream.mock.calls[0];
+      const systemPrompt = messages
+        .filter((message: { role: string }) => message.role === 'system')
+        .map((message: { content: string }) => message.content)
+        .join('\n');
+      expect(systemPrompt).toContain('## Active Skills');
+      expect(systemPrompt).toContain('# Code Review Skill');
+      expect(scopedTools).toBeDefined();
+      expect(scopedTools!.map((tool: { function: { name: string } }) => tool.function.name).sort())
+        .toEqual(['glob', 'grep', 'read_file']);
+      expect(appended).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: 'error', content: expect.stringContaining('Unknown command') }),
+      ]));
+    });
+  });
+
   it('passes renderer capabilities from the runtime controller boundary into commands', async () => {
     await withTempConfig(async ({ projectDir }) => {
       createRestorableSession(projectDir, 'older task');

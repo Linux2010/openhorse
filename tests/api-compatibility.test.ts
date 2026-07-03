@@ -53,6 +53,7 @@ const _toolResult: QueryEvent = {
   args: {},
   callId: '1',
   result: 'ok',
+  modelVisibleResult: 'ok',
   duration: 10,
   success: true,
 };

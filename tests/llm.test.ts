@@ -7,7 +7,14 @@
  * - 工具调用处理
  */
 
-import { LLMService, type Message, type Tool, type CacheControlContentPart } from '../src/services/llm';
+import {
+  LLMProviderError,
+  LLMService,
+  type CacheControlContentPart,
+  type Message,
+  type Tool,
+} from '../src/services/llm';
+import { diagnoseProviderError } from '../src/services/provider-diagnostics';
 
 // Skip real API tests if no API key is available
 const hasApiKey = Boolean(process.env.OPENHORSE_API_KEY);
@@ -80,6 +87,72 @@ describe('LLMService', () => {
       expect(summary.model).toBe('gpt-4o');
       expect(summary.maxTokens).toBe('8192');
       expect(summary.temperature).toBe('0.1');
+    });
+  });
+
+  describe('provider diagnostics', () => {
+    test('classifies common provider failures into structured types', () => {
+      const cases = [
+        [
+          Object.assign(new Error('404 model_not_found: model x does not exist'), {
+            status: 404,
+            code: 'model_not_found',
+          }),
+          'model_not_found',
+          false,
+        ],
+        [Object.assign(new Error('401 invalid_api_key'), { status: 401 }), 'auth_failed', false],
+        [new Error('Xunfei code: 11210, msg: NotEnoughCvError'), 'quota_or_credit_exhausted', false],
+        [{ status: 403, code: '11210', message: 'NotEnoughCvError' }, 'quota_or_credit_exhausted', false],
+        [Object.assign(new Error('429 API_LIMIT'), { status: 429 }), 'rate_limit', true],
+        [new Error('code: 10012, msg: EngineInternalError: system is busy'), 'provider_busy', true],
+        [new Error('Invalid URL: ht!tp://bad-endpoint'), 'invalid_endpoint', false],
+        [new Error('Connection error.'), 'unknown_provider_error', true],
+      ] as const;
+
+      for (const [error, type, retryable] of cases) {
+        expect(diagnoseProviderError(error)).toMatchObject({ type, retryable });
+      }
+    });
+
+    test('wraps chat errors with readable diagnostics without leaking keys', async () => {
+      const llm = new LLMService({
+        apiKey: 'sk-secret123456789',
+        model: 'gpt-4o',
+      });
+      const create = jest.fn().mockRejectedValue(
+        Object.assign(
+          new Error('401 invalid_api_key: Bearer sk-secret123456789 rejected'),
+          { status: 401, code: 'invalid_api_key' }
+        )
+      );
+
+      (llm as any).client = {
+        chat: {
+          completions: { create },
+        },
+      };
+
+      let caught: unknown;
+      try {
+        await llm.chat([{ role: 'user', content: 'Hi' }]);
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(LLMProviderError);
+      expect(caught).toMatchObject({
+        diagnostic: {
+          type: 'auth_failed',
+          status: 401,
+          retryable: false,
+        },
+      });
+      expect((caught as Error).message).toContain('LLM provider error [auth');
+      expect((caught as Error).message).not.toContain('sk-secret123456789');
+      expect((caught as LLMProviderError).diagnostic.providerMessage).not.toContain(
+        'sk-secret123456789'
+      );
     });
   });
 
@@ -278,7 +351,12 @@ describe('LLMService', () => {
 
       await expect(llm.chatStream([{ role: 'user', content: 'Hi' }]))
         .rejects
-        .toThrow('NotEnoughCvError');
+        .toMatchObject({
+          diagnostic: {
+            type: 'quota_or_credit_exhausted',
+            retryable: false,
+          },
+        });
       expect(create).toHaveBeenCalledTimes(1);
     });
 
@@ -301,7 +379,12 @@ describe('LLMService', () => {
 
       await expect(llm.chatStream([{ role: 'user', content: 'Hi' }]))
         .rejects
-        .toThrow('insufficient_quota');
+        .toMatchObject({
+          diagnostic: {
+            type: 'quota_or_credit_exhausted',
+            retryable: false,
+          },
+        });
       expect(create).toHaveBeenCalledTimes(1);
     });
 

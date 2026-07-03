@@ -20,6 +20,9 @@ import { getAutoCompact } from '../services/compact/auto-compact';
 import type { ContextHarness } from '../harness';
 import { prepareToolCalls, executeToolCalls, type PreparedToolCall, type ExecutedToolCall } from './tool-scheduler';
 import { estimateMessagesTokens } from '../utils/token-estimate';
+import { parseToolResultEnvelope, serializeToolResult } from './tool-serializer';
+
+export const DEFAULT_MAX_MODEL_VISIBLE_TOOL_RESULT_BYTES = 4096;
 
 function isAborted(signal?: AbortSignal): boolean {
   return signal?.aborted === true;
@@ -30,6 +33,15 @@ function cancelledEvent(llm: LLMService): QueryEvent {
     type: 'complete',
     content: 'Operation cancelled.',
     model: llm.getModel(),
+  };
+}
+
+function cancelledCompleteEvent(llm: LLMService, stats: LoopStats): Extract<QueryEvent, { type: 'complete' }> {
+  return {
+    type: 'complete',
+    content: 'Operation cancelled.',
+    model: llm.getModel(),
+    stats: cloneLoopStats(stats, 'cancelled'),
   };
 }
 
@@ -80,6 +92,173 @@ function parseBatchReadEvidenceSteps(result: string): BatchReadEvidenceStep[] {
   });
 }
 
+export type LoopFinishReason =
+  | 'completed'
+  | 'cancelled'
+  | 'max_turns'
+  | 'completion_gate'
+  | 'running';
+
+export interface LoopStats {
+  turnsStarted: number;
+  llmRequests: number;
+  toolCalls: number;
+  readOnlyToolCalls: number;
+  unsafeToolCalls: number;
+  toolResultBytes: number;
+  modelVisibleToolBytes: number;
+  summarizedBytes: number;
+  compactTrigger?: 'pre_turn' | 'post_turn';
+  finishReason: LoopFinishReason;
+}
+
+function createLoopStats(): LoopStats {
+  return {
+    turnsStarted: 0,
+    llmRequests: 0,
+    toolCalls: 0,
+    readOnlyToolCalls: 0,
+    unsafeToolCalls: 0,
+    toolResultBytes: 0,
+    modelVisibleToolBytes: 0,
+    summarizedBytes: 0,
+    finishReason: 'running',
+  };
+}
+
+function cloneLoopStats(stats: LoopStats, finishReason?: LoopFinishReason): LoopStats {
+  return {
+    ...stats,
+    finishReason: finishReason ?? stats.finishReason,
+  };
+}
+
+function byteLength(text: string): number {
+  return Buffer.byteLength(text, 'utf8');
+}
+
+function takeUtf8Prefix(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return '';
+  let result = '';
+  let bytes = 0;
+  for (const char of text) {
+    const nextBytes = byteLength(char);
+    if (bytes + nextBytes > maxBytes) break;
+    result += char;
+    bytes += nextBytes;
+  }
+  return result;
+}
+
+function takeUtf8Suffix(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return '';
+  let result = '';
+  let bytes = 0;
+  const chars = Array.from(text);
+  for (let index = chars.length - 1; index >= 0; index--) {
+    const char = chars[index];
+    const nextBytes = byteLength(char);
+    if (bytes + nextBytes > maxBytes) break;
+    result = char + result;
+    bytes += nextBytes;
+  }
+  return result;
+}
+
+function truncateForModel(text: string, maxBytes: number): string {
+  if (byteLength(text) <= maxBytes) return text;
+  const marker = '\n...[truncated]';
+  if (maxBytes <= 128) {
+    return `${takeUtf8Prefix(text, Math.max(0, maxBytes - byteLength(marker)))}${marker}`;
+  }
+
+  const middle = `\n...[truncated ${byteLength(text)}B output for model context]...\n`;
+  const contentBudget = Math.max(0, maxBytes - byteLength(middle));
+  const headBytes = Math.floor(contentBudget * 0.65);
+  const tailBytes = contentBudget - headBytes;
+  return [
+    takeUtf8Prefix(text, headBytes),
+    middle,
+    takeUtf8Suffix(text, tailBytes),
+  ].join('');
+}
+
+function summarizeModelVisibleToolResult(
+  executed: ExecutedToolCall,
+  maxBytes: number,
+): { result: string; bytes: number; summarizedBytes: number } {
+  const rawBytes = byteLength(executed.result);
+  const fullOutputBytes = executed.outputBytes ?? rawBytes;
+  if (rawBytes <= maxBytes && !executed.artifactRef) {
+    return { result: executed.result, bytes: rawBytes, summarizedBytes: 0 };
+  }
+
+  const envelope = parseToolResultEnvelope(executed.result);
+  const output = typeof envelope.output === 'string' ? envelope.output : executed.result;
+  const summary = executed.summary || envelope.summary;
+  const compactSummary = summary ? truncateForModel(summary, 192) : undefined;
+  const rawError = executed.error ?? envelope.error;
+  const compactError = rawError ? truncateForModel(rawError, 192) : undefined;
+  const artifactText = executed.artifactRef
+    ? ` Full output is available as artifact ${executed.artifactRef.id} (${executed.artifactRef.outputBytes}B).`
+    : '';
+
+  const serializeCompact = (compactOutput: string): string => serializeToolResult({
+    success: executed.success,
+    output: compactOutput,
+    error: compactError,
+    summary: compactSummary,
+    outputBytes: fullOutputBytes,
+    artifactRef: executed.artifactRef ?? envelope.artifactRef,
+    metadata: {
+      ...(envelope.metadata ?? {}),
+      modelVisibleCompressed: true,
+      originalResultBytes: rawBytes,
+    },
+  });
+
+  let outputBudget = Math.max(128, maxBytes - 768);
+  let compact = '';
+  for (let attempt = 0; attempt < 6; attempt++) {
+    compact = serializeCompact([
+      compactSummary ? `Summary: ${compactSummary}` : 'Tool output was summarized for model context.',
+      artifactText.trim(),
+      truncateForModel(output, outputBudget),
+    ].filter(Boolean).join('\n'));
+
+    const compactBytes = byteLength(compact);
+    if (compactBytes <= maxBytes || outputBudget <= 128) break;
+    outputBudget = Math.max(128, outputBudget - Math.max(compactBytes - maxBytes, 128));
+  }
+
+  if (byteLength(compact) > maxBytes) {
+    compact = serializeCompact([
+      compactSummary ? `Summary: ${compactSummary}` : 'Tool output was summarized for model context.',
+      artifactText.trim(),
+      `Output body omitted from model context (${fullOutputBytes}B total).`,
+    ].filter(Boolean).join('\n'));
+  }
+
+  if (byteLength(compact) > maxBytes) {
+    compact = serializeToolResult({
+      success: executed.success,
+      output: `Tool result omitted from model context (${fullOutputBytes}B total).`,
+      outputBytes: fullOutputBytes,
+      metadata: {
+        modelVisibleCompressed: true,
+        originalResultBytes: rawBytes,
+      },
+    });
+  }
+
+  const bytes = byteLength(compact);
+  return {
+    result: compact,
+    bytes,
+    summarizedBytes: Math.max(0, fullOutputBytes - bytes),
+  };
+}
+
 // ============================================================================
 // 事件类型
 // ============================================================================
@@ -94,6 +273,7 @@ export type QueryEvent =
       args: Record<string, unknown>;
       callId: string;
       result: string;
+      modelVisibleResult: string;
       duration: number;
       success: boolean;
       artifactRef?: { id: string; outputBytes: number };
@@ -105,7 +285,13 @@ export type QueryEvent =
     }
   | { type: 'strategy_exhausted'; suggestion: string }
   | { type: 'message'; role: 'assistant'; content: string }
-  | { type: 'complete'; content: string; usage?: { promptTokens: number; completionTokens: number }; model: string };
+  | {
+      type: 'complete';
+      content: string;
+      usage?: { promptTokens: number; completionTokens: number };
+      model: string;
+      stats?: LoopStats;
+    };
 
 // ============================================================================
 // 参数
@@ -150,6 +336,8 @@ export interface QueryParams {
   input?: string;
   /** Maximum number of concurrency-safe tools to execute at once (default 6). */
   maxParallelToolCalls?: number;
+  /** Maximum bytes of one tool result to expose to the next model request. */
+  maxModelVisibleToolResultBytes?: number;
 }
 
 // ============================================================================
@@ -189,6 +377,11 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
   const openaiTools = toOpenAITools(tools) as unknown as Tool[];
   let turn = 0;
+  const stats = createLoopStats();
+  const maxModelVisibleToolResultBytes = Math.max(
+    512,
+    params.maxModelVisibleToolResultBytes ?? DEFAULT_MAX_MODEL_VISIBLE_TOOL_RESULT_BYTES,
+  );
 
   // 无限循环，依赖安全机制停止
   while (true) {
@@ -196,12 +389,9 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
     // Check abort
     if (isAborted(abortSignal)) {
-      yield cancelledEvent(llm);
+      yield cancelledCompleteEvent(llm, stats);
       return;
     }
-
-    // Request start
-    yield { type: 'request_start', model: llm.getModel(), turn };
 
     // Safety valve: check maxTurns if specified (optional)
     if (maxTurns && turn > maxTurns) {
@@ -209,9 +399,14 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         type: 'complete',
         content: `Reached maximum turns (${maxTurns}). Task may be incomplete.`,
         model: llm.getModel(),
+        stats: cloneLoopStats(stats, 'max_turns'),
       };
       return;
     }
+
+    // Request start
+    yield { type: 'request_start', model: llm.getModel(), turn };
+    stats.turnsStarted = turn;
 
     const autoCompact = getAutoCompact({
       modelId: llm.getModel(),
@@ -228,6 +423,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     const predictedTokens = estimateMessagesTokens(requestMessages);
     const preCompacted = await autoCompact.checkPredictiveAndCompact(messages, predictedTokens);
     if (preCompacted !== messages) {
+      stats.compactTrigger = 'pre_turn';
       messages.length = 0;
       messages.push(...preCompacted);
       requestMessages = harness
@@ -236,14 +432,15 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     }
 
     if (isAborted(abortSignal)) {
-      yield cancelledEvent(llm);
+      yield cancelledCompleteEvent(llm, stats);
       return;
     }
 
     const response = await llm.chatStream(requestMessages, streamCallbacks, openaiTools, { abortSignal });
+    stats.llmRequests++;
 
     if (isAborted(abortSignal)) {
-      yield cancelledEvent(llm);
+      yield cancelledCompleteEvent(llm, stats);
       return;
     }
 
@@ -281,6 +478,14 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         harnessDriftCheck: harness ? ({ name, args }) => harness.beforeToolUse({ name, args }) : undefined,
         harnessBlockedResult: harness ? (drift) => harness.asToolBlockedResult(drift) : undefined,
       });
+      stats.toolCalls += preparedCalls.length;
+      for (const prepared of preparedCalls) {
+        if (prepared.tool?.isReadOnly?.(prepared.args) === true) {
+          stats.readOnlyToolCalls++;
+        } else {
+          stats.unsafeToolCalls++;
+        }
+      }
 
       for (const prepared of preparedCalls) {
         yield {
@@ -303,12 +508,19 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         maxParallelToolCalls,
       })) {
         if (isAborted(abortSignal)) {
-          yield cancelledEvent(llm);
+          yield cancelledCompleteEvent(llm, stats);
           return;
         }
 
         const { prepared } = executed;
         const { tc, args, attemptId } = prepared;
+        const modelVisible = summarizeModelVisibleToolResult(
+          executed,
+          maxModelVisibleToolResultBytes,
+        );
+        stats.toolResultBytes += executed.outputBytes ?? byteLength(executed.result);
+        stats.modelVisibleToolBytes += modelVisible.bytes;
+        stats.summarizedBytes += modelVisible.summarizedBytes;
 
         strategyTracker.recordResult(attemptId, executed.strategyResult, executed.strategyError, executed.duration);
         harness?.recordToolResult({
@@ -345,6 +557,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           args,
           callId: tc.id,
           result: executed.result,
+          modelVisibleResult: modelVisible.result,
           duration: executed.duration,
           success: executed.success,
           artifactRef: executed.artifactRef,
@@ -357,7 +570,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
         messages.push({
           role: 'tool',
-          content: executed.result,
+          content: modelVisible.result,
           tool_call_id: tc.id,
         });
 
@@ -382,6 +595,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     const completionGate = harness?.beforeComplete();
     if (completionGate && !completionGate.canComplete) {
       messages.push(harness!.asCompletionBlockedMessage(completionGate));
+      stats.finishReason = 'completion_gate';
       continue;
     }
 
@@ -402,6 +616,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
     });
     const compacted = await autoCompact.checkAndCompact(messages, totalTokens);
     if (compacted !== messages) {
+      stats.compactTrigger = stats.compactTrigger ?? 'post_turn';
       messages.length = 0;
       messages.push(...compacted);
     }
@@ -411,6 +626,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
       content: response.content,
       usage: response.usage,
       model: response.model,
+      stats: cloneLoopStats(stats, 'completed'),
     };
     return;
   }

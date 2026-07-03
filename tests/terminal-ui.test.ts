@@ -20,6 +20,7 @@ import {
   visibleLength,
 } from '../src/terminal-ui/launch';
 import { RawTerminalEditor } from '../src/terminal-ui/raw-editor';
+import { createToolEventPresenter } from '../src/runtime/chat-controller';
 import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
 
 function makeRawEditor(options: {
@@ -517,6 +518,62 @@ describe('terminal UI renderer adapter', () => {
     expect(output).toContain('Done.');
     expect(output.indexOf('Running read_file')).toBeLessThan(output.indexOf('✓ read_file'));
     expect(output.indexOf('✓ read_file')).toBeLessThan(output.indexOf('Done.'));
+  });
+
+  it('keeps the full exec command visible after tool completion', () => {
+    const { sink, writes } = makeTerminalSink();
+    const presenter = createToolEventPresenter(sink);
+    const command = 'cd /Users/hope/ai-project/a2a-python && export PATH="$HOME/.local/bin:$PATH" && uv run pytest tests/test_url_validator.py --cov=a2a --cov-report=term-missing';
+
+    presenter.start({
+      type: 'tool_call',
+      callId: 'call-exec',
+      name: 'exec_command',
+      args: { command },
+    });
+    presenter.finish({
+      type: 'tool_result',
+      callId: 'call-exec',
+      name: 'exec_command',
+      args: { command },
+      result: JSON.stringify({ success: true, output: 'ok', summary: '🔧 exec (2B output)' }),
+      modelVisibleResult: JSON.stringify({ success: true, output: 'ok', summary: '🔧 exec (2B output)' }),
+      success: true,
+      duration: 12,
+      summary: '🔧 exec (2B output)',
+    });
+
+    const output = writes.join('');
+    expect(output).toContain(`$ ${command}`);
+    expect(output).toContain('🔧 exec (2B output)');
+  });
+
+  it('renders tool artifact references for summarized long output', () => {
+    const { sink, writes } = makeTerminalSink();
+    const presenter = createToolEventPresenter(sink);
+
+    presenter.start({
+      type: 'tool_call',
+      callId: 'call-read',
+      name: 'read_file',
+      args: { path: 'logs/huge-output.txt' },
+    });
+    presenter.finish({
+      type: 'tool_result',
+      callId: 'call-read',
+      name: 'read_file',
+      args: { path: 'logs/huge-output.txt' },
+      result: JSON.stringify({ success: true, output: 'truncated' }),
+      modelVisibleResult: JSON.stringify({ success: true, output: 'truncated' }),
+      success: true,
+      duration: 9,
+      summary: '📄 read logs/huge-output.txt (truncated)',
+      outputBytes: 150000,
+      artifactRef: { id: 'read_file-abc123', outputBytes: 150000 },
+    });
+
+    const output = writes.join('');
+    expect(output).toContain('artifact read_file-abc123 (150000B full output)');
   });
 
   it('clears renderer view state without clearing terminal scrollback', () => {

@@ -77,4 +77,44 @@ describe('/status context diagnostics', () => {
     expect(store.getSnapshot().projectInstructionsContent).toContain('Root rules');
     expect(store.getSnapshot().projectInstructionsContent).toContain('Package rules');
   });
+
+  it('shows last agent-loop stats when available', async () => {
+    const cwd = join(root, 'packages', 'cli');
+    const config = loadConfig({ apiKey: 'test-key' });
+    const store = new Store({
+      config,
+      tools: TOOLS,
+      currentModel: 'gpt-4o',
+    });
+    store.setLastLoopStats({
+      turnsStarted: 2,
+      llmRequests: 2,
+      toolCalls: 3,
+      readOnlyToolCalls: 2,
+      unsafeToolCalls: 1,
+      toolResultBytes: 12_000,
+      modelVisibleToolBytes: 2_000,
+      summarizedBytes: 10_000,
+      compactTrigger: 'pre_turn',
+      finishReason: 'completed',
+    });
+    const ctx: CommandContext = {
+      cwd,
+      config,
+      store,
+      llm: null,
+      runtime: makeRuntime() as any,
+    };
+
+    const result = await findCommand('status')!.execute(ctx, '');
+    const rendered = stripAnsi(logs.join('\n'));
+
+    expect(result.success).toBe(true);
+    expect(rendered).toContain('Last loop:');
+    expect(rendered).toContain('Finish     completed');
+    expect(rendered).toContain('Requests   2 LLM / 2 turns');
+    expect(rendered).toContain('Tools      3 total (2 read-only, 1 unsafe)');
+    expect(rendered).toContain('Saved');
+    expect(rendered).toContain('Compact    pre_turn');
+  });
 });

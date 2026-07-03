@@ -11,6 +11,7 @@ import { load as loadYaml } from 'js-yaml';
 import { warnOnce } from '../core/warn-dedup';
 import {
   type SkillDefinition,
+  type SkillDuplicateDiagnostic,
   type SkillSource,
   SKILL_FILE_NAME,
   SKILLS_DIR_NAMES,
@@ -61,6 +62,7 @@ export function parseSkillFile(content: string, sourcePath: string): SkillDefini
       priority: frontmatter.priority ?? DEFAULT_SKILL_PRIORITY,
       source: normalizedSourcePath,
       tags: frontmatter.tags || [],
+      aliases: normalizeStringList(frontmatter.aliases ?? frontmatter.alias),
     };
 
     return skill;
@@ -105,7 +107,23 @@ function parseLegacyMarkdownSkill(content: string, sourcePath: string): SkillDef
     priority: DEFAULT_SKILL_PRIORITY,
     source: sourcePath,
     tags: [],
+    aliases: [],
   };
+}
+
+function normalizeStringList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map(item => String(item).trim())
+      .filter(Boolean);
+  }
+  if (typeof value === 'string') {
+    return value
+      .split(',')
+      .map(item => item.trim())
+      .filter(Boolean);
+  }
+  return [];
 }
 
 function deriveSkillName(sourcePath: string, title?: string): string {
@@ -242,6 +260,9 @@ export class SkillsLoader {
   /** Auto-trigger skills */
   private autoSkills: SkillDefinition[] = [];
 
+  /** Duplicate skill resolution diagnostics */
+  private duplicateDiagnostics: SkillDuplicateDiagnostic[] = [];
+
   /** Last scan time */
   private lastScan: number = 0;
 
@@ -307,6 +328,18 @@ export class SkillsLoader {
       const incomingRank = sourceRank(source.type);
       const shouldOverride = incomingRank > existingRank
         || (incomingRank === existingRank && (preparedSkill.priority || DEFAULT_SKILL_PRIORITY) > (existing.priority || DEFAULT_SKILL_PRIORITY));
+      const reason = incomingRank === existingRank
+        ? `same source rank; priority ${preparedSkill.priority || DEFAULT_SKILL_PRIORITY} ${shouldOverride ? '>' : '<='} ${existing.priority || DEFAULT_SKILL_PRIORITY}`
+        : `source rank ${incomingRank} ${shouldOverride ? '>' : '<='} ${existingRank}`;
+
+      this.duplicateDiagnostics.push({
+        name: preparedSkill.name,
+        existingSource,
+        incomingSource: source,
+        selectedSourceType: shouldOverride ? source.type : existingSource?.type,
+        incomingSelected: shouldOverride,
+        reason,
+      });
 
       if (shouldOverride) {
         this.skills.set(preparedSkill.name, preparedSkill);
@@ -336,6 +369,11 @@ export class SkillsLoader {
   /** Get auto-trigger skills */
   getAutoSkills(): SkillDefinition[] {
     return this.autoSkills;
+  }
+
+  /** Get duplicate skill diagnostics */
+  getDuplicateDiagnostics(): SkillDuplicateDiagnostic[] {
+    return [...this.duplicateDiagnostics];
   }
 
   /** Get skill source */
@@ -380,6 +418,7 @@ export class SkillsLoader {
     this.skills.clear();
     this.sources.clear();
     this.autoSkills = [];
+    this.duplicateDiagnostics = [];
     this.lastScan = 0;
   }
 

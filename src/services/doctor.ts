@@ -22,6 +22,7 @@ import type { OpenHorseRuntime } from '../init';
 import { getWarningState } from '../core/warn-dedup';
 import { getAutoCompact } from './compact/auto-compact';
 import { resolveModelContext } from './model-context';
+import { diagnoseProviderConfig, redactProviderSecrets } from './provider-diagnostics';
 
 export type DoctorStatus = 'ok' | 'warn' | 'fail';
 
@@ -138,12 +139,25 @@ function summarizeSkills(): DoctorCheck {
   try {
     const registry = getSkillsRegistry();
     const summary = registry.getSummary();
+    const duplicateLines = summary.duplicates.slice(0, 10).map(duplicate => {
+      const previous = duplicate.existingSource?.type ?? 'unknown';
+      const incoming = duplicate.incomingSource.type;
+      const selected = duplicate.selectedSourceType ?? 'unknown';
+      return `duplicate ${duplicate.name}: ${previous} vs ${incoming}, selected ${selected} (${duplicate.reason})`;
+    });
+    const detail = [
+      summary.names.slice(0, 20).join(', ') || 'No skills loaded',
+      ...duplicateLines,
+      summary.duplicates.length > duplicateLines.length
+        ? `... ${summary.duplicates.length - duplicateLines.length} more duplicate skill diagnostics`
+        : '',
+    ].filter(Boolean).join('\n');
     return {
       id: 'skills',
-      status: summary.count > 0 ? 'ok' : 'warn',
+      status: summary.count > 0 ? (summary.duplicateCount > 0 ? 'warn' : 'ok') : 'warn',
       label: 'Skills',
-      summary: `${summary.count} loaded, ${summary.autoCount} auto-trigger`,
-      detail: summary.names.slice(0, 20).join(', ') || 'No skills loaded',
+      summary: `${summary.count} loaded, ${summary.autoCount} auto-trigger${summary.duplicateCount > 0 ? `, ${summary.duplicateCount} duplicate` : ''}`,
+      detail,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -333,6 +347,23 @@ function summarizeWarningDedup(): DoctorCheck {
   };
 }
 
+function summarizeProviderConfig(ctx: DoctorContext): DoctorCheck {
+  const diagnostic = diagnoseProviderConfig({
+    apiKey: ctx.config.apiKey,
+    baseUrl: ctx.config.apiBaseUrl,
+    fallbackModel: ctx.config.fallbackModel,
+    model: ctx.llm?.getModel() ?? ctx.config.model,
+  });
+
+  return {
+    id: 'provider-config',
+    status: diagnostic.status,
+    label: 'Provider Config',
+    summary: diagnostic.summary,
+    detail: diagnostic.detail.join('\n'),
+  };
+}
+
 export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
   const projectPath = resolveProjectPath(ctx.cwd);
   const snapshot = ctx.store.getSnapshot();
@@ -348,7 +379,7 @@ export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
       summary: isConfigured(ctx.config)
         ? `API key present, model ${ctx.config.model}`
         : 'Missing API key',
-      detail: `config=${getGlobalConfigPath()}\nbaseUrl=${ctx.config.apiBaseUrl || '(default OpenAI-compatible endpoint)'}`,
+      detail: `config=${getGlobalConfigPath()}\nbaseUrl=${redactProviderSecrets(ctx.config.apiBaseUrl || '(default OpenAI-compatible endpoint)')}`,
     },
     {
       id: 'llm',
@@ -356,6 +387,7 @@ export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
       label: 'LLM',
       summary: ctx.llm ? `Initialized ${ctx.llm.getModel()}` : 'LLM service is not initialized',
     },
+    summarizeProviderConfig(ctx),
     summarizeAutoCompact(ctx),
     {
       id: 'permissions',

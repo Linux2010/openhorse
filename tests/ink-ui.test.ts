@@ -728,6 +728,7 @@ describe('Ink UI helpers', () => {
       args: { path: 'src/index.ts' },
       callId: 'call-1',
       result: '{"success":true}',
+      modelVisibleResult: '{"success":true}',
       duration: 12,
       success: true,
     });
