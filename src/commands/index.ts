@@ -52,7 +52,12 @@ import {
 import { loadSessionIndex, searchSessions } from '../services/session-index';
 import { getAutoCompact } from '../services/compact/auto-compact';
 import { createContextHarness } from '../harness';
-import { resolveSkillsForTurn } from '../skills';
+import {
+  getSkillsRegistry,
+  normalizeRequestedSkillName,
+  resolveSkillsForTurn,
+  skillActivationNames,
+} from '../skills';
 import { buildReferencedFilesPrompt } from '../services/file-context';
 import { loadProjectInstructionFiles } from '../services/project-instructions';
 import { refreshProjectInstructions } from '../services/prompt-context';
@@ -242,6 +247,22 @@ function showStatus(ctx: CommandContext): CommandResult {
   console.log(`    Prompt rules  ${snapshot.projectInstructionsContent ? SUCCESS(`${snapshot.projectInstructionsContent.length} chars`) : DIM('none')}`);
   console.log(`    Project memory ${snapshot.memoryContent ? SUCCESS(`${snapshot.memoryContent.length} chars`) : DIM('none')}`);
   console.log(`    Skills index   ${snapshot.skillsContent ? SUCCESS(`${snapshot.skillsContent.length} chars`) : DIM('none')}`);
+
+  if (snapshot.lastLoopStats) {
+    const stats = snapshot.lastLoopStats;
+    console.log();
+    console.log(`  Last loop:`);
+    console.log(`    Finish     ${stats.finishReason}`);
+    console.log(`    Requests   ${stats.llmRequests} LLM / ${stats.turnsStarted} turns`);
+    console.log(`    Tools      ${stats.toolCalls} total (${stats.readOnlyToolCalls} read-only, ${stats.unsafeToolCalls} unsafe)`);
+    console.log(`    Tool bytes ${formatBytes(stats.modelVisibleToolBytes)} model-visible / ${formatBytes(stats.toolResultBytes)} total`);
+    if (stats.summarizedBytes > 0) {
+      console.log(`    Saved      ${formatBytes(stats.summarizedBytes)} from model context`);
+    }
+    if (stats.compactTrigger) {
+      console.log(`    Compact    ${stats.compactTrigger}`);
+    }
+  }
 
   const harnessState = snapshot.harnessState;
   if (harnessState?.contract || harnessState?.capsule) {
@@ -1063,6 +1084,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           sessionMessagesToRecord.push({
             role: 'tool',
             content: event.result,
+            modelVisibleContent: event.modelVisibleResult,
             timestamp: Date.now(),
             toolCallId: event.callId,
           });
@@ -1086,6 +1108,9 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
           finalContent = event.content;
           finalModel = event.model;
           finalUsage = event.usage;
+          if (event.stats) {
+            ctx.store.setLastLoopStats(event.stats);
+          }
           break;
       }
     }
@@ -1233,8 +1258,6 @@ function handleCost(ctx: CommandContext): CommandResult {
 }
 
 function handleSkills(ctx: CommandContext): CommandResult {
-  const { getSkillsRegistry } = require('../skills');
-
   console.log();
   console.log(HEADER('Loaded Skills'));
   console.log(DIM('─'.repeat(40)));
@@ -1255,10 +1278,16 @@ function handleSkills(ctx: CommandContext): CommandResult {
     console.log(`  Total ${SUCCESS(summary.count)} skills (${WARN(summary.autoCount)} auto-trigger)`);
     console.log();
     for (const skill of registry.getAllSkills()) {
-      const source = registry['loader']?.getSource(skill.name);
+      const source = registry.getSource(skill.name);
       const sourceType = source?.type || 'unknown';
+      const resourceRoot = skill.resourceRoot || skill.source || source?.path;
+      const skillFile = resourceRoot
+        ? `${resourceRoot.replace(/\/SKILL\.md$/i, '')}/SKILL.md`
+        : source?.skillFile;
       console.log(`  ${ACCENT(skill.name)} ${DIM(`(${sourceType})`)}`);
       console.log(`    ${DIM(skill.description || '(no description)')}`);
+      if (skillFile) console.log(`    ${DIM(`SKILL.md ${skillFile}`)}`);
+      if (resourceRoot) console.log(`    ${DIM(`Root     ${resourceRoot}`)}`);
     }
     console.log();
   } catch (err: any) {
@@ -1267,6 +1296,67 @@ function handleSkills(ctx: CommandContext): CommandResult {
   }
 
   return { success: true };
+}
+
+function handleSkill(args: string): CommandResult {
+  const trimmed = args.trim();
+  const registry = getSkillsRegistry();
+  registry.initialize();
+
+  if (!trimmed) {
+    const names = registry.getAllSkills().map(skill => skill.name).sort();
+    return {
+      success: false,
+      error: [
+        'Usage: /skill <name> <task>',
+        `Loaded skills: ${names.join(', ') || 'none'}`,
+      ].join('\n'),
+    };
+  }
+
+  const [rawName, ...rest] = trimmed.split(/\s+/);
+  const requestedName = normalizeRequestedSkillName(rawName);
+  const skill = registry.getAllSkills()
+    .find(candidate => skillActivationNames(candidate)
+      .some(name => normalizeRequestedSkillName(name) === requestedName));
+
+  if (!skill) {
+    const suggestions = registry.getAllSkills()
+      .map(candidate => candidate.name)
+      .filter(name => name.includes(requestedName) || requestedName.includes(name))
+      .slice(0, 5);
+    return {
+      success: false,
+      error: suggestions.length > 0
+        ? `Unknown skill: ${rawName}\nDid you mean: ${suggestions.join(', ')}?`
+        : `Unknown skill: ${rawName}`,
+    };
+  }
+
+  const task = rest.join(' ').trim();
+  const source = registry.getSource(skill.name);
+  const resourceRoot = skill.resourceRoot || skill.source || source?.path;
+  const skillFile = resourceRoot
+    ? `${resourceRoot.replace(/\/SKILL\.md$/i, '')}/SKILL.md`
+    : source?.skillFile;
+
+  if (!task) {
+    return {
+      success: true,
+      output: [
+        `Skill ${skill.name} is loaded.`,
+        skillFile ? `SKILL.md ${skillFile}` : '',
+        resourceRoot ? `Root     ${resourceRoot}` : '',
+        `Use: /skill ${skill.name} <task>`,
+      ].filter(Boolean).join('\n'),
+    };
+  }
+
+  return {
+    success: true,
+    continueAsChat: true,
+    chatInput: `/skill ${skill.name} ${task}`,
+  };
 }
 
 function handleMcp(ctx: CommandContext): CommandResult {
@@ -2121,6 +2211,16 @@ const COMMANDS: SlashCommand[] = [
     priority: 20,
     type: 'builtin',
     execute: (ctx) => handleSkills(ctx),
+  },
+  {
+    name: 'skill',
+    aliases: ['use-skill', 'activate-skill'],
+    description: 'Activate a loaded skill for one chat turn',
+    argumentHint: '<name> <task>',
+    category: 'context',
+    priority: 21,
+    type: 'chat',
+    execute: (_ctx, args) => handleSkill(args),
   },
   {
     name: 'memory',

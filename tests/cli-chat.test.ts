@@ -217,6 +217,41 @@ describe('CLI Chat Regression', () => {
       }
     });
 
+    test('executeChat stores last agent-loop stats for status diagnostics', async () => {
+      const config = loadConfig({
+        apiKey: 'test-key',
+        ui: { renderer: 'terminal', confirmations: 'config' },
+      });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'gpt-4o',
+      });
+      const mockLLM = new MockLLMService('gpt-4o') as unknown as LLMService;
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+      try {
+        await executeChat({
+          cwd: process.cwd(),
+          config,
+          store,
+          llm: mockLLM,
+          runtime: {} as any,
+          writeOutput: () => {},
+          writeLine: () => {},
+        }, 'Hello');
+
+        expect(store.getSnapshot().lastLoopStats).toMatchObject({
+          finishReason: 'completed',
+          turnsStarted: 1,
+          llmRequests: 1,
+          toolCalls: 0,
+        });
+      } finally {
+        logSpy.mockRestore();
+      }
+    });
+
     test('executeChat injects active skill prompt and scopes tools', async () => {
       const config = loadConfig({
         apiKey: 'test-key',

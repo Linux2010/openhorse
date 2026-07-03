@@ -72,6 +72,10 @@ function isShortFeedback(input: string): boolean {
   return /^(好的|可以|收到|嗯|对|是的|不错|挺好|挺好的|不对|不对吧|不是|错了|ok|yes|no|fine|great)$/i.test(text);
 }
 
+function isVersionScopedRefinement(input: string): boolean {
+  return /(这个版本|本版本|当前版本|this version).*(主要|重点|聚焦|稳定|收敛|优化|完善|focus|stabilize|improve)/i.test(input);
+}
+
 function classifyKind(input: string, state?: HarnessState): { kind: IntentKind; confidence: number; reason: string } {
   const text = normalize(input);
   const lower = text.toLowerCase();
@@ -91,6 +95,10 @@ function classifyKind(input: string, state?: HarnessState): { kind: IntentKind; 
 
   if (matches(lower, /\b(verify|test|run tests?|check|lint|typecheck|build)\b/) || matches(text, /(验证|测试|检查|跑一下|运行测试|构建|编译)/)) {
     return { kind: 'verify_or_test', confidence: 0.82, reason: 'verification-oriented wording' };
+  }
+
+  if (hasRoot && isVersionScopedRefinement(text)) {
+    return { kind: 'refine_current_task', confidence: 0.78, reason: 'version-scoped refinement within the active task' };
   }
 
   if (matches(lower, /\b(harness|mcp|session|resume|compact|config|configuration|ui|npm|publish|push|pull request|pr)\b/) ||

@@ -7,7 +7,7 @@ import {
   createAgentRuntimeEventSinkFromUiEvents,
   createUiEventSinkFromAgentRuntimeEvents,
 } from '../src/runtime/agent-runtime-protocol';
-import { AgentChatController } from '../src/runtime/chat-controller';
+import { AgentChatController, createToolEventPresenter } from '../src/runtime/chat-controller';
 import {
   resolveUiRendererCapabilities,
   type OpenHorseUiRuntime,
@@ -184,6 +184,71 @@ describe('AgentRuntimeController', () => {
           content: expect.stringContaining('Use /resume <number|session-id|name> or /resume --last.'),
         }),
       ]);
+    });
+  });
+
+  it('routes /skill commands through chat with active skill injection', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      const config = loadConfig({
+        apiKey: 'test-key',
+        model: 'test-model',
+      });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'test-model',
+      });
+      const llm = {
+        getModel: jest.fn(() => 'test-model'),
+        chatStream: jest.fn(async (
+          messages: Array<{ role: string; content: string }>,
+          callbacks?: { onChunk?: (chunk: string) => void },
+          tools?: Array<{ function: { name: string } }>,
+        ) => {
+          callbacks?.onChunk?.('done');
+          return {
+            content: 'done',
+            model: 'test-model',
+            usage: { promptTokens: 10, completionTokens: 2 },
+          };
+        }),
+      };
+      let session: SessionMeta | null = null;
+      const runtime = createRuntime({
+        cwd: projectDir,
+        config,
+        store,
+        llm: llm as any,
+        isConfigured: true,
+        ensureSession: jest.fn(() => {
+          session ??= createSession(projectDir, 'test-model');
+          return session;
+        }),
+        getSession: jest.fn(() => session),
+        setSession: jest.fn(nextSession => {
+          session = nextSession;
+        }),
+      });
+      const { events, appended } = createEvents();
+      const controller = new AgentChatController(runtime, events);
+
+      await expect(controller.runInput('/skill code-review inspect src')).resolves.toBeUndefined();
+
+      expect(llm.chatStream).toHaveBeenCalled();
+      const [messages, , scopedTools] = llm.chatStream.mock.calls[0];
+      const systemPrompt = messages
+        .filter((message: { role: string }) => message.role === 'system')
+        .map((message: { content: string }) => message.content)
+        .join('\n');
+      expect(systemPrompt).toContain('## Active Skills');
+      expect(systemPrompt).toContain('# Code Review Skill');
+      expect(scopedTools).toBeDefined();
+      expect(scopedTools!.map((tool: { function: { name: string } }) => tool.function.name).sort())
+        .toEqual(['glob', 'grep', 'read_file']);
+      expect(appended).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: 'error', content: expect.stringContaining('Unknown command') }),
+      ]));
     });
   });
 
@@ -642,6 +707,23 @@ describe('AgentRuntimeController', () => {
     expect(processing).toEqual([true]);
     expect(events.toolStarted).toHaveBeenCalledWith({ callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } });
     expect(events.toolFinished).toHaveBeenCalledWith(expect.objectContaining({ callId: 'call-1', success: true }));
+  });
+
+  it('prints full exec_command text in tool transcript entries', () => {
+    const { events, appended } = createEvents();
+    const presenter = createToolEventPresenter(events);
+    const command = 'cd /Users/hope/ai-project/a2a-python && export PATH="$HOME/.local/bin:$PATH" && ./scripts/lint.sh --all';
+
+    presenter.start({
+      type: 'tool_call',
+      callId: 'call-exec',
+      name: 'exec_command',
+      args: { command },
+      batchCount: 1,
+      batchIndex: 0,
+    });
+
+    expect(appended[0].content).toBe(`Running exec_command\n  $ ${command}`);
   });
 
   it('adapts a protocol event sink back into UiEventSink for renderer compatibility', () => {

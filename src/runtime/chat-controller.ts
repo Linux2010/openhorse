@@ -53,24 +53,64 @@ function formatChatError(error: unknown): string {
   return message;
 }
 
-function compactToolArgs(args: Record<string, unknown>): string {
+function compactMiddle(text: string, maxLength: number): string {
+  const compact = text.replace(/\s+/g, ' ').trim();
+  if (compact.length <= maxLength) return compact;
+  if (maxLength <= 3) return compact.slice(0, maxLength);
+
+  const headLength = Math.ceil((maxLength - 3) * 0.55);
+  const tailLength = Math.floor((maxLength - 3) * 0.45);
+  return `${compact.slice(0, headLength)}...${compact.slice(-tailLength)}`;
+}
+
+function compactToolArgs(args: Record<string, unknown>, maxLength = 160): string {
   for (const key of ['path', 'file_path', 'file', 'cwd', 'command', 'pattern', 'query', 'url', 'target', 'sessionId']) {
     const value = args[key];
     if (typeof value === 'string') {
-      return value.length > 56 ? `${value.slice(0, 53)}...` : value;
+      return compactMiddle(value, maxLength);
     }
   }
   const firstString = Object.values(args).find(value => typeof value === 'string');
   if (typeof firstString === 'string') {
-    return firstString.length > 56 ? `${firstString.slice(0, 53)}...` : firstString;
+    return compactMiddle(firstString, maxLength);
   }
   return '';
+}
+
+function toolStartContent(name: string, args: Record<string, unknown>): string {
+  if (name === 'exec_command' && typeof args.command === 'string') {
+    return `Running ${name}\n  $ ${args.command}`;
+  }
+
+  const detail = compactToolArgs(args);
+  return `Running ${name}${detail ? ` ${detail}` : ''}`;
 }
 
 function toolSummary(name: string, args: Record<string, unknown>, success: boolean, duration: number): string {
   const details = compactToolArgs(args);
   const suffix = details ? ` ${details}` : '';
   return `${success ? '✓' : '✗'} ${name}${suffix} (${duration}ms)`;
+}
+
+function toolFinishContent(event: ToolResultEvent): string {
+  const summary = event.summary || toolSummary(event.name, event.args, event.success, event.duration);
+  const lines = [summary];
+
+  if (event.name === 'exec_command' && typeof event.args.command === 'string') {
+    lines.push(`  $ ${event.args.command}`);
+  }
+
+  if (event.artifactRef) {
+    lines.push(`  artifact ${event.artifactRef.id} (${event.artifactRef.outputBytes}B full output)`);
+  } else if (typeof event.outputBytes === 'number') {
+    lines.push(`  output ${event.outputBytes}B`);
+  }
+
+  if (event.error) {
+    lines.push(`Error: ${event.error}`);
+  }
+
+  return lines.filter(Boolean).join('\n');
 }
 
 function isSyntheticCompactContext(content: string): boolean {
@@ -279,11 +319,10 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
         name: event.name,
         args: event.args,
       });
-      const detail = compactToolArgs(event.args);
       const entryId = events.append({
         role: 'tool',
         title: 'tool',
-        content: `Running ${event.name}${detail ? ` ${detail}` : ''}`,
+        content: toolStartContent(event.name, event.args),
       });
       runningToolEntries.set(event.callId, entryId);
     },
@@ -297,11 +336,10 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
         duration: event.duration,
         summary: event.summary,
         error: event.error,
+        outputBytes: event.outputBytes,
+        artifactRef: event.artifactRef,
       });
-      const content = [
-        event.summary || toolSummary(event.name, event.args, event.success, event.duration),
-        event.error ? `Error: ${event.error}` : '',
-      ].filter(Boolean).join('\n');
+      const content = toolFinishContent(event);
       const existingEntryId = runningToolEntries.get(event.callId);
 
       if (existingEntryId) {
@@ -635,6 +673,7 @@ export class AgentChatController {
             sessionMessagesToRecord.push({
               role: 'tool',
               content: event.result,
+              modelVisibleContent: event.modelVisibleResult,
               timestamp: Date.now(),
               toolCallId: event.callId,
             });
@@ -658,6 +697,9 @@ export class AgentChatController {
             finalContent = event.content;
             finalUsage = event.usage;
             finalModel = event.model;
+            if (event.stats) {
+              this.runtime.store.setLastLoopStats(event.stats);
+            }
             break;
         }
       }

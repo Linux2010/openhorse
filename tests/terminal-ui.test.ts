@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+  applySingleTerminalTabCompletion,
   applyTerminalTabCompletion,
   completeFileMention,
   completeSlashCommand,
@@ -12,11 +13,14 @@ import {
   TerminalInputComposer,
   normalizeTerminalAnswer,
   parseEditInput,
+  renderTerminalShortcuts,
   resolveTerminalSessionPickerInput,
+  terminalContentWidth,
   truncateTerminalText,
   visibleLength,
 } from '../src/terminal-ui/launch';
 import { RawTerminalEditor } from '../src/terminal-ui/raw-editor';
+import { createToolEventPresenter } from '../src/runtime/chat-controller';
 import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
 
 function makeRawEditor(options: {
@@ -260,7 +264,7 @@ describe('terminal UI renderer adapter', () => {
     expect(output).toContain('first task');
     expect(output).toContain('second task');
     expect(output).not.toContain('hidden task');
-    expect(output).toContain('Showing 2 of 3');
+    expect(output).toContain('Showing 1-2 of 3');
     expect(resolveTerminalSessionPickerInput('3', request)).toEqual({
       type: 'selected',
       sessionId: '33333333-aaaa-bbbb-cccc-333333333333',
@@ -272,6 +276,182 @@ describe('terminal UI renderer adapter', () => {
     expect(resolveTerminalSessionPickerInput('hidden', request)).toEqual({
       type: 'selected',
       sessionId: '33333333-aaaa-bbbb-cccc-333333333333',
+    });
+  });
+
+  it('pages session picker output without changing global numeric selection', () => {
+    const { sink, writes } = makeTerminalSink();
+    const request = {
+      title: 'Pick a Session',
+      maxVisibleItems: 2,
+      sessions: [
+        {
+          id: '11111111-aaaa-bbbb-cccc-111111111111',
+          projectPath: '/tmp/project-a',
+          model: 'glm-5',
+          startTime: 1,
+          tokenCount: 0,
+          cost: 0,
+          taskSummary: 'first task',
+        },
+        {
+          id: '22222222-aaaa-bbbb-cccc-222222222222',
+          projectPath: '/tmp/project-b',
+          model: 'glm-5',
+          startTime: 2,
+          tokenCount: 0,
+          cost: 0,
+          taskSummary: 'second task',
+        },
+        {
+          id: '33333333-aaaa-bbbb-cccc-333333333333',
+          projectPath: '/tmp/project-c',
+          model: 'glm-5',
+          startTime: 3,
+          tokenCount: 0,
+          cost: 0,
+          taskSummary: 'third task',
+        },
+      ],
+    };
+
+    sink.showSessionPicker(request);
+    expect(writes.join('')).toContain('page 1/2');
+    expect(writes.join('')).not.toContain('third task');
+
+    expect(sink.consumePendingSelection('n')).toBe('');
+    expect(writes.join('')).toContain('page 2/2');
+    expect(writes.join('')).toContain(' 3.');
+    expect(writes.join('')).toContain('third task');
+
+    expect(sink.consumePendingSelection('3')).toEqual({
+      type: 'select_session',
+      sessionId: '33333333-aaaa-bbbb-cccc-333333333333',
+      allProjects: undefined,
+      source: 'picker',
+    });
+  });
+
+  it('handles session picker empty state, page boundaries, and slash escape locally', () => {
+    const empty = makeTerminalSink();
+    empty.sink.showSessionPicker({ title: 'Pick a Session', sessions: [] });
+
+    expect(empty.writes.join('')).toContain('No saved sessions found.');
+    expect(empty.sink.consumePendingSelection('')).toBe('');
+    expect(empty.writes.join('')).toContain('Session picker cancelled.');
+
+    const { sink, writes } = makeTerminalSink();
+    const request = {
+      title: 'Pick a Session',
+      allProjects: true,
+      maxVisibleItems: 1,
+      sessions: [
+        {
+          id: '11111111-aaaa-bbbb-cccc-111111111111',
+          projectPath: '/tmp/project-a',
+          model: 'glm-5',
+          startTime: 1,
+          tokenCount: 0,
+          cost: 0,
+          taskSummary: 'first task',
+        },
+        {
+          id: '22222222-aaaa-bbbb-cccc-222222222222',
+          projectPath: '/tmp/project-b',
+          model: 'glm-5',
+          startTime: 2,
+          tokenCount: 0,
+          cost: 0,
+          taskSummary: 'second task',
+        },
+      ],
+    };
+
+    sink.showSessionPicker(request);
+    expect(sink.consumePendingSelection('p')).toBe('');
+    expect(writes.join('')).toContain('Already at first session page.');
+
+    expect(sink.consumePendingSelection('n')).toBe('');
+    expect(writes.join('')).toContain('page 2/2');
+    expect(writes.join('')).toContain('second task');
+
+    expect(sink.consumePendingSelection('next')).toBe('');
+    expect(writes.join('')).toContain('Already at last session page.');
+
+    expect(sink.consumePendingSelection('/resume --last')).toBe('/resume --last');
+  });
+
+  it('keeps all-project session picker flag when selecting after paging', () => {
+    const { sink } = makeTerminalSink();
+    sink.showSessionPicker({
+      title: 'Pick a Session',
+      allProjects: true,
+      maxVisibleItems: 1,
+      sessions: [
+        {
+          id: '11111111-aaaa-bbbb-cccc-111111111111',
+          projectPath: '/tmp/project-a',
+          model: 'glm-5',
+          startTime: 1,
+          tokenCount: 0,
+          cost: 0,
+          taskSummary: 'first task',
+        },
+        {
+          id: '22222222-aaaa-bbbb-cccc-222222222222',
+          projectPath: '/tmp/project-b',
+          model: 'glm-5',
+          startTime: 2,
+          tokenCount: 0,
+          cost: 0,
+          taskSummary: 'second task',
+        },
+      ],
+    });
+
+    expect(sink.consumePendingSelection('n')).toBe('');
+    expect(sink.consumePendingSelection('2')).toEqual({
+      type: 'select_session',
+      sessionId: '22222222-aaaa-bbbb-cccc-222222222222',
+      allProjects: true,
+      source: 'picker',
+    });
+  });
+
+  it('prefers exact session title matches over picker navigation aliases', () => {
+    const { sink } = makeTerminalSink();
+    sink.showSessionPicker({
+      title: 'Pick a Session',
+      maxVisibleItems: 1,
+      sessions: [
+        {
+          id: '11111111-aaaa-bbbb-cccc-111111111111',
+          projectPath: '/tmp/project-a',
+          model: 'glm-5',
+          startTime: 1,
+          tokenCount: 0,
+          cost: 0,
+          name: 'next',
+          taskSummary: 'navigation alias title',
+        },
+        {
+          id: '22222222-aaaa-bbbb-cccc-222222222222',
+          projectPath: '/tmp/project-b',
+          model: 'glm-5',
+          startTime: 2,
+          tokenCount: 0,
+          cost: 0,
+          name: 'previous',
+          taskSummary: 'second task',
+        },
+      ],
+    });
+
+    expect(sink.consumePendingSelection('next')).toEqual({
+      type: 'select_session',
+      sessionId: '11111111-aaaa-bbbb-cccc-111111111111',
+      allProjects: undefined,
+      source: 'picker',
     });
   });
 
@@ -340,6 +520,62 @@ describe('terminal UI renderer adapter', () => {
     expect(output.indexOf('✓ read_file')).toBeLessThan(output.indexOf('Done.'));
   });
 
+  it('keeps the full exec command visible after tool completion', () => {
+    const { sink, writes } = makeTerminalSink();
+    const presenter = createToolEventPresenter(sink);
+    const command = 'cd /Users/hope/ai-project/a2a-python && export PATH="$HOME/.local/bin:$PATH" && uv run pytest tests/test_url_validator.py --cov=a2a --cov-report=term-missing';
+
+    presenter.start({
+      type: 'tool_call',
+      callId: 'call-exec',
+      name: 'exec_command',
+      args: { command },
+    });
+    presenter.finish({
+      type: 'tool_result',
+      callId: 'call-exec',
+      name: 'exec_command',
+      args: { command },
+      result: JSON.stringify({ success: true, output: 'ok', summary: '🔧 exec (2B output)' }),
+      modelVisibleResult: JSON.stringify({ success: true, output: 'ok', summary: '🔧 exec (2B output)' }),
+      success: true,
+      duration: 12,
+      summary: '🔧 exec (2B output)',
+    });
+
+    const output = writes.join('');
+    expect(output).toContain(`$ ${command}`);
+    expect(output).toContain('🔧 exec (2B output)');
+  });
+
+  it('renders tool artifact references for summarized long output', () => {
+    const { sink, writes } = makeTerminalSink();
+    const presenter = createToolEventPresenter(sink);
+
+    presenter.start({
+      type: 'tool_call',
+      callId: 'call-read',
+      name: 'read_file',
+      args: { path: 'logs/huge-output.txt' },
+    });
+    presenter.finish({
+      type: 'tool_result',
+      callId: 'call-read',
+      name: 'read_file',
+      args: { path: 'logs/huge-output.txt' },
+      result: JSON.stringify({ success: true, output: 'truncated' }),
+      modelVisibleResult: JSON.stringify({ success: true, output: 'truncated' }),
+      success: true,
+      duration: 9,
+      summary: '📄 read logs/huge-output.txt (truncated)',
+      outputBytes: 150000,
+      artifactRef: { id: 'read_file-abc123', outputBytes: 150000 },
+    });
+
+    const output = writes.join('');
+    expect(output).toContain('artifact read_file-abc123 (150000B full output)');
+  });
+
   it('clears renderer view state without clearing terminal scrollback', () => {
     const { sink, writes } = makeTerminalSink();
 
@@ -363,9 +599,44 @@ describe('terminal UI renderer adapter', () => {
     expect(output.match(/Thinking\.\.\./g)).toHaveLength(1);
     expect(output).toContain('Running 2 tools...');
   });
+
+  it('renders local terminal shortcuts without requiring the model', () => {
+    const shortcuts = renderTerminalShortcuts();
+
+    expect(shortcuts).toContain('Terminal shortcuts');
+    expect(shortcuts).toContain('Ctrl+U');
+    expect(shortcuts).toContain('/resume');
+    expect(shortcuts).toContain('n/p');
+  });
 });
 
 describe('terminal UI visual width helpers', () => {
+  const originalColumns = Object.getOwnPropertyDescriptor(process.stdout, 'columns');
+
+  afterEach(() => {
+    if (originalColumns) {
+      Object.defineProperty(process.stdout, 'columns', originalColumns);
+    } else {
+      delete (process.stdout as { columns?: number }).columns;
+    }
+  });
+
+  function setStdoutColumns(columns: number | undefined): void {
+    Object.defineProperty(process.stdout, 'columns', {
+      configurable: true,
+      value: columns,
+    });
+  }
+
+  it('honors real narrow terminal widths while keeping a stable missing-width default', () => {
+    setStdoutColumns(42);
+    expect(terminalContentWidth(88)).toBe(42);
+
+    setStdoutColumns(undefined);
+    expect(terminalContentWidth(50)).toBe(60);
+    expect(terminalContentWidth(88)).toBe(88);
+  });
+
   it('counts CJK and emoji by terminal cell width instead of UTF-16 length', () => {
     expect(visibleLength('abc')).toBe(3);
     expect(visibleLength('开源')).toBe(4);
@@ -481,6 +752,18 @@ describe('raw terminal editor', () => {
     expect(notices[0]).toContain('Pasted 20 lines');
     expect(notices[0]).toContain('/edit is better');
   });
+
+  it('shows completion candidates when Tab has no unique completion', () => {
+    const notices: string[] = [];
+    const { editor } = makeRawEditor({ onNotice: message => notices.push(message) });
+    editor.setPrompt('› ');
+
+    editor.feed(Buffer.from('/s\t'));
+
+    expect(editor.getBuffer().value).toBe('/s');
+    expect(notices.join('\n')).toContain('Completions:');
+    expect(notices.join('\n')).toContain('/status');
+  });
 });
 
 describe('terminal UI multiline composer', () => {
@@ -593,6 +876,13 @@ describe('terminal UI readline completion', () => {
   it('applies tab completion when a cooked terminal passes tab through as text', () => {
     expect(applyTerminalTabCompletion('/stat\t', tempDir)).toBe('/status ');
     expect(applyTerminalTabCompletion('look @docs/pl\t', tempDir)).toBe('look @docs/plan.md ');
+  });
+
+  it('returns completion candidates for ambiguous terminal Tab', () => {
+    const result = applySingleTerminalTabCompletion('/s', tempDir);
+
+    expect(result.changed).toBe(false);
+    expect(result.matches).toContain('/status ');
   });
 
   it('uses the common prefix for ambiguous tab completion', () => {

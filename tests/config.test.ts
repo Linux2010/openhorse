@@ -9,6 +9,7 @@ import {
   resolveUIRenderer,
   SUPPORTED_UI_RENDERERS,
 } from '../src/services/config';
+import { delimiter } from 'path';
 
 const originalEnv = { ...process.env };
 
@@ -34,6 +35,7 @@ function cleanEnv() {
   delete process.env.OPENHORSE_WEBSEARCH_AUTH_TYPE;
   delete process.env.OPENHORSE_WEBSEARCH_API_KEY_HEADER;
   delete process.env.OPENHORSE_WEBSEARCH_API_KEY_QUERY_PARAM;
+  delete process.env.OPENHORSE_SKILLS_PATHS;
   delete process.env.DASHSCOPE_API_KEY;
 }
 
@@ -135,6 +137,9 @@ describe('loadConfig', () => {
         renderer: 'ink',
         confirmations: 'interactive',
       },
+      skills: {
+        paths: ['/opt/openhorse/skills'],
+      },
     });
 
     const config = loadConfig();
@@ -148,6 +153,28 @@ describe('loadConfig', () => {
     expect(config.webSearch?.endpoint).toBe('https://dashscope.example/mcp');
     expect(config.webSearch?.apiKey).toBe('sk-websearch-global');
     expect(config.webSearch?.toolName).toBe('web_search');
+    expect(config.skills).toEqual({ paths: ['/opt/openhorse/skills'] });
+  });
+
+  test('loads additional skills paths from env and overrides', () => {
+    jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
+      defaultModel: 'gpt-4o',
+      skills: {
+        paths: ['/global/skills', ''],
+      },
+    });
+
+    process.env.OPENHORSE_SKILLS_PATHS = ['/env/skills-a', '/env/skills-b'].join(delimiter);
+
+    const config = loadConfig({
+      skills: {
+        paths: ['/override/skills', '/global/skills'],
+      },
+    });
+
+    expect(config.skills).toEqual({
+      paths: ['/global/skills', '/env/skills-a', '/env/skills-b', '/override/skills'],
+    });
   });
 
   test('cli renderer override can switch to experimental ink beta', () => {

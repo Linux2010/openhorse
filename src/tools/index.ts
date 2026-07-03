@@ -51,6 +51,30 @@ const BATCH_READ_ALLOWED_TOOLS = new Set(['git_status', 'list_files', 'glob', 'g
 const BATCH_READ_MAX_STEPS = 8;
 const BATCH_READ_STEP_OUTPUT_MAX_BYTES = 1600;
 
+function compactOneLine(text: string, maxLength: number): string {
+  const compact = text.replace(/\s+/g, ' ').trim();
+  if (compact.length <= maxLength) return compact;
+  if (maxLength <= 3) return compact.slice(0, maxLength);
+
+  const headLength = Math.ceil((maxLength - 3) * 0.55);
+  const tailLength = Math.floor((maxLength - 3) * 0.45);
+  return `${compact.slice(0, headLength)}...${compact.slice(-tailLength)}`;
+}
+
+function summarizeFailedToolResult(result: ToolResult): string {
+  const details: string[] = [];
+  if (result.error) {
+    details.push(compactOneLine(result.error, 80));
+  }
+
+  const output = result.output ? compactOneLine(result.output, 120) : '';
+  if (output && output !== result.error) {
+    details.push(`output: ${output}`);
+  }
+
+  return details.join('; ');
+}
+
 // ============================================================================
 // 工具集
 // ============================================================================
@@ -258,12 +282,16 @@ export const TOOLS: OpenHorseTool[] = [
       const cmd = (args.command as string) || '';
       return isReadOnlyCommand(cmd);
     },
-    userFacingName: (args) => `Exec ${(args.command as string)?.slice(0, 60) || ''}`,
+    userFacingName: (args) => `Exec ${compactOneLine((args.command as string) || '', 80)}`,
     getSummary: (args, result) => {
-      const cmd = (args.command as string)?.slice(0, 40) || '';
-      if (!result.success) return `🔧 exec: ${cmd} → error`;
+      const command = (args.command as string) || '';
+      const commandSummary = command ? `\n  $ ${compactOneLine(command, 160)}` : '';
+      if (!result.success) {
+        const detail = summarizeFailedToolResult(result);
+        return `🔧 exec → error${detail ? ` (${detail})` : ''}${commandSummary}`;
+      }
       const bytes = Buffer.byteLength(result.output, 'utf8');
-      return `🔧 exec: ${cmd} (${bytes}B output)`;
+      return `🔧 exec (${bytes}B output)${commandSummary}`;
     },
   }),
 

@@ -9,6 +9,10 @@
 
 import OpenAI from 'openai';
 import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions';
+import { diagnoseProviderError, toLLMProviderError } from './provider-diagnostics';
+
+export { LLMProviderError } from './provider-diagnostics';
+export type { ProviderErrorDiagnostic, ProviderErrorType } from './provider-diagnostics';
 
 // ============================================================================
 // 类型定义
@@ -146,42 +150,20 @@ const MAX_529_RETRIES = 3;
 
 /** 判断错误是否可重试 */
 function isRetryableError(error: unknown): boolean {
-  if (!error) return false;
-
-  if (error instanceof OpenAI.APIError) {
-    const status = error.status;
-    return status === 429 || status === 500 || status === 502 || status === 503 || status === 504 || status === 529;
-  }
-
-  if (error instanceof Error) {
-    const msg = error.message.toLowerCase();
-    return msg.includes('timeout')
-      || msg.includes('connection')
-      || msg.includes('econnreset')
-      || msg.includes('epipe')
-      || isProviderBusyMessage(msg);
-  }
-
-  return false;
+  return diagnoseProviderError(error).retryable;
 }
 
 /** 判断是否为 529 错误 */
 function is529Error(error: unknown): boolean {
-  return error instanceof OpenAI.APIError && error.status === 529;
-}
-
-function isProviderBusyMessage(message: string): boolean {
-  const msg = message.toLowerCase();
-  return msg.includes('code: 10012')
-    || msg.includes('engineinternalerror')
-    || msg.includes('system is busy')
-    || msg.includes('service is busy')
-    || msg.includes('server is busy')
-    || msg.includes('try again later');
+  return diagnoseProviderError(error).status === 529;
 }
 
 function isProviderBusyError(error: unknown): boolean {
-  return error instanceof Error && isProviderBusyMessage(error.message);
+  return diagnoseProviderError(error).type === 'provider_busy';
+}
+
+function isRateLimitError(error: unknown): boolean {
+  return diagnoseProviderError(error).type === 'rate_limit';
 }
 
 function createAbortError(): Error {
@@ -194,6 +176,10 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw createAbortError();
   }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 /** 从错误中提取 retry-after 时间 */
@@ -276,6 +262,8 @@ async function withRetry<T>(
       const retryAfter = getRetryAfterMs(error);
       if (retryAfter !== null) {
         delayMs = retryAfter;
+      } else if (isRateLimitError(error)) {
+        delayMs = Math.max(delayMs, Math.min(2000, config.baseDelayMs * 4));
       }
 
       config.onRetry?.(attempt, lastError, delayMs);
@@ -369,11 +357,17 @@ export class LLMService {
       params.tools = tools as ChatCompletionTool[];
     }
 
-    const response = await this.client.chat.completions.create(params as any);
+    let response: any;
+    try {
+      response = await this.client.chat.completions.create(params as any);
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      throw toLLMProviderError(error);
+    }
 
     const message = response.choices?.[0]?.message;
     const content = message?.content ?? '';
-    const toolCalls = message?.tool_calls?.map(tc => ({
+    const toolCalls = message?.tool_calls?.map((tc: any) => ({
       id: tc.id,
       type: 'function' as const,
       function: {
@@ -416,7 +410,7 @@ export class LLMService {
       abortSignal: options?.abortSignal,
       onRetry: (_attempt, error, _delayMs) => {
         // Provider overload/busy errors can often recover by retrying or using fallback.
-        if (is529Error(error) || isProviderBusyError(error)) {
+        if (is529Error(error) || isProviderBusyError(error) || isRateLimitError(error)) {
           this.consecutive529Errors++;
           if (this.consecutive529Errors >= MAX_529_RETRIES && this.config.fallbackModel) {
             this.triggerFallback();
@@ -425,132 +419,138 @@ export class LLMService {
       },
     };
 
-    return withRetry(
-      async () => {
-        throwIfAborted(options?.abortSignal);
-
-        const params: Record<string, unknown> = {
-          model: this.config.model,
-          messages: this.toOpenAIMessages(messages),
-          max_tokens: this.config.maxTokens,
-          temperature: this.config.temperature,
-          stream: true,
-          stream_options: { include_usage: true },
-        };
-
-        if (tools && tools.length > 0) {
-          params.tools = tools as ChatCompletionTool[];
-        }
-
-        onThinking?.();
-
-        const requestOptions = options?.abortSignal ? { signal: options.abortSignal } : undefined;
-        const stream = await this.client.chat.completions.create(
-          params as any,
-          requestOptions as any,
-        ) as unknown as AsyncIterable<any>;
-
-        let content = '';
-        let usedModel = this.config.model;
-        let usage: { promptTokens: number; completionTokens: number } | undefined;
-        const toolCallsMap = new Map<string, {
-          id: string;
-          type: 'function';
-          function: { name: string; arguments: string };
-        }>();
-
-        for await (const chunk of stream) {
+    try {
+      return await withRetry(
+        async () => {
           throwIfAborted(options?.abortSignal);
 
-          // Debug: log raw chunk when tool_calls present (for diagnosing API compatibility)
-          if (process.env.OPENHORSE_DEBUG_TOOLS === 'true') {
+          const params: Record<string, unknown> = {
+            model: this.config.model,
+            messages: this.toOpenAIMessages(messages),
+            max_tokens: this.config.maxTokens,
+            temperature: this.config.temperature,
+            stream: true,
+            stream_options: { include_usage: true },
+          };
+
+          if (tools && tools.length > 0) {
+            params.tools = tools as ChatCompletionTool[];
+          }
+
+          onThinking?.();
+
+          const requestOptions = options?.abortSignal ? { signal: options.abortSignal } : undefined;
+          const stream = await this.client.chat.completions.create(
+            params as any,
+            requestOptions as any,
+          ) as unknown as AsyncIterable<any>;
+
+          let content = '';
+          let usedModel = this.config.model;
+          let usage: { promptTokens: number; completionTokens: number } | undefined;
+          const toolCallsMap = new Map<string, {
+            id: string;
+            type: 'function';
+            function: { name: string; arguments: string };
+          }>();
+
+          for await (const chunk of stream) {
+            throwIfAborted(options?.abortSignal);
+
+            // Debug: log raw chunk when tool_calls present (for diagnosing API compatibility)
+            if (process.env.OPENHORSE_DEBUG_TOOLS === 'true') {
+              const delta = chunk.choices?.[0]?.delta;
+              if (delta?.tool_calls || chunk.choices?.[0]?.message?.tool_calls) {
+                console.log('[DEBUG] Raw chunk:', JSON.stringify(chunk, null, 2));
+              }
+            }
+
             const delta = chunk.choices?.[0]?.delta;
-            if (delta?.tool_calls || chunk.choices?.[0]?.message?.tool_calls) {
-              console.log('[DEBUG] Raw chunk:', JSON.stringify(chunk, null, 2));
+
+            const text = delta?.content ?? '';
+            if (text) {
+              content += text;
+              onChunk?.(text);
             }
-          }
 
-          const delta = chunk.choices?.[0]?.delta;
-
-          const text = delta?.content ?? '';
-          if (text) {
-            content += text;
-            onChunk?.(text);
-          }
-
-          // Handle tool_calls from delta (OpenAI standard streaming format).
-          // A single stream chunk may contain multiple tool call deltas.
-          for (const tc of delta?.tool_calls ?? []) {
-            const idx = tc.index ?? 0;
-            const existing = toolCallsMap.get(idx);
-            if (!existing) {
-              toolCallsMap.set(idx, {
-                id: tc.id ?? `call_${idx}`,
-                type: 'function',
-                function: { name: tc.function?.name ?? '', arguments: tc.function?.arguments ?? '' },
-              });
-            } else {
-              if (tc.id) existing.id = tc.id;
-              if (tc.function?.name) existing.function.name = tc.function.name;
-              if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
-            }
-          }
-
-          // Handle tool_calls from message (some APIs like DashScope may use this format)
-          const msg = chunk.choices?.[0]?.message;
-          if (msg?.tool_calls && !delta?.tool_calls) {
-            for (const msgTc of msg.tool_calls) {
-              const existing = toolCallsMap.get(msgTc.index ?? 0);
-              if (!existing && msgTc.id) {
-                toolCallsMap.set(msgTc.index ?? 0, {
-                  id: msgTc.id,
+            // Handle tool_calls from delta (OpenAI standard streaming format).
+            // A single stream chunk may contain multiple tool call deltas.
+            for (const tc of delta?.tool_calls ?? []) {
+              const idx = tc.index ?? 0;
+              const existing = toolCallsMap.get(idx);
+              if (!existing) {
+                toolCallsMap.set(idx, {
+                  id: tc.id ?? `call_${idx}`,
                   type: 'function',
-                  function: { name: msgTc.function?.name ?? '', arguments: msgTc.function?.arguments ?? '' },
+                  function: { name: tc.function?.name ?? '', arguments: tc.function?.arguments ?? '' },
                 });
-              } else if (existing && msgTc.function?.arguments) {
-                existing.function.arguments += msgTc.function.arguments;
+              } else {
+                if (tc.id) existing.id = tc.id;
+                if (tc.function?.name) existing.function.name = tc.function.name;
+                if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
+              }
+            }
+
+            // Handle tool_calls from message (some APIs like DashScope may use this format)
+            const msg = chunk.choices?.[0]?.message;
+            if (msg?.tool_calls && !delta?.tool_calls) {
+              for (const msgTc of msg.tool_calls) {
+                const existing = toolCallsMap.get(msgTc.index ?? 0);
+                if (!existing && msgTc.id) {
+                  toolCallsMap.set(msgTc.index ?? 0, {
+                    id: msgTc.id,
+                    type: 'function',
+                    function: { name: msgTc.function?.name ?? '', arguments: msgTc.function?.arguments ?? '' },
+                  });
+                } else if (existing && msgTc.function?.arguments) {
+                  existing.function.arguments += msgTc.function.arguments;
+                }
+              }
+            }
+
+            if (chunk.usage) {
+              usage = {
+                promptTokens: chunk.usage.prompt_tokens ?? 0,
+                completionTokens: chunk.usage.completion_tokens ?? 0,
+              };
+            }
+
+            if (chunk.model) {
+              usedModel = chunk.model;
+            }
+          }
+
+          const toolCalls = Array.from(toolCallsMap.entries())
+            .sort(([a], [b]) => Number(a) - Number(b))
+            .map(([, value]) => value);
+
+          for (const tc of toolCalls) {
+            if (!tc.function.arguments || tc.function.arguments.trim() === '') {
+              tc.function.arguments = '{}';
+            } else {
+              try {
+                const parsed = JSON.parse(tc.function.arguments);
+                tc.function.arguments = JSON.stringify(parsed);
+              } catch {
+                tc.function.arguments = '{}';
               }
             }
           }
 
-          if (chunk.usage) {
-            usage = {
-              promptTokens: chunk.usage.prompt_tokens ?? 0,
-              completionTokens: chunk.usage.completion_tokens ?? 0,
-            };
-          }
-
-          if (chunk.model) {
-            usedModel = chunk.model;
-          }
-        }
-
-        const toolCalls = Array.from(toolCallsMap.entries())
-          .sort(([a], [b]) => Number(a) - Number(b))
-          .map(([, value]) => value);
-
-        for (const tc of toolCalls) {
-          if (!tc.function.arguments || tc.function.arguments.trim() === '') {
-            tc.function.arguments = '{}';
-          } else {
-            try {
-              const parsed = JSON.parse(tc.function.arguments);
-              tc.function.arguments = JSON.stringify(parsed);
-            } catch {
-              tc.function.arguments = '{}';
-            }
-          }
-        }
-
-        return {
-          content,
-          model: usedModel,
-          usage,
-          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-        };
-      },
-      retryConfig,
-    );
+          this.consecutive529Errors = 0;
+          return {
+            content,
+            model: usedModel,
+            usage,
+            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+          };
+        },
+        retryConfig,
+      );
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      throw toLLMProviderError(error);
+    }
   }
 
   /**

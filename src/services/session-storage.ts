@@ -112,6 +112,8 @@ export interface SessionMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
   /** 内容 */
   content: string;
+  /** Compact content used when restoring this message into model context. */
+  modelVisibleContent?: string;
   /** 时间戳 (ms) */
   timestamp: number;
   /** 工具调用 ID (tool role) */
@@ -727,7 +729,7 @@ export function loadSessionHistory(sessionId: string): Message[] {
   return messages.map(m => {
     const result: Message = {
       role: m.role,
-      content: m.content,
+      content: m.modelVisibleContent ?? m.content,
     };
 
     // tool role: 添加 tool_call_id

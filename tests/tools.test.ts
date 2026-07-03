@@ -377,6 +377,45 @@ describe('executeTool', () => {
     expect(parsed.outputBytes).toBeGreaterThan(0);
   });
 
+  test('exec_command failure summary includes error and output preview', async () => {
+    const result = await executeTool('exec_command', {
+      command: 'printf "found-uv\\n"; exit 1',
+    }, undefined, ctx);
+    const parsed = JSON.parse(result);
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.error).toBe('Command exited with code 1');
+    expect(parsed.output).toContain('found-uv');
+    expect(parsed.summary).toContain('Command exited with code 1');
+    expect(parsed.summary).toContain('output: found-uv');
+  });
+
+  test('exec_command summary preserves useful tail of long commands', async () => {
+    const result = await executeTool('exec_command', {
+      command: `printf ok # ${'x'.repeat(140)} tail-marker`,
+    }, undefined, ctx);
+    const parsed = JSON.parse(result);
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.summary).toContain('tail-marker');
+    expect(parsed.summary).toContain('2B output');
+  });
+
+  test('exec_command summary bounds the model-facing command text', async () => {
+    const longCommand = `printf ok # head-marker ${'x'.repeat(600)} tail-marker`;
+    const result = await executeTool('exec_command', {
+      command: longCommand,
+    }, undefined, ctx);
+    const parsed = JSON.parse(result);
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.summary).toContain('head-marker');
+    expect(parsed.summary).toContain('tail-marker');
+    expect(parsed.summary).toContain('...');
+    expect(parsed.summary).not.toContain('x'.repeat(300));
+    expect(parsed.summary.length).toBeLessThan(220);
+  });
+
   test('returns error for unknown tool', async () => {
     const result = await executeTool('unknown_tool', {});
     const parsed = JSON.parse(result);

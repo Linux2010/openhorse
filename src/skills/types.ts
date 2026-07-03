@@ -35,11 +35,13 @@ export interface SkillDefinition {
   /** Skill source path */
   source?: string;
   /** Source type after discovery. */
-  sourceType?: 'builtin' | 'user' | 'project';
+  sourceType?: 'builtin' | 'user' | 'configured' | 'project';
   /** Root directory for resolving relative skill resources. */
   resourceRoot?: string;
   /** Tags for categorization */
   tags?: string[];
+  /** Additional explicit activation names or phrases. */
+  aliases?: string[];
 }
 
 /** Skill execution context */
@@ -73,9 +75,25 @@ export interface SkillSource {
   /** Skill directory path */
   path: string;
   /** Source type */
-  type: 'builtin' | 'user' | 'project';
+  type: 'builtin' | 'user' | 'configured' | 'project';
   /** SKILL.md file path */
   skillFile?: string;
+}
+
+/** Duplicate skill resolution diagnostic. */
+export interface SkillDuplicateDiagnostic {
+  /** Skill name that appeared more than once. */
+  name: string;
+  /** Previously registered source. */
+  existingSource?: SkillSource;
+  /** Incoming source that collided with an existing skill. */
+  incomingSource: SkillSource;
+  /** Source type that wins after priority resolution. */
+  selectedSourceType?: SkillSource['type'];
+  /** Whether the incoming skill replaced the existing one. */
+  incomingSelected: boolean;
+  /** Human-readable reason for the resolution. */
+  reason: string;
 }
 
 /** Skills registry state */
@@ -88,6 +106,8 @@ export interface SkillsRegistryState {
   autoSkills: SkillDefinition[];
   /** Last scan time */
   lastScan: number;
+  /** Duplicate skill resolution diagnostics. */
+  duplicateDiagnostics?: SkillDuplicateDiagnostic[];
 }
 
 // ============================================================================

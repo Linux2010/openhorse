@@ -40,9 +40,11 @@ export interface SkillResolution {
 
 export function resolveSkillsForTurn(context: SkillRuntimeContext): SkillResolution {
   const registry = getSkillsRegistry();
-  const matched = registry
-    .findMatchingSkills(context.input)
-    .slice(0, MAX_AUTO_SKILLS);
+  const explicit = findExplicitSkillReferences(context.input, registry.getAllSkills());
+  const matched = mergeSkillsByName([
+    ...explicit,
+    ...registry.findMatchingSkills(context.input),
+  ]).slice(0, MAX_AUTO_SKILLS);
   const skills = matched.map(toAppliedSkill);
   const scopedToolNames = buildScopedToolNames(skills);
   const toolScopeActive = scopedToolNames.length > 0;
@@ -60,7 +62,9 @@ export function resolveSkillsForTurn(context: SkillRuntimeContext): SkillResolut
 }
 
 export function hasMatchingSkill(input: string): boolean {
-  return getSkillsRegistry().findMatchingSkills(input).length > 0;
+  const registry = getSkillsRegistry();
+  return registry.findMatchingSkills(input).length > 0
+    || findExplicitSkillReferences(input, registry.getAllSkills()).length > 0;
 }
 
 export function resolveSkillResourcePath(skill: AppliedSkill | SkillDefinition, relativePath: string): string {
@@ -78,6 +82,36 @@ export function resolveSkillResourcePath(skill: AppliedSkill | SkillDefinition, 
   return resolvedPath;
 }
 
+export function normalizeRequestedSkillName(input: string): string {
+  return input
+    .trim()
+    .replace(/^[/@#]+/u, '')
+    .replace(/^skill:/iu, '')
+    .replace(/[:：,，.。;；!！?？]+$/u, '')
+    .toLowerCase();
+}
+
+export function parseSkillCommandInput(input: string): { skillName?: string; task: string } {
+  const trimmed = input.trim();
+  const match = trimmed.match(/^\/(?:skill|use-skill|activate-skill)\s+(\S+)(?:\s+([\s\S]*))?$/iu);
+  if (!match) return { task: input };
+  return {
+    skillName: normalizeRequestedSkillName(match[1]),
+    task: (match[2] || '').trim(),
+  };
+}
+
+function findExplicitSkillReferences(input: string, skills: SkillDefinition[]): SkillDefinition[] {
+  const command = parseSkillCommandInput(input);
+  if (command.skillName) {
+    return skills.filter(skill => skillActivationNames(skill)
+      .some(name => normalizeRequestedSkillName(name) === command.skillName));
+  }
+
+  return skills.filter(skill => skillActivationNames(skill)
+    .some(name => isSkillExplicitlyRequested(input, name)));
+}
+
 function toAppliedSkill(skill: SkillDefinition): AppliedSkill {
   return {
     name: skill.name,
@@ -89,6 +123,62 @@ function toAppliedSkill(skill: SkillDefinition): AppliedSkill {
     resourceRoot: skill.resourceRoot || skill.source,
     priority: skill.priority,
   };
+}
+
+export function skillActivationNames(skill: Pick<SkillDefinition, 'name' | 'aliases' | 'tags'>): string[] {
+  const names = new Set<string>();
+  names.add(skill.name);
+  for (const alias of skill.aliases || []) {
+    if (alias.trim()) names.add(alias.trim());
+  }
+
+  const tags = new Set((skill.tags || []).map(tag => tag.toLowerCase()));
+  const name = skill.name.toLowerCase();
+  const isTeamWorkflow = name.includes('squad')
+    || name.includes('team')
+    || (tags.has('agent-workflow') && (tags.has('coding') || name.includes('coding')));
+  if (isTeamWorkflow) {
+    for (const alias of ['团队开发', '编程小队', '开发小队', '团队协作', '协同开发', '工作团队', '团队工作']) {
+      names.add(alias);
+    }
+  }
+
+  return [...names];
+}
+
+function mergeSkillsByName(skills: SkillDefinition[]): SkillDefinition[] {
+  const seen = new Set<string>();
+  const merged: SkillDefinition[] = [];
+  for (const skill of skills) {
+    if (seen.has(skill.name)) continue;
+    seen.add(skill.name);
+    merged.push(skill);
+  }
+  return merged;
+}
+
+function isSkillExplicitlyRequested(input: string, skillName: string): boolean {
+  const escapedName = escapeRegExp(skillName);
+  const englishActivator = '(?:use|using|with|apply|activate|load|run)';
+  const englishSkillNoun = '(?:skill|workflow|agent)';
+  const leftBoundary = '(?:^|[\\s"\'`“”‘’/([{:：])';
+  const rightBoundary = '(?=$|[\\s"\'`“”‘’.,;:!?，。；：！？)\\]}])';
+
+  const patterns = [
+    new RegExp(`^/${escapedName}${rightBoundary}`, 'iu'),
+    new RegExp(`${leftBoundary}${englishActivator}\\s+(?:the\\s+)?(?:${englishSkillNoun}\\s+)?${escapedName}${rightBoundary}`, 'iu'),
+    new RegExp(`${leftBoundary}${englishActivator}\\s+${escapedName}\\s+(?:${englishSkillNoun})${rightBoundary}`, 'iu'),
+    new RegExp(`${leftBoundary}(?:skill|skills?)\\s*[:：]\\s*${escapedName}${rightBoundary}`, 'iu'),
+    new RegExp(`${leftBoundary}${escapedName}\\s+(?:skill|workflow|agent)${rightBoundary}`, 'iu'),
+    new RegExp(`(?:使用|用|调用|加载|启用|按|基于|采用)\\s*${escapedName}${rightBoundary}`, 'iu'),
+    new RegExp(`${leftBoundary}${escapedName}\\s*(?:技能|工作流|智能体|agent|skill)`, 'iu'),
+  ];
+
+  return patterns.some(pattern => pattern.test(input));
+}
+
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function buildScopedToolNames(skills: AppliedSkill[]): string[] {
