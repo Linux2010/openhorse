@@ -24,7 +24,7 @@ import { createSpinner, toolLine } from '../ui/box';
 import { createStreamRenderer, type StreamMarkdownRenderer } from '../ui/stream-markdown';
 import { showProgress, hideProgress, showToolProgress } from '../ui/progress';
 import { formatBytes } from '../services/format';
-import { query, getSystemPrompt, resetToolState, getToolState, type QueryEvent, type PromptContext } from '../framework';
+import { query, getSystemPrompt, resetToolState, getToolState, type LoopStats, type QueryEvent, type PromptContext } from '../framework';
 import { executeTool, getRuntimeTools, getToolNames } from '../tools';
 import { mcpManager } from '../tools/mcp';
 import type { Message, StreamCallbacks } from '../services/llm';
@@ -34,7 +34,7 @@ import {
   lookupSessionRef,
   loadSessionHistory,
   loadSessionMeta,
-  markSessionTranscriptDisplayStart,
+  persistSessionCompactHistory,
   appendSessionMessage,
   appendSessionMessages,
   endSession,
@@ -46,8 +46,11 @@ import {
   renameSession,
   resolveProjectPath,
   readSessionMessages,
+  readSessionTraceEvents,
+  redactTraceText,
   type SessionMeta,
   type SessionMessage,
+  type SessionTraceEvent,
 } from '../services/session-storage';
 import { loadSessionIndex, searchSessions } from '../services/session-index';
 import { getAutoCompact } from '../services/compact/auto-compact';
@@ -65,6 +68,8 @@ import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from '../s
 import { resolveModelContext } from '../services/model-context';
 import { collectWorkspaceDiff, formatWorkspaceDiff } from '../services/workspace-diff';
 import { createCommitPlan, formatCommitPlan } from '../services/commit-plan';
+import { findArtifact, listArtifacts, retrieveArtifact } from '../core/tool-artifacts';
+import { listCheckpoints, restoreCheckpoint } from '../core/checkpoint';
 import {
   cleanupStorage,
   collectStorageReport,
@@ -73,6 +78,7 @@ import {
   repairProjectMetadata,
 } from '../services/storage-maintenance';
 import { agentStepStatus, runningToolsStatus } from '../runtime/agent-status';
+import { resolveRuntimeLoopBudget } from '../runtime/loop-budget';
 
 // ============================================================================
 // 颜色常量
@@ -109,6 +115,119 @@ function formatTokenCount(tokens: number): string {
 
 function formatThreshold(value: number): string {
   return `${Math.round(value * 100)}%`;
+}
+
+function formatDurationMs(ms: number): string {
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.round(ms)}ms`;
+}
+
+function formatLoopBudgetSource(stats: LoopStats): string {
+  const source = stats.loopBudgetSource ?? 'unknown';
+  if (source === 'config' && stats.loopBudgetBaseProfile) {
+    return `config over ${stats.loopBudgetBaseProfile}`;
+  }
+  return source;
+}
+
+function formatLoopStatsLines(stats: LoopStats, detail = false): string[] {
+  const lines = [
+    `Finish     ${stats.finishReason}`,
+    `Requests   ${stats.llmRequests} LLM / ${stats.turnsStarted} turns`,
+    `Tools      ${stats.toolCalls} total (${stats.readOnlyToolCalls} read-only, ${stats.unsafeToolCalls} unsafe)`,
+    `Tool bytes ${formatBytes(stats.modelVisibleToolBytes)} model-visible / ${formatBytes(stats.toolResultBytes)} total`,
+  ];
+
+  if (stats.summarizedBytes > 0) {
+    lines.push(`Saved      ${formatBytes(stats.summarizedBytes)} from model context`);
+  }
+  if (stats.compactTrigger) {
+    lines.push(`Compact    ${stats.compactTrigger}`);
+  }
+  if (stats.localFastPathUsed) {
+    lines.push('Fast path  yes');
+  }
+  if (stats.budgetExceededReason) {
+    lines.push(`Budget     ${stats.budgetExceededReason}`);
+  }
+  if (stats.continuationActions && stats.continuationActions.length > 0) {
+    lines.push(`Next       ${stats.continuationActions.join(', ')}`);
+  }
+  if ((stats.providerRetryCount ?? 0) > 0) {
+    const retryParts = [
+      `${stats.providerRetryCount} retries`,
+      `delay ${formatDurationMs(stats.providerRetryDelayMs ?? 0)}`,
+      stats.providerLastRetryErrorType
+        ? `last ${stats.providerLastRetryErrorType}${stats.providerLastRetryStatus ? `/${stats.providerLastRetryStatus}` : ''}`
+        : undefined,
+    ].filter(Boolean);
+    lines.push(`Provider   ${retryParts.join(', ')}`);
+  }
+  if ((stats.providerFallbackCount ?? 0) > 0 || stats.providerUsingFallback) {
+    const fallbackPath = stats.providerFallbackFromModel && stats.providerFallbackToModel
+      ? `${stats.providerFallbackFromModel} -> ${stats.providerFallbackToModel}`
+      : stats.providerFinalModel
+        ? `final ${stats.providerFinalModel}`
+        : 'active';
+    lines.push(`Fallback   ${fallbackPath}`);
+  }
+  if (typeof stats.verificationClaimAllowed === 'boolean') {
+    const verificationParts = [
+      stats.verificationProfile ?? 'unknown',
+      `required=${stats.verificationRequired ? 'yes' : 'no'}`,
+      `passed=${stats.verificationPassedCommands?.length ?? 0}`,
+      `failed=${stats.verificationFailedCommands?.length ?? 0}`,
+      `missing=${stats.verificationMissingCommands?.length ?? 0}`,
+      `claim=${stats.verificationClaimAllowed ? 'yes' : 'no'}`,
+    ];
+    lines.push(`Verify     ${verificationParts.join(' ')}`);
+  }
+  if (
+    typeof stats.loopBudgetMaxLlmRequests === 'number'
+    || typeof stats.loopBudgetMaxToolCalls === 'number'
+    || typeof stats.loopBudgetMaxModelVisibleBytes === 'number'
+  ) {
+    const caps = [
+      typeof stats.loopBudgetMaxLlmRequests === 'number'
+        ? `${stats.llmRequests}/${stats.loopBudgetMaxLlmRequests} LLM`
+        : undefined,
+      typeof stats.loopBudgetMaxToolCalls === 'number'
+        ? `${stats.toolCalls}/${stats.loopBudgetMaxToolCalls} tools`
+        : undefined,
+      typeof stats.loopBudgetMaxModelVisibleBytes === 'number'
+        ? `${formatBytes(stats.modelVisibleToolBytes)}/${formatBytes(stats.loopBudgetMaxModelVisibleBytes)} visible`
+        : undefined,
+      typeof stats.loopBudgetMaxReadOnlyFragmentation === 'number'
+        ? `fragment ${stats.singleReadOnlyStreak}/${stats.loopBudgetMaxReadOnlyFragmentation}`
+        : undefined,
+    ].filter(Boolean);
+    lines.push(`Budget cap ${caps.join(', ')} (${formatLoopBudgetSource(stats)})`);
+  }
+  if (stats.singleReadOnlyStreak > 0 || stats.batchReadSuggestionCount > 0) {
+    lines.push(`Read-only  streak ${stats.singleReadOnlyStreak}, batch_read hints ${stats.batchReadSuggestionCount}`);
+  }
+
+  if (detail) {
+    lines.push(`Unsafe     ${stats.unsafeToolCalls}`);
+    if (stats.providerRetryErrorTypes && stats.providerRetryErrorTypes.length > 0) {
+      lines.push(`Retry type ${stats.providerRetryErrorTypes.join(', ')}`);
+    }
+    if (stats.verificationFailedCommands && stats.verificationFailedCommands.length > 0) {
+      lines.push(`Failed     ${stats.verificationFailedCommands.join(' && ')}`);
+    }
+    if (stats.verificationMissingCommands && stats.verificationMissingCommands.length > 0) {
+      lines.push(`Missing    ${stats.verificationMissingCommands.join(' && ')}`);
+    }
+    if (stats.verificationSkippedReason) {
+      lines.push(`Verify why ${stats.verificationSkippedReason}`);
+    }
+    if (stats.continuationHint) {
+      lines.push(`Next why   ${stats.continuationHint}`);
+    }
+    lines.push(`Budget hit ${stats.finishReason === 'budget_exceeded' ? 'yes' : 'no'}`);
+  }
+
+  return lines;
 }
 
 const CATEGORY_LABELS: Record<CommandCategory, string> = {
@@ -252,15 +371,8 @@ function showStatus(ctx: CommandContext): CommandResult {
     const stats = snapshot.lastLoopStats;
     console.log();
     console.log(`  Last loop:`);
-    console.log(`    Finish     ${stats.finishReason}`);
-    console.log(`    Requests   ${stats.llmRequests} LLM / ${stats.turnsStarted} turns`);
-    console.log(`    Tools      ${stats.toolCalls} total (${stats.readOnlyToolCalls} read-only, ${stats.unsafeToolCalls} unsafe)`);
-    console.log(`    Tool bytes ${formatBytes(stats.modelVisibleToolBytes)} model-visible / ${formatBytes(stats.toolResultBytes)} total`);
-    if (stats.summarizedBytes > 0) {
-      console.log(`    Saved      ${formatBytes(stats.summarizedBytes)} from model context`);
-    }
-    if (stats.compactTrigger) {
-      console.log(`    Compact    ${stats.compactTrigger}`);
+    for (const line of formatLoopStatsLines(stats)) {
+      console.log(`    ${line}`);
     }
   }
 
@@ -281,6 +393,443 @@ function showStatus(ctx: CommandContext): CommandResult {
   }
   console.log();
   return { success: true };
+}
+
+function handleLoopStats(ctx: CommandContext): CommandResult {
+  const stats = ctx.store.getSnapshot().lastLoopStats;
+  if (!stats) {
+    console.log('No agent-loop stats recorded yet.');
+    return { success: true };
+  }
+
+  console.log(HEADER('Agent Loop Stats'));
+  console.log();
+  for (const line of formatLoopStatsLines(stats, true)) {
+    console.log(`  ${line}`);
+  }
+  console.log();
+  console.log(DIM('Use this to spot excessive LLM requests, fragmented read-only tool calls, and local fast-path hits.'));
+  return { success: true };
+}
+
+function formatTraceEventLine(event: SessionTraceEvent): string {
+  const time = new Date(event.timestamp).toLocaleTimeString();
+  const prefix = `${DIM(time)} ${ACCENT(event.type)}`;
+
+  switch (event.type) {
+    case 'turn_start':
+      return `${prefix} input=${formatBytes(event.inputBytes ?? 0)}${event.localFastPathUsed ? ' fast-path' : ''}${event.note ? ` ${DIM(event.note)}` : ''}`;
+    case 'request_start':
+      return `${prefix} model=${event.model ?? 'unknown'} iteration=${event.turn ?? '?'}`;
+    case 'provider_retry': {
+      const parts = [
+        `count=${event.providerRetryCount ?? 0}`,
+        `delay=${formatDurationMs(event.providerRetryDelayMs ?? 0)}`,
+        event.providerLastRetryErrorType
+          ? `last=${event.providerLastRetryErrorType}${event.providerLastRetryStatus ? `/${event.providerLastRetryStatus}` : ''}`
+          : '',
+        event.providerRetryErrorTypes?.length ? `types=${event.providerRetryErrorTypes.join(',')}` : '',
+        event.providerFinalModel ? `final=${event.providerFinalModel}` : '',
+      ].filter(Boolean);
+      return `${prefix} ${parts.join(' ')}`;
+    }
+    case 'provider_fallback': {
+      const path = event.providerFallbackFromModel && event.providerFallbackToModel
+        ? `${event.providerFallbackFromModel}->${event.providerFallbackToModel}`
+        : event.providerFinalModel ?? 'active';
+      const parts = [
+        `count=${event.providerFallbackCount ?? 0}`,
+        `path=${path}`,
+        `using=${event.providerUsingFallback ? 'yes' : 'no'}`,
+      ];
+      return `${prefix} ${parts.join(' ')}`;
+    }
+    case 'prompt_assembly': {
+      const parts = [
+        `model=${event.promptModelId ?? 'unknown'}`,
+        `tokens=${event.promptEstimatedTokens ?? 0}/${event.promptBudgetTokens ?? 0}`,
+        `core=${event.promptCoreTokens ?? 0}`,
+        `evidenceBudget=${event.promptEvidenceBudgetTokens ?? 0}`,
+        `recentBudget=${event.promptRecentTurnBudgetTokens ?? 0}`,
+        `included=${event.promptIncludedEvidenceCount ?? 0}`,
+        `omitted=${event.promptOmittedEvidenceCount ?? 0}`,
+      ];
+      const sections = event.promptSections?.length
+        ? ` sections=${event.promptSections.join(',')}`
+        : '';
+      const evidence = event.promptIncludedEvidence?.length
+        ? ` evidence=${event.promptIncludedEvidence.slice(0, 6).join(', ')}${event.promptIncludedEvidence.length > 6 ? ', ...' : ''}`
+        : '';
+      return `${prefix} ${parts.join(' ')}${sections ? DIM(sections) : ''}${evidence ? ` ${DIM(evidence)}` : ''}`;
+    }
+    case 'assistant_tool_calls':
+      return `${prefix} calls=${event.toolCallCount ?? 0} assistant=${formatBytes(event.contentBytes ?? 0)}`;
+    case 'checkpoint': {
+      const files = event.checkpointFiles?.length
+        ? ` files=${event.checkpointFiles.slice(0, 6).join(', ')}${event.checkpointFiles.length > 6 ? ', ...' : ''}`
+        : '';
+      const targets = event.workspaceFiles?.length && !files
+        ? ` targets=${event.workspaceFiles.slice(0, 6).join(', ')}${event.workspaceFiles.length > 6 ? ', ...' : ''}`
+        : '';
+      return `${prefix} id=${event.checkpointId ?? 'unknown'} saved=${event.checkpointFileCount ?? 0}${files}${targets}${event.note ? ` ${DIM(event.note)}` : ''}`;
+    }
+    case 'tool_call':
+      return `${prefix} ${event.name ?? 'tool'}${event.argsSummary ? ` ${DIM(event.argsSummary)}` : ''}${event.argsArtifactId ? ` ${DIM(`args=/artifacts show ${event.argsArtifactId} --full${event.argsBytes ? ` (${formatBytes(event.argsBytes)})` : ''}`)}` : ''}${event.callId ? ` ${DIM(event.callId)}` : ''}`;
+    case 'permission_decision': {
+      const status = event.permissionApproved ? SUCCESS('approved') : ERROR('denied');
+      const parts = [
+        `source=${event.permissionSource ?? 'unknown'}`,
+        `behavior=${event.permissionBehavior ?? 'unknown'}`,
+      ];
+      if (typeof event.permissionDuration === 'number') {
+        parts.push(`${event.permissionDuration}ms`);
+      }
+      return `${prefix} ${status} ${event.name ?? 'tool'} ${DIM(parts.join(' '))}${event.permissionReason ? ` ${DIM(event.permissionReason)}` : ''}`;
+    }
+    case 'tool_result': {
+      const status = event.success === false ? ERROR('error') : SUCCESS('ok');
+      const bytes = [
+        `output=${formatBytes(event.outputBytes ?? 0)}`,
+        `model=${formatBytes(event.modelVisibleBytes ?? 0)}`,
+      ];
+      if (event.artifactId) bytes.push(`artifact=${event.artifactId}`);
+      return `${prefix} ${status} ${event.name ?? 'tool'} ${DIM(`${event.duration ?? 0}ms`)} ${DIM(bytes.join(' '))}${event.error ? ` ${ERROR(event.error)}` : ''}`;
+    }
+    case 'message':
+      return `${prefix} assistant=${formatBytes(event.contentBytes ?? 0)}`;
+    case 'strategy_exhausted':
+      return `${prefix}${event.note ? ` ${WARN(event.note)}` : ''}`;
+    case 'complete': {
+      const stats = [
+        `finish=${event.finishReason ?? 'unknown'}`,
+        `llm=${typeof event.llmRequests === 'number' ? event.llmRequests : 'unknown'}`,
+        `tools=${typeof event.toolCalls === 'number' ? event.toolCalls : 'unknown'}`,
+      ];
+      if (
+        event.loopBudgetSource
+        || typeof event.loopBudgetMaxLlmRequests === 'number'
+        || typeof event.loopBudgetMaxToolCalls === 'number'
+        || typeof event.loopBudgetMaxModelVisibleBytes === 'number'
+      ) {
+        const source = event.loopBudgetSource === 'config' && event.loopBudgetBaseProfile
+          ? `config/${event.loopBudgetBaseProfile}`
+          : event.loopBudgetSource ?? 'unknown';
+        const caps = [
+          typeof event.loopBudgetMaxLlmRequests === 'number'
+            ? `${typeof event.llmRequests === 'number' ? event.llmRequests : '?'}/${event.loopBudgetMaxLlmRequests}llm`
+            : undefined,
+          typeof event.loopBudgetMaxToolCalls === 'number'
+            ? `${typeof event.toolCalls === 'number' ? event.toolCalls : '?'}/${event.loopBudgetMaxToolCalls}tools`
+            : undefined,
+          typeof event.loopBudgetMaxModelVisibleBytes === 'number'
+            ? `${formatBytes(event.loopBudgetMaxModelVisibleBytes)}visible`
+            : undefined,
+          typeof event.loopBudgetMaxReadOnlyFragmentation === 'number'
+            ? `frag=${event.loopBudgetMaxReadOnlyFragmentation}`
+            : undefined,
+          event.loopBudgetConfigOverride ? 'override=yes' : undefined,
+        ].filter(Boolean);
+        stats.push(`budgetProfile=${source}${caps.length ? `(${caps.join(',')})` : ''}`);
+      }
+      if (event.budgetExceededReason) stats.push(`budget=${event.budgetExceededReason}`);
+      if (event.continuationActions?.length) stats.push(`next=${event.continuationActions.join(',')}`);
+      if (event.continuationHint) stats.push(`hint=${event.continuationHint}`);
+      if (event.localFastPathUsed) stats.push('fast-path=yes');
+      return `${prefix} ${stats.join(' ')}`;
+    }
+    case 'local_fast_path':
+      return `${prefix} ${event.name ?? 'tool'}${event.argsSummary ? ` ${DIM(event.argsSummary)}` : ''}${event.argsArtifactId ? ` ${DIM(`args=/artifacts show ${event.argsArtifactId} --full${event.argsBytes ? ` (${formatBytes(event.argsBytes)})` : ''}`)}` : ''}${event.note ? ` ${DIM(event.note)}` : ''}`;
+    case 'workspace_snapshot': {
+      const state = event.workspaceGitAvailable === false
+        ? WARN('not-git')
+        : event.workspaceDirty ? WARN('dirty') : SUCCESS('clean');
+      const files = event.workspaceFiles?.length
+        ? ` files=${event.workspaceFiles.slice(0, 6).join(', ')}${event.workspaceFiles.length > 6 ? ', ...' : ''}`
+        : '';
+      return `${prefix} ${event.workspacePhase ?? 'unknown'} ${state} count=${event.workspaceFileCount ?? 0}${event.workspaceBranch ? ` branch=${event.workspaceBranch}` : ''}${files}${event.error ? ` ${ERROR(event.error)}` : ''}`;
+    }
+    case 'workspace_delta': {
+      const added = event.workspaceNewByTurn ?? [];
+      const changed = event.workspaceChangedByTurn ?? [];
+      const modifiedPreExisting = event.workspaceModifiedPreExistingByTurn ?? [];
+      const resolved = event.workspaceResolvedByTurn ?? [];
+      const parts = [
+        `after=${event.workspaceFileCount ?? 0}`,
+        `new=${added.length}`,
+        `changed=${changed.length}`,
+        `pre-existing-modified=${modifiedPreExisting.length}`,
+        `resolved=${resolved.length}`,
+      ];
+      const details = [
+        added.length ? `new: ${added.slice(0, 6).join(', ')}${added.length > 6 ? ', ...' : ''}` : '',
+        changed.length ? `changed: ${changed.slice(0, 6).join(', ')}${changed.length > 6 ? ', ...' : ''}` : '',
+        modifiedPreExisting.length ? `pre-existing modified: ${modifiedPreExisting.slice(0, 6).join(', ')}${modifiedPreExisting.length > 6 ? ', ...' : ''}` : '',
+        resolved.length ? `resolved: ${resolved.slice(0, 6).join(', ')}${resolved.length > 6 ? ', ...' : ''}` : '',
+      ].filter(Boolean).join(' | ');
+      return `${prefix} ${parts.join(' ')}${details ? ` ${DIM(details)}` : ''}${event.note ? ` ${DIM(event.note)}` : ''}`;
+    }
+    case 'verification_profile': {
+      const commands = event.verificationCommands ?? [];
+      const files = event.verificationChangedFiles ?? [];
+      const details = [
+        `profile=${event.verificationProfile ?? 'unknown'}`,
+        `required=${event.verificationRequired === false ? 'no' : 'yes'}`,
+        `commands=${commands.length}`,
+        `files=${files.length}`,
+      ];
+      const commandPreview = commands.length
+        ? ` cmds: ${commands.slice(0, 4).join(' && ')}${commands.length > 4 ? ' && ...' : ''}`
+        : '';
+      return `${prefix} ${details.join(' ')}${commandPreview ? ` ${DIM(commandPreview)}` : ''}${event.note ? ` ${DIM(event.note)}` : ''}`;
+    }
+    case 'verification_result': {
+      const status = event.verificationPassed === true ? SUCCESS('passed') : ERROR('failed');
+      const command = event.verificationCommand ?? 'unknown';
+      return `${prefix} ${status} ${command}${typeof event.outputBytes === 'number' ? ` ${DIM(formatBytes(event.outputBytes))}` : ''}${event.error ? ` ${ERROR(event.error)}` : ''}`;
+    }
+    case 'verification_summary': {
+      const passed = event.verificationPassedCommands?.length ?? 0;
+      const failed = event.verificationFailedCommands?.length ?? 0;
+      const missing = event.verificationMissingCommands?.length ?? 0;
+      const parts = [
+        `profile=${event.verificationProfile ?? 'unknown'}`,
+        `required=${event.verificationRequired === false ? 'no' : 'yes'}`,
+        `passed=${passed}`,
+        `failed=${failed}`,
+        `missing=${missing}`,
+        `claimAllowed=${event.verificationClaimAllowed ? 'yes' : 'no'}`,
+      ];
+      const missingPreview = missing > 0
+        ? ` missing: ${(event.verificationMissingCommands ?? []).slice(0, 4).join(' && ')}${missing > 4 ? ' && ...' : ''}`
+        : '';
+      return `${prefix} ${parts.join(' ')}${missingPreview ? ` ${DIM(missingPreview)}` : ''}${event.note ? ` ${DIM(event.note)}` : ''}`;
+    }
+    case 'aborted':
+      return `${prefix}${event.note ? ` ${WARN(event.note)}` : ''}`;
+    case 'error':
+      return `${prefix} ${ERROR(event.error ?? 'unknown error')}`;
+    default:
+      return prefix;
+  }
+}
+
+function handleTrace(ctx: CommandContext, args: string = ''): CommandResult {
+  const session = ctx.getSession?.() ?? (ctx.sessionId ? loadSessionMeta(ctx.sessionId) : null);
+  if (!session) {
+    console.log(ERROR('No active session.'));
+    console.log(DIM('Use /resume <session-id> first, or start a chat turn to create a session.'));
+    return { success: false };
+  }
+
+  const events = readSessionTraceEvents(session.id);
+  if (events.length === 0) {
+    console.log(DIM(`No trace events recorded for session ${session.id.slice(0, 8)} yet.`));
+    return { success: true };
+  }
+
+  const ref = args.trim();
+  const requestedTurnId = ref && ref !== 'latest' ? ref : events[events.length - 1].turnId;
+  const turnEvents = events.filter(event => event.turnId === requestedTurnId);
+
+  if (turnEvents.length === 0) {
+    const recentTurnIds = [...new Set(events.map(event => event.turnId))].slice(-8).reverse();
+    console.log(ERROR(`Trace turn not found: ${requestedTurnId}`));
+    console.log(DIM(`Recent turns: ${recentTurnIds.join(', ')}`));
+    return { success: false };
+  }
+
+  console.log(HEADER(`Trace ${requestedTurnId}`));
+  console.log(DIM(`Session ${session.id}  Events ${turnEvents.length}`));
+  console.log(DIM('─'.repeat(40)));
+  for (const event of turnEvents) {
+    console.log(`  ${formatTraceEventLine(event)}`);
+  }
+  console.log();
+  console.log(DIM('Trace stores metadata only; full transcript and tool output stay in session/artifacts.'));
+  return { success: true };
+}
+
+function formatDateTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleString();
+}
+
+function parseArtifactArgs(args: string): { action: 'list' | 'show'; ref?: string; full: boolean; limit: number } {
+  const parts = args.trim().split(/\s+/).filter(Boolean);
+  let full = false;
+  let limit = 20;
+  const positional: string[] = [];
+
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (part === '--full') {
+      full = true;
+      continue;
+    }
+    if ((part === '--limit' || part === '-n') && parts[i + 1]) {
+      const parsed = Number(parts[i + 1]);
+      if (Number.isInteger(parsed) && parsed > 0) {
+        limit = Math.min(parsed, 200);
+      }
+      i++;
+      continue;
+    }
+    positional.push(part);
+  }
+
+  if (positional[0] === 'show' || positional[0] === 'cat') {
+    return { action: 'show', ref: positional[1], full, limit };
+  }
+  if (positional[0]) {
+    return { action: 'show', ref: positional[0], full, limit };
+  }
+  return { action: 'list', full, limit };
+}
+
+function printArtifactPreview(content: string, full: boolean): void {
+  const maxPreviewBytes = 16 * 1024;
+  if (full || Buffer.byteLength(content, 'utf8') <= maxPreviewBytes) {
+    console.log(content);
+    return;
+  }
+
+  const preview = Buffer.from(content, 'utf8').subarray(0, maxPreviewBytes).toString('utf8');
+  console.log(preview);
+  console.log();
+  console.log(DIM(`... preview truncated at ${formatBytes(maxPreviewBytes)}. Use /artifacts show <id> --full for full output.`));
+}
+
+function formatArtifactPathForDisplay(artifactPath: string): string {
+  return redactTraceText(artifactPath);
+}
+
+function handleArtifacts(ctx: CommandContext, args: string = ''): CommandResult {
+  const parsed = parseArtifactArgs(args);
+
+  if (parsed.action === 'list') {
+    const artifacts = listArtifacts(ctx.cwd, parsed.limit);
+    console.log(HEADER('Artifacts'));
+    console.log(DIM('─'.repeat(40)));
+    if (artifacts.length === 0) {
+      console.log(DIM('No artifacts found for this project.'));
+      return { success: true };
+    }
+
+    for (const artifact of artifacts) {
+      console.log(`${ACCENT(artifact.id)} ${DIM(artifact.toolName)} ${formatBytes(artifact.outputBytes)}`);
+      console.log(`  ${DIM(formatDateTime(artifact.modifiedAt))}`);
+      console.log(`  ${DIM(formatArtifactPathForDisplay(artifact.path))}`);
+    }
+    console.log();
+    console.log(DIM('Use /artifacts show <id|prefix> to preview, or add --full for full output.'));
+    return { success: true };
+  }
+
+  if (!parsed.ref) {
+    console.log(ERROR('Usage: /artifacts show <id|prefix> [--full]'));
+    return { success: false };
+  }
+
+  const artifact = findArtifact(ctx.cwd, parsed.ref);
+  if (!artifact) {
+    console.log(ERROR(`Artifact not found or ambiguous: ${parsed.ref}`));
+    console.log(DIM('Run /artifacts to list available artifact ids.'));
+    return { success: false };
+  }
+
+  const content = retrieveArtifact(artifact.path);
+  if (content == null) {
+    console.log(ERROR(`Artifact exists but cannot be read: ${artifact.id}`));
+    console.log(DIM(formatArtifactPathForDisplay(artifact.path)));
+    return { success: false };
+  }
+
+  console.log(HEADER(`Artifact ${artifact.id}`));
+  console.log(DIM(`Tool ${artifact.toolName}  Size ${formatBytes(artifact.outputBytes)}  Modified ${formatDateTime(artifact.modifiedAt)}`));
+  console.log(DIM(formatArtifactPathForDisplay(artifact.path)));
+  console.log(DIM('─'.repeat(40)));
+  printArtifactPreview(content, parsed.full);
+  return { success: true };
+}
+
+function findCheckpointByRef(ctx: CommandContext, ref: string) {
+  const checkpoints = listCheckpoints(ctx.cwd);
+  const exact = checkpoints.find(checkpoint => checkpoint.turnId === ref);
+  if (exact) return { checkpoint: exact, ambiguous: false };
+
+  const matches = checkpoints.filter(checkpoint => checkpoint.turnId.startsWith(ref));
+  return {
+    checkpoint: matches.length === 1 ? matches[0] : undefined,
+    ambiguous: matches.length > 1,
+  };
+}
+
+function handleCheckpoint(ctx: CommandContext, args: string = ''): CommandResult {
+  const tokens = args.trim().split(/\s+/).filter(Boolean);
+  const action = tokens[0] ?? 'list';
+
+  if (action === 'list') {
+    const checkpoints = listCheckpoints(ctx.cwd);
+    console.log(HEADER('Checkpoints'));
+    console.log(DIM('─'.repeat(40)));
+    if (checkpoints.length === 0) {
+      console.log(DIM('No checkpoints found for this project.'));
+      return { success: true };
+    }
+
+    for (const checkpoint of checkpoints.slice(0, 20)) {
+      console.log(`${ACCENT(checkpoint.turnId)} ${DIM(formatDateTime(checkpoint.createdAt))}`);
+      const files = checkpoint.files.map(file => file.path).slice(0, 8).join(', ');
+      console.log(`  ${DIM(`${checkpoint.files.length} file(s)${files ? `: ${files}` : ''}`)}`);
+    }
+    console.log();
+    console.log(DIM('Use /checkpoint restore <turn-id|prefix> to preview, then add --yes to restore.'));
+    return { success: true };
+  }
+
+  if (action !== 'restore') {
+    console.log(ERROR('Usage: /checkpoint [list|restore <turn-id|prefix> [--yes]]'));
+    return { success: false };
+  }
+
+  const ref = tokens.find(token => token !== 'restore' && token !== '--yes');
+  const confirmed = tokens.includes('--yes');
+  if (!ref) {
+    console.log(ERROR('Usage: /checkpoint restore <turn-id|prefix> [--yes]'));
+    return { success: false };
+  }
+
+  const { checkpoint, ambiguous } = findCheckpointByRef(ctx, ref);
+  if (!checkpoint) {
+    console.log(ERROR(ambiguous
+      ? `Checkpoint prefix is ambiguous: ${ref}`
+      : `Checkpoint not found: ${ref}`));
+    console.log(DIM('Run /checkpoint to list available checkpoint ids.'));
+    return { success: false };
+  }
+
+  if (!confirmed) {
+    console.log(HEADER(`Checkpoint ${checkpoint.turnId}`));
+    console.log(DIM(`${formatDateTime(checkpoint.createdAt)}  ${checkpoint.files.length} file(s)`));
+    for (const file of checkpoint.files.slice(0, 20)) {
+      console.log(`  ${file.path} ${DIM(formatBytes(file.sizeBytes))}`);
+    }
+    console.log();
+    console.log(WARN(`This will overwrite current files from checkpoint ${checkpoint.turnId}.`));
+    console.log(DIM(`Run /checkpoint restore ${checkpoint.turnId} --yes to restore.`));
+    return { success: true };
+  }
+
+  const result = restoreCheckpoint(ctx.cwd, checkpoint.turnId);
+  if (result.error) {
+    console.log(ERROR(result.error));
+    return { success: false, error: result.error };
+  }
+
+  console.log(SUCCESS(`Restored ${result.restored.length} file(s) from checkpoint ${checkpoint.turnId}.`));
+  for (const file of result.restored.slice(0, 20)) {
+    console.log(`  ${file}`);
+  }
+  return { success: true, output: result.restored.join('\n') };
 }
 
 function snapshotCurrentModel(ctx: CommandContext): string {
@@ -1031,6 +1580,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
       abortSignal: ctx.abortSignal,
       harness,
       input,
+      loopBudget: resolveRuntimeLoopBudget(input, ctx.config, harness.toJSON()),
     })) {
       switch (event.type) {
         case 'request_start':
@@ -1572,7 +2122,7 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
     const percent = Math.round((reduction / history.length) * 100);
     const sessionId = ctx.getSession?.()?.id ?? ctx.sessionId;
     if (sessionId) {
-      markSessionTranscriptDisplayStart(sessionId);
+      persistSessionCompactHistory(sessionId, compacted);
     }
 
     console.log(SUCCESS(`✔ Compacted ${history.length} → ${compacted.length} messages`));
@@ -1892,16 +2442,32 @@ function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boole
   const history = loadSessionHistory(resumed.id);
   if (history.length > 0) {
     const summary = generateHistorySummary(history);
+    const eventSummary = generateRestoredSessionEventSummary(history);
     console.log(DIM(`  Summary: ${summary}`));
     console.log();
 
     ctx.store.setState({ conversationHistory: history });
     ctx.store.setState({ harnessState: loadSessionHarnessState(resumed.id) ?? resumed.harnessState });
     resetToolState();
+    ctx.sessionRestored?.({
+      sessionId: resumed.id,
+      projectPath: resumed.projectPath,
+      model: resumed.model,
+      restoredMessages: history.length,
+      messageCount: resumed.messageCount,
+      summary: eventSummary,
+    });
     console.log(SUCCESS(`✔ Restored ${history.length} messages`));
   } else {
     console.log();
     console.log(DIM('  No messages in session'));
+    ctx.sessionRestored?.({
+      sessionId: resumed.id,
+      projectPath: resumed.projectPath,
+      model: resumed.model,
+      restoredMessages: 0,
+      messageCount: resumed.messageCount,
+    });
   }
 
   console.log();
@@ -2040,14 +2606,28 @@ async function handleEditPreview(ctx: CommandContext): Promise<CommandResult> {
 }
 
 /** Generate a brief summary of conversation history */
+function truncateRedactedSummary(text: string, maxLength: number): string {
+  const redacted = redactTraceText(text);
+  if (redacted.length <= maxLength) return redacted;
+
+  let truncated = redacted.slice(0, maxLength);
+  for (const marker of ['[REDACTED_SECRET]']) {
+    const markerStart = truncated.indexOf(marker.slice(0, 6));
+    if (markerStart >= 0 && !truncated.includes(marker)) {
+      truncated = `${truncated.slice(0, markerStart)}${marker}`;
+      break;
+    }
+  }
+  return `${truncated}...`;
+}
+
 function generateHistorySummary(messages: Message[]): string {
   const userMsgs = messages.filter(m => m.role === 'user' && m.content);
   const assistantMsgsWithTools = messages.filter(m => m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0);
 
   // Extract topics from first few user messages
   const topics = userMsgs.slice(0, 3).map(m => {
-    const content = m.content || '';
-    return content.length > 40 ? content.slice(0, 40) + '...' : content;
+    return truncateRedactedSummary(m.content || '', 40);
   });
 
   // Extract tools used
@@ -2072,6 +2652,19 @@ function generateHistorySummary(messages: Message[]): string {
   }
 
   return parts.join('. ');
+}
+
+function generateRestoredSessionEventSummary(messages: Message[]): string | undefined {
+  const assistantMsgsWithTools = messages.filter(m =>
+    m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0
+  );
+  const toolsUsed = assistantMsgsWithTools.flatMap(m =>
+    m.tool_calls?.map(tc => tc.function.name) || []
+  );
+  const uniqueTools = [...new Set(toolsUsed)].slice(0, 8);
+
+  if (uniqueTools.length === 0) return undefined;
+  return `Tools: ${uniqueTools.join(', ')}`;
 }
 
 function continueAsSlashChat(name: string, args: string): CommandResult {
@@ -2363,6 +2956,44 @@ const COMMANDS: SlashCommand[] = [
     priority: 10,
     type: 'builtin',
     execute: (ctx) => handleUsage(ctx),
+  },
+  {
+    name: 'loop-stats',
+    aliases: ['loop'],
+    description: 'Show detailed agent-loop budget and efficiency diagnostics',
+    category: 'diagnostics',
+    priority: 12,
+    type: 'builtin',
+    execute: (ctx) => handleLoopStats(ctx),
+  },
+  {
+    name: 'trace',
+    description: 'Show structured event timeline for the latest or selected turn',
+    argumentHint: '[latest|turn-id]',
+    category: 'diagnostics',
+    priority: 14,
+    type: 'builtin',
+    execute: (ctx, args) => handleTrace(ctx, args),
+  },
+  {
+    name: 'artifacts',
+    aliases: ['artifact'],
+    description: 'List or inspect saved full tool outputs for this project',
+    argumentHint: '[show <id|prefix> --full]',
+    category: 'diagnostics',
+    priority: 16,
+    type: 'builtin',
+    execute: (ctx, args) => handleArtifacts(ctx, args),
+  },
+  {
+    name: 'checkpoint',
+    aliases: ['checkpoints'],
+    description: 'List or restore file checkpoints created before agent edits',
+    argumentHint: '[list|restore <turn-id|prefix> --yes]',
+    category: 'diagnostics',
+    priority: 18,
+    type: 'builtin',
+    execute: (ctx, args) => handleCheckpoint(ctx, args),
   },
   {
     name: 'cost',

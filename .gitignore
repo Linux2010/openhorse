@@ -10,6 +10,7 @@ docs/codex/*
 !docs/codex/v0.2.11-stability-iteration-plan.md
 !docs/codex/v0.2.11-agent-loop-rate-limit-optimization.md
 !docs/codex/v0.2.12-runtime-reliability-plan.md
+!docs/codex/v0.2.13-agent-loop-frequency-optimization-plan.md
 !docs/codex/agent-loop-efficiency-optimization-plan.md
 !docs/targets/
 !docs/targets/**

@@ -252,6 +252,47 @@ describe('CLI Chat Regression', () => {
       }
     });
 
+    test('executeChat applies configured agent-loop budget in the legacy command path', async () => {
+      const config = loadConfig({
+        apiKey: 'test-key',
+        ui: { renderer: 'terminal', confirmations: 'config' },
+        agentLoop: {
+          budget: {
+            maxLlmRequestsPerUserTurn: 7,
+            maxToolCallsPerUserTurn: 33,
+          },
+        },
+      });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'gpt-4o',
+      });
+      const mockLLM = new MockLLMService('gpt-4o') as unknown as LLMService;
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+      try {
+        await executeChat({
+          cwd: process.cwd(),
+          config,
+          store,
+          llm: mockLLM,
+          runtime: {} as any,
+          writeOutput: () => {},
+          writeLine: () => {},
+        }, 'Hello');
+
+        expect(store.getSnapshot().lastLoopStats).toMatchObject({
+          finishReason: 'completed',
+          loopBudgetSource: 'config',
+          loopBudgetMaxLlmRequests: 7,
+          loopBudgetMaxToolCalls: 33,
+        });
+      } finally {
+        logSpy.mockRestore();
+      }
+    });
+
     test('executeChat injects active skill prompt and scopes tools', async () => {
       const config = loadConfig({
         apiKey: 'test-key',

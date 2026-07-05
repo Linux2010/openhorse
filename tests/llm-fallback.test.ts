@@ -71,6 +71,7 @@ describe('LLMService fallback model', () => {
       model: 'primary-model',
       fallbackModel: 'fallback-model',
     });
+    (llm as any).config.retryBaseDelay = 1;
 
     // Build a 529 APIError to throw
     const make529 = () => {
@@ -117,6 +118,17 @@ describe('LLMService fallback model', () => {
     expect(lastCallArgs.model).toBe('fallback-model');
 
     expect(result.content).toBe('recovered');
+    expect(llm.getLastRequestDiagnostics()).toMatchObject({
+      retryCount: 3,
+      retryErrorTypes: ['provider_busy', 'provider_busy', 'provider_busy'],
+      lastRetryErrorType: 'provider_busy',
+      lastRetryStatus: 529,
+      fallbackTriggered: true,
+      fallbackFromModel: 'primary-model',
+      fallbackToModel: 'fallback-model',
+      finalModel: 'fallback-model',
+      usingFallback: true,
+    });
   });
 
   test('chatStream triggers fallback after consecutive 429 rate-limit errors', async () => {
@@ -158,6 +170,17 @@ describe('LLMService fallback model', () => {
     expect(createSpy).toHaveBeenCalledTimes(4);
     expect((createSpy.mock.calls as any[])[3][0].model).toBe('fallback-model');
     expect(result.content).toBe('recovered');
+    expect(llm.getLastRequestDiagnostics()).toMatchObject({
+      retryCount: 3,
+      retryErrorTypes: ['rate_limit', 'rate_limit', 'rate_limit'],
+      lastRetryErrorType: 'rate_limit',
+      lastRetryStatus: 429,
+      fallbackTriggered: true,
+      fallbackFromModel: 'primary-model',
+      fallbackToModel: 'fallback-model',
+      finalModel: 'fallback-model',
+      usingFallback: true,
+    });
   });
 
   test('chatStream resets consecutive rate-limit fallback counter after success', async () => {

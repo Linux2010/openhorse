@@ -41,12 +41,33 @@ import type { DriftCheckResult, CompletionGateResult } from '../src/harness/type
 
 // QueryEvent union members
 const _requestStart: QueryEvent = { type: 'request_start', model: 'gpt-4o', turn: 1 };
+const _promptAssembly: QueryEvent = {
+  type: 'prompt_assembly',
+  modelId: 'gpt-4o',
+  estimatedTokens: 100,
+  budgetTokens: 1000,
+  coreTokens: 50,
+  evidenceBudgetTokens: 200,
+  recentTurnBudgetTokens: 150,
+  sections: ['core'],
+  includedEvidence: ['ledger-1:user_requirement:score=10:tokens=20'],
+  omittedEvidence: [],
+  includedEvidenceCount: 1,
+  omittedEvidenceCount: 0,
+};
 const _assistantToolCalls: QueryEvent = {
   type: 'assistant_tool_calls',
   content: '',
   toolCalls: [{ id: '1', type: 'function', function: { name: 'x', arguments: '{}' } }],
 };
 const _toolCall: QueryEvent = { type: 'tool_call', name: 'x', args: {}, callId: '1' };
+const _permissionDecision: QueryEvent = {
+  type: 'permission_decision',
+  name: 'x',
+  args: {},
+  callId: '1',
+  decision: { behavior: 'ask', approved: true, source: 'user' },
+};
 const _toolResult: QueryEvent = {
   type: 'tool_result',
   name: 'x',
@@ -61,8 +82,8 @@ const _strategyExhausted: QueryEvent = { type: 'strategy_exhausted', suggestion:
 const _message: QueryEvent = { type: 'message', role: 'assistant', content: 'hello' };
 const _complete: QueryEvent = { type: 'complete', content: 'done', model: 'gpt-4o' };
 
-// QueryEvent satisfies union (all 7 variants accepted)
-const _events: QueryEvent[] = [_requestStart, _assistantToolCalls, _toolCall, _toolResult, _strategyExhausted, _message, _complete];
+// QueryEvent satisfies union (all variants accepted)
+const _events: QueryEvent[] = [_requestStart, _promptAssembly, _assistantToolCalls, _toolCall, _permissionDecision, _toolResult, _strategyExhausted, _message, _complete];
 
 // Message interface
 const _sysMsg: Message = { role: 'system', content: 'hi', cacheControl: { type: 'ephemeral' } };

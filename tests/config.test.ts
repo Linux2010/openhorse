@@ -36,6 +36,10 @@ function cleanEnv() {
   delete process.env.OPENHORSE_WEBSEARCH_API_KEY_HEADER;
   delete process.env.OPENHORSE_WEBSEARCH_API_KEY_QUERY_PARAM;
   delete process.env.OPENHORSE_SKILLS_PATHS;
+  delete process.env.OPENHORSE_MAX_LLM_REQUESTS_PER_TURN;
+  delete process.env.OPENHORSE_MAX_TOOL_CALLS_PER_TURN;
+  delete process.env.OPENHORSE_MAX_READ_ONLY_FRAGMENTATION;
+  delete process.env.OPENHORSE_MAX_MODEL_VISIBLE_TOOL_BYTES;
   delete process.env.DASHSCOPE_API_KEY;
 }
 
@@ -103,6 +107,10 @@ describe('loadConfig', () => {
     process.env.OPENHORSE_WEBSEARCH_MCP_TIMEOUT_MS = '12345';
     process.env.OPENHORSE_WEBSEARCH_AUTH_TYPE = 'query';
     process.env.OPENHORSE_WEBSEARCH_API_KEY_QUERY_PARAM = 'tavilyApiKey';
+    process.env.OPENHORSE_MAX_LLM_REQUESTS_PER_TURN = '72';
+    process.env.OPENHORSE_MAX_TOOL_CALLS_PER_TURN = '240';
+    process.env.OPENHORSE_MAX_READ_ONLY_FRAGMENTATION = '4';
+    process.env.OPENHORSE_MAX_MODEL_VISIBLE_TOOL_BYTES = '131072';
 
     const config = loadConfig();
     expect(config.apiKey).toBe('env-key');
@@ -118,6 +126,14 @@ describe('loadConfig', () => {
       timeoutMs: 12345,
       authType: 'query',
       apiKeyQueryParam: 'tavilyApiKey',
+    });
+    expect(config.agentLoop).toEqual({
+      budget: {
+        maxLlmRequestsPerUserTurn: 72,
+        maxToolCallsPerUserTurn: 240,
+        maxReadOnlyFragmentation: 4,
+        maxModelVisibleToolBytes: 131072,
+      },
     });
   });
 
@@ -140,6 +156,11 @@ describe('loadConfig', () => {
       skills: {
         paths: ['/opt/openhorse/skills'],
       },
+      agentLoop: {
+        budget: {
+          maxLlmRequestsPerUserTurn: 96,
+        },
+      },
     });
 
     const config = loadConfig();
@@ -154,6 +175,11 @@ describe('loadConfig', () => {
     expect(config.webSearch?.apiKey).toBe('sk-websearch-global');
     expect(config.webSearch?.toolName).toBe('web_search');
     expect(config.skills).toEqual({ paths: ['/opt/openhorse/skills'] });
+    expect(config.agentLoop).toEqual({
+      budget: {
+        maxLlmRequestsPerUserTurn: 96,
+      },
+    });
   });
 
   test('loads additional skills paths from env and overrides', () => {

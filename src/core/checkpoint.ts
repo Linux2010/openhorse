@@ -18,6 +18,7 @@ export interface CheckpointFile {
   path: string;
   content: string;
   sizeBytes: number;
+  existed?: boolean;
 }
 
 export interface Checkpoint {
@@ -51,6 +52,31 @@ function getExistingTurnDir(projectPath: string, turnId: string): string {
   return canonical;
 }
 
+function isInside(parentDir: string, candidatePath: string): boolean {
+  const relative = path.relative(parentDir, candidatePath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveCheckpointTarget(
+  projectPath: string,
+  filePath: string,
+): { absolutePath: string; relativePath: string } | null {
+  const projectRoot = path.resolve(projectPath);
+  const absolutePath = path.isAbsolute(filePath)
+    ? path.resolve(filePath)
+    : path.resolve(projectRoot, filePath);
+  if (!isInside(projectRoot, absolutePath)) return null;
+
+  const relativePath = path.relative(projectRoot, absolutePath);
+  if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) return null;
+  return { absolutePath, relativePath };
+}
+
+function resolveCheckpointSourcePath(turnDir: string, relativePath: string): string | null {
+  const checkpointPath = path.resolve(turnDir, safeFileName(relativePath));
+  return isInside(path.resolve(turnDir), checkpointPath) ? checkpointPath : null;
+}
+
 /**
  * Create a checkpoint for the given files at the current state.
  * Files are saved individually so they can be restored independently.
@@ -70,17 +96,30 @@ export function createCheckpoint(
   const files: CheckpointFile[] = [];
   for (const filePath of filePaths) {
     try {
-      if (!fs.existsSync(filePath)) continue;
-      const content = fs.readFileSync(filePath, 'utf8');
-      const relativePath = path.relative(projectPath, filePath);
-      const checkpointPath = path.join(dir, safeFileName(relativePath));
+      const target = resolveCheckpointTarget(projectPath, filePath);
+      if (!target) continue;
+
+      if (!fs.existsSync(target.absolutePath)) {
+        files.push({
+          path: target.relativePath,
+          content: '',
+          sizeBytes: 0,
+          existed: false,
+        });
+        continue;
+      }
+
+      const content = fs.readFileSync(target.absolutePath, 'utf8');
+      const checkpointPath = resolveCheckpointSourcePath(dir, target.relativePath);
+      if (!checkpointPath) continue;
       fs.mkdirSync(path.dirname(checkpointPath), { recursive: true });
       fs.writeFileSync(checkpointPath, content, { mode: 0o600 });
 
       files.push({
-        path: relativePath,
+        path: target.relativePath,
         content: content.slice(0, 200), // Preview only
         sizeBytes: Buffer.byteLength(content, 'utf8'),
+        existed: true,
       });
     } catch {
       // Skip files that can't be read
@@ -123,14 +162,32 @@ export function restoreCheckpoint(
 
   const restored: string[] = [];
   for (const file of meta.files) {
-    const checkpointFile = path.join(dir, safeFileName(file.path));
-    const targetFile = path.join(projectPath, file.path);
+    const target = resolveCheckpointTarget(projectPath, file.path);
+    if (!target) {
+      return { restored, error: `Invalid checkpoint path: ${file.path}` };
+    }
+    const checkpointFile = resolveCheckpointSourcePath(dir, target.relativePath);
+    if (!checkpointFile) {
+      return { restored, error: `Invalid checkpoint source path: ${file.path}` };
+    }
     try {
+      if (file.existed === false) {
+        if (fs.existsSync(target.absolutePath)) {
+          const stat = fs.statSync(target.absolutePath);
+          if (stat.isDirectory()) {
+            return { restored, error: `Refusing to remove directory from checkpoint restore: ${file.path}` };
+          }
+          fs.rmSync(target.absolutePath, { force: true });
+        }
+        restored.push(target.relativePath);
+        continue;
+      }
+
       if (!fs.existsSync(checkpointFile)) continue;
       const content = fs.readFileSync(checkpointFile, 'utf8');
-      fs.mkdirSync(path.dirname(targetFile), { recursive: true });
-      fs.writeFileSync(targetFile, content, { mode: 0o600 });
-      restored.push(file.path);
+      fs.mkdirSync(path.dirname(target.absolutePath), { recursive: true });
+      fs.writeFileSync(target.absolutePath, content, { mode: 0o600 });
+      restored.push(target.relativePath);
     } catch {
       // Skip files that can't be restored
     }

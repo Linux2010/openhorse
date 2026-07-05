@@ -20,8 +20,17 @@ export type {
   OpenAITool,
 } from './tool';
 
-export { query } from './query';
-export type { QueryEvent, QueryParams } from './query';
+export { query, DEFAULT_LOOP_BUDGET, QueryLoopError, createFailedLoopStats, createLocalFastPathLoopStats } from './query';
+export type {
+  LoopBudget,
+  LoopBudgetBaseProfile,
+  LoopBudgetSource,
+  LoopContinuationAction,
+  LoopFinishReason,
+  LoopStats,
+  QueryEvent,
+  QueryParams,
+} from './query';
 
 export { prepareToolCalls, executeToolCalls, inspectSchedule } from './tool-scheduler';
 export type { PreparedToolCall, ExecutedToolCall, ToolSchedule, ToolSchedulerOptions } from './tool-scheduler';

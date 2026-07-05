@@ -493,7 +493,7 @@ def main() -> int:
         wait_for(master, output, "Allow tool write_file?", timeout=8)
         wait_for(master, output, CONFIRM_DENY_TARGET, timeout=8)
         os.write(master, b"n\r")
-        wait_for(master, output, "confirmation-denied-final", timeout=10)
+        wait_for(master, output, "permission was denied (user)", timeout=10)
         if deny_path.exists():
             raise AssertionError("Denied write_file confirmation still created the target file")
 

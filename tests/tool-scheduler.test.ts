@@ -371,6 +371,12 @@ describe('executeToolCalls', () => {
 
     expect(results[0].success).toBe(false);
     expect(results[0].error).toContain('toolConfirmation=deny');
+    expect(results[0].permissionDecision).toMatchObject({
+      behavior: 'ask',
+      approved: false,
+      source: 'config_deny',
+      reason: 'External query',
+    });
   });
 
   test('allows ask-permission tools when toolConfirmation is allow', async () => {
@@ -393,5 +399,42 @@ describe('executeToolCalls', () => {
     }
 
     expect(results[0].success).toBe(true);
+    expect(results[0].permissionDecision).toMatchObject({
+      behavior: 'ask',
+      approved: true,
+      source: 'config_allow',
+      reason: 'External query',
+    });
+  });
+
+  test('records user permission decision for interactive confirmation', async () => {
+    const prepared = prepareToolCalls({
+      toolCalls: toolCalls(['web_search']),
+      tools,
+      toolExecutor: async () => JSON.stringify({ success: true, output: 'results' }),
+      toolContext,
+      permissionMode: 'default',
+      toolConfirmation: 'ask',
+      confirmToolUse: async () => true,
+    });
+
+    const results: any[] = [];
+    for await (const executed of executeToolCalls(prepared, {
+      toolExecutor: async () => JSON.stringify({ success: true, output: 'results' }),
+      permissionMode: 'default',
+      toolConfirmation: 'ask',
+      confirmToolUse: async () => false,
+    })) {
+      results.push(executed);
+    }
+
+    expect(results[0].success).toBe(false);
+    expect(results[0].permissionDecision).toMatchObject({
+      behavior: 'ask',
+      approved: false,
+      source: 'user',
+      reason: 'External query',
+    });
+    expect(typeof results[0].permissionDecision.duration).toBe('number');
   });
 });

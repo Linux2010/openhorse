@@ -1,8 +1,9 @@
 import type { OpenHorseRuntime } from '../init';
 import type { Store } from '../framework/store';
+import type { LoopStats } from '../framework';
 import type { LLMService } from '../services/llm';
 import type { OpenHorseCLIConfig } from '../services/config';
-import type { SessionMeta } from '../services/session-storage';
+import type { SessionMeta, SessionTraceEvent } from '../services/session-storage';
 
 export type TranscriptRole = 'user' | 'assistant' | 'tool' | 'system' | 'command' | 'error' | 'status';
 
@@ -121,6 +122,37 @@ export interface RuntimeToolFinishedEvent {
   artifactRef?: { id: string; outputBytes: number };
 }
 
+export interface RuntimeSessionRestoredEvent {
+  sessionId: string;
+  projectPath: string;
+  model: string;
+  restoredMessages: number;
+  messageCount?: number;
+  summary?: string;
+}
+
+export type RuntimeLoopStats = LoopStats;
+export type RuntimeTraceEvent = SessionTraceEvent;
+
+export interface RuntimeHarnessDiagnostics {
+  taskEpoch?: number;
+  rootObjective?: string;
+  activeInstruction?: string;
+  openQuestions?: string[];
+  diagnostics?: string[];
+  ledgerSize: number;
+  evidenceSize: number;
+  turnSummaryCount: number;
+  promptAssembly?: {
+    modelId: string;
+    estimatedTokens: number;
+    budgetTokens: number;
+    sections: string[];
+    includedEvidence: number;
+    omittedEvidence: number;
+  };
+}
+
 export interface RuntimeSessionAccessors {
   ensureSession: () => SessionMeta;
   setSession: (session: SessionMeta | null) => void;
@@ -155,5 +187,9 @@ export interface UiEventSink {
   showPermissionRequest?: (request: ToolPermissionRequest) => void;
   toolStarted?: (event: RuntimeToolStartedEvent) => void;
   toolFinished?: (event: RuntimeToolFinishedEvent) => void;
+  sessionRestored?: (event: RuntimeSessionRestoredEvent) => void;
+  loopStatsUpdated?: (stats: LoopStats) => void;
+  traceEventRecorded?: (event: SessionTraceEvent) => void;
+  harnessDiagnosticsUpdated?: (diagnostics: RuntimeHarnessDiagnostics) => void;
   setProcessing: (processing: boolean) => void;
 }

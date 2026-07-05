@@ -15,6 +15,7 @@ import {
   type SessionMeta,
 } from '../src/services/session-storage';
 import type { CommandContext } from '../src/commands/types';
+import type { RuntimeSessionRestoredEvent } from '../src/runtime/ui-events';
 
 describe('session commands', () => {
   const testConfigDir = mkdtempSync(join(tmpdir(), 'openhorse-session-commands-'));
@@ -59,6 +60,7 @@ describe('session commands', () => {
       currentModel: 'gpt-4o',
     });
     const restored: SessionMeta[] = [];
+    const sessionRestored: RuntimeSessionRestoredEvent[] = [];
     const ctx: CommandContext = {
       cwd: projectDir,
       config,
@@ -66,19 +68,34 @@ describe('session commands', () => {
       llm: null,
       runtime: {} as any,
       setSession: session => restored.push(session),
+      sessionRestored: event => sessionRestored.push(event),
       getSession: () => restored[restored.length - 1] ?? null,
     };
 
-    return { ctx, restored, store };
+    return { ctx, restored, sessionRestored, store };
   }
 
-  function createRestorableSession(content: string): SessionMeta {
+  function createRestorableSession(content: string, withTool = false): SessionMeta {
     const session = createSession(projectDir, 'gpt-4o');
     appendSessionMessage(session.id, {
       role: 'user',
       content,
       timestamp: Date.now(),
     });
+    if (withTool) {
+      appendSessionMessage(session.id, {
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+        tool_calls: [
+          {
+            id: 'call-read',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"package.json"}' },
+          },
+        ],
+      });
+    }
     return session;
   }
 
@@ -122,15 +139,40 @@ describe('session commands', () => {
   });
 
   test('/resume <session-id> restores history and switches active session', async () => {
-    const session = createRestorableSession('restore this exact session');
-    const { ctx, restored, store } = makeContext('terminal');
+    const session = createRestorableSession('restore this exact session apiKey=sk-testsecret123456', true);
+    const { ctx, restored, sessionRestored, store } = makeContext('terminal');
 
     const result = await findCommand('resume')!.execute(ctx, session.id);
 
     expect(result.success).toBe(true);
     expect(restored[0]?.id).toBe(session.id);
+    expect(sessionRestored).toEqual([
+      expect.objectContaining({
+        sessionId: session.id,
+        projectPath: session.projectPath,
+        model: 'gpt-4o',
+        restoredMessages: 2,
+        summary: 'Tools: read_file',
+      }),
+    ]);
+    expect(sessionRestored[0].summary).not.toContain('restore this exact session');
+    expect(sessionRestored[0].summary).not.toContain('sk-testsecret');
+    const printed = logSpy.mock.calls.flat().join('\n');
+    expect(printed).toContain('apiKey=[REDACTED_SECRET]');
+    expect(printed).not.toContain('sk-testsecret');
     expect(store.getSnapshot().conversationHistory).toEqual([
-      { role: 'user', content: 'restore this exact session' },
+      { role: 'user', content: 'restore this exact session apiKey=sk-testsecret123456' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          {
+            id: 'call-read',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"package.json"}' },
+          },
+        ],
+      },
     ]);
   });
 });

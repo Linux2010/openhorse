@@ -72,6 +72,23 @@ export interface SkillsConfig {
   paths?: string[];
 }
 
+/** Agent-loop guardrails. Defaults remain internal, these fields only override them. */
+export interface AgentLoopBudgetConfig {
+  /** Maximum LLM requests allowed for one user turn. */
+  maxLlmRequestsPerUserTurn?: number;
+  /** Maximum tool calls allowed for one user turn. */
+  maxToolCallsPerUserTurn?: number;
+  /** Consecutive single read-only tool turns before injecting a batch_read hint. */
+  maxReadOnlyFragmentation?: number;
+  /** Maximum aggregate tool-result bytes exposed to the model in one user turn. */
+  maxModelVisibleToolBytes?: number;
+}
+
+export interface AgentLoopConfig {
+  /** Optional budget overrides. OpenHorse may still raise defaults for complex tasks. */
+  budget?: AgentLoopBudgetConfig;
+}
+
 /**
  * 全局配置 — 用户只需关注少量核心项
  * maxTokens/temperature/retries 等由 Agent 智能控制
@@ -93,6 +110,8 @@ export interface GlobalConfig {
   ui?: UIConfig;
   /** Additional user-managed skills roots. */
   skills?: SkillsConfig;
+  /** Agent-loop guardrails. */
+  agentLoop?: AgentLoopConfig;
 
   // ---- 内部标识 ----
   userId?: string;

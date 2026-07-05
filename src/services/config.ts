@@ -23,10 +23,21 @@ import {
   type UIConfirmationMode,
   type WebSearchMcpConfig,
   type SkillsConfig,
+  type AgentLoopConfig,
+  type AgentLoopBudgetConfig,
 } from './global-config';
 import { delimiter } from 'path';
 
-export type { ToolConfirmationPolicy, UIConfig, UIRenderer, UIConfirmationMode, WebSearchMcpConfig, SkillsConfig };
+export type {
+  ToolConfirmationPolicy,
+  UIConfig,
+  UIRenderer,
+  UIConfirmationMode,
+  WebSearchMcpConfig,
+  SkillsConfig,
+  AgentLoopConfig,
+  AgentLoopBudgetConfig,
+};
 
 export const STABLE_UI_RENDERER: UIRenderer = 'terminal';
 export const BETA_UI_RENDERERS = ['tui', 'ink'] as const satisfies readonly UIRenderer[];
@@ -59,6 +70,8 @@ export interface OpenHorseCLIConfig {
   ui?: UIConfig;
   /** Additional user-managed skills roots. */
   skills?: SkillsConfig;
+  /** Agent loop guardrail configuration. */
+  agentLoop?: AgentLoopConfig;
 
   // ---- Agent 内部参数 (不由用户配置) ----
   /** 实例名称 */
@@ -203,6 +216,30 @@ function loadUIConfig(
   };
 }
 
+function loadAgentLoopConfig(
+  globalConfig: GlobalConfig,
+  overrides: Partial<OpenHorseCLIConfig>
+): AgentLoopConfig | undefined {
+  const budget: AgentLoopBudgetConfig = {
+    ...globalConfig.agentLoop?.budget,
+    ...overrides.agentLoop?.budget,
+  };
+
+  const envBudget: Array<[keyof AgentLoopBudgetConfig, string | undefined]> = [
+    ['maxLlmRequestsPerUserTurn', process.env.OPENHORSE_MAX_LLM_REQUESTS_PER_TURN],
+    ['maxToolCallsPerUserTurn', process.env.OPENHORSE_MAX_TOOL_CALLS_PER_TURN],
+    ['maxReadOnlyFragmentation', process.env.OPENHORSE_MAX_READ_ONLY_FRAGMENTATION],
+    ['maxModelVisibleToolBytes', process.env.OPENHORSE_MAX_MODEL_VISIBLE_TOOL_BYTES],
+  ];
+
+  for (const [key, value] of envBudget) {
+    const parsed = parsePositiveInt(value);
+    if (parsed) budget[key] = parsed;
+  }
+
+  return Object.keys(budget).length > 0 ? { budget } : undefined;
+}
+
 // ============================================================================
 // 加载配置
 // ============================================================================
@@ -245,6 +282,7 @@ export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHor
     webSearch: loadWebSearchConfig(globalConfig, overrides),
     ui: loadUIConfig(globalConfig, overrides),
     skills: loadSkillsConfig(globalConfig, overrides),
+    agentLoop: loadAgentLoopConfig(globalConfig, overrides),
 
     // Agent 内部参数
     name:
