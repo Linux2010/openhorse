@@ -1,7 +1,7 @@
 import { findCommand } from '../commands';
 import { parseInput, buildCommandSuggestions } from '../commands/parser';
 import * as path from 'path';
-import type { CommandContext, CommandResult } from '../commands/types';
+import type { CommandContext, CommandResult, CommandUiRenderer } from '../commands/types';
 import type { LLMRequestDiagnostics, Message, StreamCallbacks } from '../services/llm';
 import type { SessionMessage, SessionTraceEvent } from '../services/session-storage';
 import {
@@ -30,6 +30,7 @@ import { createCheckpoint } from '../core/checkpoint';
 import { resolveSkillsForTurn, hasMatchingSkill } from '../skills';
 import { buildReferencedFilesPrompt } from '../services/file-context';
 import { refreshProjectInstructions } from '../services/prompt-context';
+import { formatBytes } from '../services/format';
 import { captureWorkspaceSnapshot, diffWorkspaceSnapshots, type WorkspaceSnapshot } from '../services/workspace-state';
 import {
   collectVerificationCommandResult,
@@ -49,12 +50,18 @@ import type {
   UiRendererCapabilities,
 } from './ui-events';
 import { resolveUiRendererCapabilities } from './ui-events';
+import {
+  formatToolActivityTranscript,
+  toolActivityFromFinished,
+  toolActivityFromStarted,
+} from './ui-view-model';
 import { agentStepStatus, runningToolsStatus } from './agent-status';
 import { resolveRuntimeLoopBudget } from './loop-budget';
 
 const ANSI_PATTERN = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const LOCAL_FAST_PATH_INLINE_OUTPUT_BYTES = 2048;
 const TRACE_ARGS_ARTIFACT_THRESHOLD_BYTES = 160;
+const TOOL_TRANSCRIPT_ARG_BUDGET = 512;
 
 function stripAnsi(text: string): string {
   return text.replace(ANSI_PATTERN, '');
@@ -521,40 +528,16 @@ function emitHarnessDiagnostics(events: UiEventSink, state: HarnessState): void 
   events.harnessDiagnosticsUpdated?.(toHarnessDiagnostics(state));
 }
 
-function toolStartContent(name: string, args: Record<string, unknown>): string {
-  if (name === 'exec_command' && typeof args.command === 'string') {
-    return `Running ${name}\n  $ ${args.command}`;
-  }
-
-  const detail = compactToolArgs(args);
-  return `Running ${name}${detail ? ` ${detail}` : ''}`;
-}
-
-function toolSummary(name: string, args: Record<string, unknown>, success: boolean, duration: number): string {
-  const details = compactToolArgs(args);
-  const suffix = details ? ` ${details}` : '';
-  return `${success ? '✓' : '✗'} ${name}${suffix} (${duration}ms)`;
+function toolStartContent(event: ToolCallEvent): string {
+  return formatToolActivityTranscript(
+    toolActivityFromStarted(event, compactToolArgs(event.args, TOOL_TRANSCRIPT_ARG_BUDGET))
+  );
 }
 
 function toolFinishContent(event: ToolResultEvent): string {
-  const summary = event.summary || toolSummary(event.name, event.args, event.success, event.duration);
-  const lines = [summary];
-
-  if (event.name === 'exec_command' && typeof event.args.command === 'string') {
-    lines.push(`  $ ${event.args.command}`);
-  }
-
-  if (event.artifactRef) {
-    lines.push(`  artifact ${event.artifactRef.id} (${event.artifactRef.outputBytes}B full output)`);
-  } else if (typeof event.outputBytes === 'number') {
-    lines.push(`  output ${event.outputBytes}B`);
-  }
-
-  if (event.error) {
-    lines.push(`Error: ${event.error}`);
-  }
-
-  return lines.filter(Boolean).join('\n');
+  return formatToolActivityTranscript(
+    toolActivityFromFinished(event, compactToolArgs(event.args, TOOL_TRANSCRIPT_ARG_BUDGET))
+  );
 }
 
 function isSyntheticCompactContext(content: string): boolean {
@@ -800,9 +783,10 @@ function formatLocalFastPathAssistantContent(
   action: LocalFastPathAction,
   rawResult: string,
   projectPath: string,
-): string {
+): { content: string; artifactRef?: { id: string; outputBytes: number } } {
   const envelope = parseToolResultEnvelope(rawResult);
-  const output = typeof envelope.output === 'string' ? envelope.output.trim() : '';
+  const rawOutput = typeof envelope.output === 'string' ? envelope.output : '';
+  const output = rawOutput.trim();
   const summary = envelope.summary || `${action.tool} ${envelope.success ? 'completed' : 'failed'}`;
   const lines = [
     envelope.success
@@ -816,25 +800,25 @@ function formatLocalFastPathAssistantContent(
   }
 
   if (!output) {
-    return lines.join('\n');
+    return { content: lines.join('\n'), artifactRef: envelope.artifactRef };
   }
 
   let artifactRef = envelope.artifactRef;
   let preview = output;
-  const outputBytes = envelope.outputBytes ?? byteLength(output);
-  if (byteLength(output) > LOCAL_FAST_PATH_INLINE_OUTPUT_BYTES) {
+  const outputBytes = envelope.outputBytes ?? byteLength(rawOutput);
+  if (byteLength(rawOutput) > LOCAL_FAST_PATH_INLINE_OUTPUT_BYTES) {
     if (!artifactRef) {
-      const artifact = storeArtifact(projectPath, action.tool, output, outputBytes);
+      const artifact = storeArtifact(projectPath, action.tool, rawOutput, outputBytes);
       artifactRef = artifact ? { id: artifact.id, outputBytes: artifact.outputBytes } : undefined;
     }
     preview = truncateForContext(output, LOCAL_FAST_PATH_INLINE_OUTPUT_BYTES);
   }
 
   if (artifactRef) {
-    lines.push('', `Full output: /artifacts show ${artifactRef.id} --full (${artifactRef.outputBytes}B)`);
+    lines.push('', `Full output: /artifacts show ${artifactRef.id} --full (${formatBytes(artifactRef.outputBytes)})`);
   }
   lines.push('', 'Preview:', preview);
-  return lines.join('\n');
+  return { content: lines.join('\n'), artifactRef };
 }
 
 export interface ToolEventPresenter {
@@ -851,11 +835,13 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
         callId: event.callId,
         name: event.name,
         args: event.args,
+        batchCount: event.batchCount,
+        batchIndex: event.batchIndex,
       });
       const entryId = events.append({
         role: 'tool',
         title: 'tool',
-        content: toolStartContent(event.name, event.args),
+        content: toolStartContent(event),
       });
       runningToolEntries.set(event.callId, entryId);
     },
@@ -871,6 +857,8 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
         error: event.error,
         outputBytes: event.outputBytes,
         artifactRef: event.artifactRef,
+        batchCount: event.batchCount,
+        batchIndex: event.batchIndex,
       });
       const content = toolFinishContent(event);
       const existingEntryId = runningToolEntries.get(event.callId);
@@ -925,6 +913,7 @@ export interface RunInputOptions {
 export interface AgentChatControllerOptions {
   confirmToolUse?: Parameters<typeof query>[0]['confirmToolUse'];
   uiCapabilities?: UiRendererCapabilities;
+  uiRenderer?: CommandUiRenderer;
 }
 
 /** @deprecated Use AgentChatControllerOptions. Chat execution is renderer-independent. */
@@ -1104,7 +1093,8 @@ export class AgentChatController {
       const outputBytes = typeof envelope.outputBytes === 'number'
         ? envelope.outputBytes
         : Buffer.byteLength(result, 'utf8');
-      const assistantContent = formatLocalFastPathAssistantContent(action, result, this.runtime.cwd);
+      const formattedLocalResult = formatLocalFastPathAssistantContent(action, result, this.runtime.cwd);
+      const assistantContent = formattedLocalResult.content;
       const stats = createLocalFastPathLoopStats({
         finishReason: envelope.success ? 'completed' : 'failed',
         toolCalls: 1,
@@ -1130,6 +1120,7 @@ export class AgentChatController {
           error: envelope.error,
           summary: envelope.summary,
           outputBytes,
+          artifactRef: formattedLocalResult.artifactRef,
         }),
       });
 
@@ -1149,6 +1140,7 @@ export class AgentChatController {
           duration,
           outputBytes,
           modelVisibleBytes: 0,
+          artifactId: formattedLocalResult.artifactRef?.id,
           error: envelope.error ? compactMiddle(envelope.error, 240) : undefined,
         });
         appendPostWorkspaceTrace(this.events, sessionId, turnId, this.runtime.cwd, preWorkspace);
@@ -1241,7 +1233,11 @@ export class AgentChatController {
           this.events.append({ role: 'system', content: text });
         }
       },
-      uiCapabilities: resolveUiRendererCapabilities(this.controllerOptions.uiCapabilities),
+      uiRenderer: this.controllerOptions.uiRenderer ?? this.runtime.config.ui?.renderer ?? 'terminal',
+      uiCapabilities: resolveUiRendererCapabilities(
+        this.controllerOptions.uiCapabilities,
+        this.controllerOptions.uiRenderer ?? this.runtime.config.ui?.renderer
+      ),
     };
   }
 
@@ -1436,9 +1432,7 @@ export class AgentChatController {
           case 'assistant_tool_calls':
             assistantStream.ensureMessage(event.content || '');
             assistantStream.closeSegment();
-            if (event.toolCalls.length > 1) {
-              this.events.setStatus(runningToolsStatus(event.toolCalls.length));
-            }
+            this.events.setStatus(runningToolsStatus(event.toolCalls.length));
             const checkpointId = checkpointSequence === 0
               ? turnId
               : `${turnId}-checkpoint-${checkpointSequence + 1}`;

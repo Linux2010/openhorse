@@ -2,6 +2,7 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import { formatPromptVisualLine, getPromptInputViewport, type PromptVisualLine } from '../runtime/prompt-layout';
 import type { DOMElement } from 'ink/build/dom';
+import { createPromptState } from '../../runtime/ui-view-model';
 
 export interface PromptInputProps {
   value: string;
@@ -22,13 +23,19 @@ export const PromptInput = React.forwardRef<DOMElement, PromptInputProps>(functi
   { value, running, modeText, width = 80, maxRows = 6, cursor = value.length },
   ref
 ): JSX.Element {
-  const { lines, hiddenRows, showHiddenIndicator } = getPromptInputViewport(value, width, maxRows, cursor);
+  const prompt = createPromptState({ value, cursor, running, modeText });
+  const { lines, hiddenRows, showHiddenIndicator } = getPromptInputViewport(
+    prompt.value,
+    width,
+    maxRows,
+    prompt.cursor
+  );
 
   return (
     <Box flexDirection="column">
       <Text color="gray">
-        / commands   @ files   ? shortcuts   Alt+Enter newline   Ctrl+C {running ? 'interrupt' : 'twice exits'}
-        {modeText ? `   ${modeText}` : ''}
+        / commands   @ files   ? shortcuts   Alt+Enter newline   Ctrl+C {prompt.running ? 'interrupt' : 'twice exits'}
+        {prompt.modeText ? `   ${prompt.modeText}` : ''}
       </Text>
       <Box ref={ref} width={width} borderStyle="single" borderColor={running ? 'yellow' : 'gray'} paddingX={1} flexDirection="column">
         {showHiddenIndicator && hiddenRows > 0 ? (

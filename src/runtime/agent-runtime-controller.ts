@@ -13,6 +13,7 @@ import {
 import { AgentChatController, type AgentChatControllerOptions, type RunInputOptions } from './chat-controller';
 import { resolveUiRendererCapabilities } from './ui-events';
 import type { OpenHorseUiRuntime, ToolPermissionRequest, TranscriptAppendEntry, UiEventSink, UiRendererCapabilities } from './ui-events';
+import type { CommandUiRenderer } from '../commands/types';
 import { TurnController, type TurnControllerOptions } from './turn-controller';
 
 export type {
@@ -40,6 +41,8 @@ export interface AgentRuntimeControllerOptions extends TurnControllerOptions {
   runner?: AgentRuntimeRunner;
   /** Renderer presentation capabilities passed into command execution. */
   uiCapabilities?: UiRendererCapabilities;
+  /** Active renderer adapter identity for renderer-layer diagnostics. */
+  uiRenderer?: CommandUiRenderer;
   chatOptions?: AgentChatControllerOptions;
   echoSubmittedInput?: boolean;
   runningStatus?: string | ((input: string) => string);
@@ -77,8 +80,6 @@ function statusText(value: string | ((input: string) => string) | undefined, inp
 function resumeSessionInput(sessionId: string, allProjects?: boolean): string {
   return `/resume ${sessionId}${allProjects ? ' --all' : ''}`;
 }
-
-const EVENT_RENDERER_CAPABILITIES = resolveUiRendererCapabilities(undefined, 'terminal');
 
 /**
  * UI-independent turn runner for interactive OpenHorse surfaces.
@@ -310,16 +311,19 @@ export class AgentRuntimeController {
   }
 
   private createChatOptions(): AgentChatControllerOptions | undefined {
+    const resolvedRenderer = this.options.chatOptions?.uiRenderer ?? this.options.uiRenderer;
     const uiCapabilities = {
-      ...EVENT_RENDERER_CAPABILITIES,
+      ...resolveUiRendererCapabilities(undefined, resolvedRenderer),
       ...(this.options.uiCapabilities ?? {}),
       ...(this.options.chatOptions?.uiCapabilities ?? {}),
     };
     const chatOptions: AgentChatControllerOptions = {
       uiCapabilities,
+      uiRenderer: resolvedRenderer,
       ...(this.options.chatOptions ?? {}),
     };
     chatOptions.uiCapabilities = uiCapabilities;
+    chatOptions.uiRenderer = chatOptions.uiRenderer ?? resolvedRenderer;
     if (this.options.useRuntimeToolPermissions && !chatOptions.confirmToolUse) {
       chatOptions.confirmToolUse = request => this.requestToolPermission(request);
     }

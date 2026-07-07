@@ -1,6 +1,11 @@
 import stringWidth from 'string-width';
 import { createTuiFrame, setFrameCursor, writeFrameText, type TuiFrame } from '../tui-core/frame';
 import type { TranscriptEntry } from '../runtime/ui-events';
+import {
+  createEditPreviewPickerState,
+  createPermissionDecisionPickerState,
+  createPromptState,
+} from '../runtime/ui-view-model';
 import { formatBytes } from '../services/format';
 import {
   liveTuiTranscriptEntries,
@@ -114,16 +119,19 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
       req.candidates.length,
     ));
     const start = pickerStartIndex(overlay.selectedIndex, visibleCount, req.candidates.length);
-    const visible = req.candidates.slice(start, start + visibleCount);
-    const kindLabel = req.kind === 'fuzzy' ? `fuzzy (${req.strategy ?? 'match'})` : 'exact';
+    const picker = createEditPreviewPickerState({
+      request: req,
+      visibleStart: start,
+      maxVisibleItems: visibleCount,
+      maxMatchLength: 60,
+      maxReplacementLength: 40,
+    });
     const rows = [
-      `Edit Preview: ${req.path} (${kindLabel}, ${req.candidates.length} candidate${req.candidates.length === 1 ? '' : 's'})`,
-      ...visible.map((c, offset) => {
+      picker.title,
+      ...picker.visibleItems.map((item, offset) => {
         const index = start + offset;
         const marker = index === overlay.selectedIndex ? '›' : ' ';
-        const matchPreview = c.match.length > 60 ? c.match.slice(0, 57) + '...' : c.match;
-        const newPreview = req.newString.length > 40 ? req.newString.slice(0, 37) + '...' : req.newString;
-        return `${marker} line ${String(c.line).padStart(3, ' ')}  "${matchPreview}"  → "${newPreview}"`;
+        return `${marker} line ${String(item.line).padStart(3, ' ')}  "${item.matchPreview}"  → "${item.replacementPreview}"`;
       }),
     ].map(row => truncateCells(row, frame.width));
 
@@ -161,13 +169,16 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
 
   if (state.overlay.type === 'permission') {
     const overlay = state.overlay;
-    const detail = compactPermissionArgs(overlay.request.args);
+    const picker = createPermissionDecisionPickerState(overlay.request);
     const rows = [
       `Tool Permission: ${overlay.request.name}`,
-      ...(detail ? [`  ${detail}`] : []),
-      ...(overlay.request.reason ? [`  ${overlay.request.reason}`] : []),
-      `${overlay.selectedIndex === 0 ? '›' : ' '} Allow`,
-      `${overlay.selectedIndex === 1 ? '›' : ' '} Deny`,
+      ...picker.visibleItems.flatMap((item, index) => {
+        const marker = index === overlay.selectedIndex ? '›' : ' ';
+        return [
+          `${marker} ${item.label}`,
+          ...(item.description ? [`  ${item.description}`] : []),
+        ];
+      }),
       'Enter select   y allow   n/Esc deny',
     ].map(row => truncateCells(row, frame.width));
 
@@ -189,20 +200,6 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
       writeFrameText(frame, index, 0, line);
     });
   }
-}
-
-function compactPermissionArgs(args: Record<string, unknown>): string {
-  for (const key of ['path', 'file_path', 'file', 'cwd', 'command', 'pattern', 'query', 'url', 'target', 'sessionId']) {
-    const value = args[key];
-    if (typeof value === 'string') {
-      return value.length > 72 ? `${value.slice(0, 69)}...` : value;
-    }
-  }
-  const firstString = Object.values(args).find(value => typeof value === 'string');
-  if (typeof firstString === 'string') {
-    return firstString.length > 72 ? `${firstString.slice(0, 69)}...` : firstString;
-  }
-  return '';
 }
 
 function sessionPickerStartIndex(selectedIndex: number, visibleCount: number, total: number): number {
@@ -247,9 +244,8 @@ function transcriptPrefix(entry: TranscriptEntry): string {
 }
 
 function promptCursorColumn(value: string, cursor: number, width: number): number {
-  const safeCursor = Math.min(Math.max(0, Math.floor(cursor)), value.length);
-  const beforeCursor = value.slice(0, safeCursor);
-  return Math.min(width - 2, 4 + stringWidth(beforeCursor));
+  const prompt = createPromptState({ value, cursor });
+  return Math.min(width - 2, 4 + stringWidth(prompt.textBeforeCursor));
 }
 
 function wrapCells(value: string, width: number): string[] {

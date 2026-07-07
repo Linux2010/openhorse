@@ -165,6 +165,7 @@ export async function launchTuiUI(
     runtime,
     events: runner.events,
     uiCapabilities: resolveUiRendererCapabilities(undefined, 'tui'),
+    uiRenderer: 'tui',
     useRuntimeToolPermissions: true,
     runningStatus: () => statusSnapshot(runtime, 'running'),
     readyStatus: () => statusSnapshot(runtime, 'ready'),

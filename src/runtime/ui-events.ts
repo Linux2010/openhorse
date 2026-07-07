@@ -108,6 +108,8 @@ export interface RuntimeToolStartedEvent {
   callId: string;
   name: string;
   args: Record<string, unknown>;
+  batchCount?: number;
+  batchIndex?: number;
 }
 
 export interface RuntimeToolFinishedEvent {
@@ -120,6 +122,8 @@ export interface RuntimeToolFinishedEvent {
   error?: string;
   outputBytes?: number;
   artifactRef?: { id: string; outputBytes: number };
+  batchCount?: number;
+  batchIndex?: number;
 }
 
 export interface RuntimeSessionRestoredEvent {

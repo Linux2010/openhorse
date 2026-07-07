@@ -52,13 +52,19 @@ const MODEL_PRICING: Record<string, { input: number; output: number }> = {
 
   // Anthropic Claude
   'claude-opus-4-7': { input: 15, output: 75 },
+  'claude-opus-4-8': { input: 15, output: 75 },
   'claude-sonnet-4-6': { input: 3, output: 15 },
   'claude-haiku-4-5': { input: 0.8, output: 4 },
   'claude-haiku-4-5-20251001': { input: 0.8, output: 4 },
 
   // Alibaba Qwen
+  'qwen3.7-plus': { input: 0.5, output: 2 },
+  'qwen3.6-plus': { input: 0.5, output: 2 },
   'qwen3.5-plus': { input: 0.5, output: 2 },
   'qwen3.5-turbo': { input: 0.3, output: 1 },
+  'qwen3-max-2026-01-23': { input: 2, output: 6 },
+  'qwen3-coder-plus': { input: 0.5, output: 2 },
+  'qwen3-coder-next': { input: 0.5, output: 2 },
   'qwen-max': { input: 2, output: 6 },
 
   // Google Gemini
@@ -71,7 +77,13 @@ const MODEL_PRICING: Record<string, { input: number; output: number }> = {
 
   // GLM
   'glm-4': { input: 0.1, output: 0.1 },
+  'glm-4.7': { input: 0.1, output: 0.1 },
   'glm-5': { input: 0.1, output: 0.1 },
+
+  // Bailian routed providers
+  'kimi-k2.5': { input: 0.5, output: 2 },
+  'MiniMax-M2.5': { input: 0.5, output: 2 },
+  'minimax-m2.5': { input: 0.5, output: 2 },
 };
 
 /** 默认定价（未知模型） */

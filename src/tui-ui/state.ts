@@ -8,12 +8,10 @@ import type {
   TranscriptEntry,
   UiEventSink,
 } from '../runtime/ui-events';
+import { createPromptState, type PromptState } from '../runtime/ui-view-model';
 import type { TuiPickerItem } from './pickers';
 
-export interface TuiPromptState {
-  value: string;
-  cursor: number;
-}
+export type TuiPromptState = Pick<PromptState, 'value' | 'cursor'>;
 
 export interface TuiTranscriptRecord extends TranscriptEntry {
   finalized: boolean;
@@ -151,13 +149,19 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
       };
 
     case 'setPrompt':
-      return {
-        ...state,
-        prompt: {
+      {
+        const prompt = createPromptState({
           value: action.value,
-          cursor: clampCursor(action.value, action.cursor ?? action.value.length),
-        },
-      };
+          cursor: action.cursor ?? action.value.length,
+        });
+        return {
+          ...state,
+          prompt: {
+            value: prompt.value,
+            cursor: prompt.cursor,
+          },
+        };
+      }
 
     case 'setStatus':
       return { ...state, statusMessage: action.message };
@@ -319,11 +323,6 @@ function overlayItemCount(overlay: Exclude<TuiOverlayState, null | { type: 'shor
   if (overlay.type === 'permission') return 2;
   if (overlay.type === 'edit') return overlay.request.candidates.length;
   return overlay.items.length;
-}
-
-function clampCursor(value: string, cursor: number): number {
-  if (!Number.isFinite(cursor)) return value.length;
-  return Math.min(Math.max(0, Math.floor(cursor)), value.length);
 }
 
 function clampNumber(value: number, min: number, max: number): number {

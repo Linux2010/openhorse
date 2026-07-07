@@ -72,6 +72,8 @@ describe('/status context diagnostics', () => {
 
     expect(result.success).toBe(true);
     expect(rendered).toContain('Context:');
+    expect(rendered).toContain('Renderer   terminal stable');
+    expect(rendered).toContain('pickers, inline-progress, clean-meta, assistant-spacing, quiet-abort');
     expect(rendered).toContain('Project rules 2 files');
     expect(rendered).toContain('AGENTS.md');
     expect(rendered).toContain('packages/cli/AGENTS.md');
@@ -80,6 +82,165 @@ describe('/status context diagnostics', () => {
     expect(rendered).toContain('Skills index   6 chars');
     expect(store.getSnapshot().projectInstructionsContent).toContain('Root rules');
     expect(store.getSnapshot().projectInstructionsContent).toContain('Package rules');
+  });
+
+  it('shows renderer layer diagnostics from /status', async () => {
+    const cwd = join(root, 'packages', 'cli');
+    const config = loadConfig({
+      apiKey: 'test-key',
+      ui: { renderer: 'ink' },
+    });
+    const store = new Store({
+      config,
+      tools: TOOLS,
+      currentModel: 'gpt-4o',
+    });
+    const ctx: CommandContext = {
+      cwd,
+      config,
+      store,
+      llm: null,
+      runtime: makeRuntime() as any,
+      uiCapabilities: {
+        structuredPickers: false,
+        inlineProgress: false,
+        suppressLegacyTokenMeta: false,
+        extraAssistantSpacing: false,
+        suppressAbortNotice: false,
+      },
+    };
+
+    const result = await findCommand('status')!.execute(ctx, '');
+    const rendered = stripAnsi(logs.join('\n'));
+
+    expect(result.success).toBe(true);
+    expect(rendered).toContain('Renderer   ink beta');
+    expect(rendered).toContain('text-pickers, legacy-progress, legacy-meta, compact-spacing, abort-notice');
+  });
+
+  it('uses the active renderer adapter identity for print-mode /status diagnostics', async () => {
+    const cwd = join(root, 'packages', 'cli');
+    const config = loadConfig({
+      apiKey: 'test-key',
+      ui: { renderer: 'terminal' },
+    });
+    const store = new Store({
+      config,
+      tools: TOOLS,
+      currentModel: 'gpt-4o',
+    });
+    const ctx: CommandContext = {
+      cwd,
+      config,
+      store,
+      llm: null,
+      runtime: makeRuntime() as any,
+      uiRenderer: 'print',
+      uiCapabilities: {
+        structuredPickers: false,
+        inlineProgress: false,
+        suppressLegacyTokenMeta: false,
+        extraAssistantSpacing: false,
+        suppressAbortNotice: false,
+      },
+    };
+
+    const result = await findCommand('status')!.execute(ctx, '');
+    const rendered = stripAnsi(logs.join('\n'));
+
+    expect(result.success).toBe(true);
+    expect(rendered).toContain('Renderer   print non-interactive');
+    expect(rendered).not.toContain('Renderer   terminal stable text-pickers');
+  });
+
+  it('renders /model list from shared model picker state', async () => {
+    const cwd = join(root, 'packages', 'cli');
+    const config = loadConfig({ apiKey: 'test-key', model: 'glm-5' });
+    const store = new Store({
+      config,
+      tools: TOOLS,
+      currentModel: 'glm-5',
+    });
+    const ctx: CommandContext = {
+      cwd,
+      config,
+      store,
+      llm: {
+        getModel: jest.fn(() => 'glm-5'),
+      } as any,
+      runtime: makeRuntime() as any,
+    };
+
+    const result = await findCommand('model')!.execute(ctx, 'list');
+    const rendered = stripAnsi(logs.join('\n'));
+
+    expect(result.success).toBe(true);
+    expect(rendered).toContain('Available Models');
+    expect(rendered).toContain('glm-5');
+    expect(rendered).toContain('(glm)');
+    expect(rendered).toContain('(current)');
+    expect(rendered).toContain('203K ctx');
+    expect(rendered).toContain('Bailian (Zhipu)');
+    expect(rendered).toContain('claude-opus-4-8');
+    expect(rendered).toContain('200K ctx');
+    expect(rendered).not.toContain('claude-opus-4-7');
+  });
+
+  it('switches /model aliases to known model ids', async () => {
+    const cwd = join(root, 'packages', 'cli');
+    const config = loadConfig({ apiKey: 'test-key', model: 'glm-5' });
+    const store = new Store({
+      config,
+      tools: TOOLS,
+      currentModel: 'glm-5',
+    });
+    const setModel = jest.fn();
+    const ctx: CommandContext = {
+      cwd,
+      config,
+      store,
+      llm: {
+        getModel: jest.fn(() => 'glm-5'),
+        setModel,
+      } as any,
+      runtime: makeRuntime() as any,
+    };
+
+    const result = await findCommand('model')!.execute(ctx, 'opus');
+    const rendered = stripAnsi(logs.join('\n'));
+
+    expect(result.success).toBe(true);
+    expect(setModel).toHaveBeenCalledWith('claude-opus-4-8');
+    expect(store.getSnapshot().currentModel).toBe('claude-opus-4-8');
+    expect(rendered).toContain('Model changed to claude-opus-4-8');
+    expect(rendered).toContain('Context window 200K tokens (builtin)');
+  });
+
+  it('renders /model help aliases from the shared model catalog', async () => {
+    const cwd = join(root, 'packages', 'cli');
+    const config = loadConfig({ apiKey: 'test-key', model: 'glm-5' });
+    const store = new Store({
+      config,
+      tools: TOOLS,
+      currentModel: 'glm-5',
+    });
+    const ctx: CommandContext = {
+      cwd,
+      config,
+      store,
+      llm: null,
+      runtime: makeRuntime() as any,
+    };
+
+    const result = await findCommand('model')!.execute(ctx, 'help');
+    const rendered = stripAnsi(logs.join('\n'));
+
+    expect(result.success).toBe(true);
+    expect(rendered).toContain('Aliases:');
+    expect(rendered).toContain('codernext');
+    expect(rendered).toContain('gpt35');
+    expect(rendered).toContain('qwenplus');
+    expect(rendered).toContain('minimax');
   });
 
   it('shows last agent-loop stats when available', async () => {
@@ -439,6 +600,315 @@ describe('/status context diagnostics', () => {
       expect(rendered).toContain('verification_summary profile=node required=yes passed=1 failed=0 missing=1 claimAllowed=no');
       expect(rendered).toContain('missing: npm test -- --runInBand');
       expect(rendered).toContain('complete finish=budget_exceeded llm=1 tools=1 budgetProfile=config/release(1/96llm,1/360tools,128 KBvisible,frag=4,override=yes) budget=LLM request budget 24 reached next=reply_continue,narrow_instruction,inspect_loop_stats,raise_budget hint=Reply `继续` to continue the same objective.');
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.OPENHORSE_CONFIG_DIR;
+      } else {
+        process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+      }
+    }
+  });
+
+  it('shows the latest tool details and inspection hints from /last-tool', async () => {
+    const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+    process.env.OPENHORSE_CONFIG_DIR = join(root, 'config-last-tool');
+    try {
+      const cwd = join(root, 'packages', 'cli');
+      const config = loadConfig({ apiKey: 'test-key' });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'gpt-4o',
+      });
+      const session = createSession(cwd, 'gpt-4o');
+      const argsArtifact = storeArtifact(
+        cwd,
+        'exec_command-args',
+        'cd /repo && Authorization: Bearer secret-token-123456 && npm test',
+        Buffer.byteLength('cd /repo && Authorization: Bearer secret-token-123456 && npm test', 'utf8'),
+      )!;
+      const outputArtifact = storeArtifact(
+        cwd,
+        'exec_command',
+        'test output\nAuthorization: Bearer secret-token-123456 failed',
+        Buffer.byteLength('test output\nAuthorization: Bearer secret-token-123456 failed', 'utf8'),
+      )!;
+      appendSessionTraceEvent(session.id, {
+        turnId: 'turn-8',
+        type: 'tool_call',
+        name: 'read_file',
+        callId: 'call-old',
+        argsSummary: 'src/old.ts',
+      });
+      appendSessionTraceEvent(session.id, {
+        turnId: 'turn-8',
+        type: 'tool_result',
+        name: 'read_file',
+        callId: 'call-old',
+        success: true,
+        duration: 5,
+        outputBytes: 12,
+        modelVisibleBytes: 12,
+      });
+      appendSessionTraceEvent(session.id, {
+        turnId: 'turn-9',
+        type: 'tool_call',
+        name: 'exec_command',
+        callId: 'call-exec',
+        argsSummary: 'cd /repo && Authorization: Bearer secret-token-123456 && npm test',
+        argsArtifactId: argsArtifact.id,
+        argsBytes: argsArtifact.outputBytes,
+      });
+      appendSessionTraceEvent(session.id, {
+        turnId: 'turn-9',
+        type: 'tool_result',
+        name: 'exec_command',
+        callId: 'call-exec',
+        success: false,
+        duration: 1250,
+        outputBytes: 50 * 1024,
+        modelVisibleBytes: 1024,
+        artifactId: outputArtifact.id,
+        error: 'Authorization: Bearer secret-token-123456 failed',
+      });
+      const ctx: CommandContext = {
+        cwd,
+        config,
+        store,
+        llm: null,
+        runtime: makeRuntime() as any,
+        sessionId: session.id,
+        getSession: () => session,
+      };
+
+      const result = await findCommand('last-tool')!.execute(ctx, '');
+      const rendered = stripAnsi(logs.join('\n'));
+
+      expect(result.success).toBe(true);
+      expect(rendered).toContain('Last Tool');
+      expect(rendered).toContain('Tool        exec_command');
+      expect(rendered).toContain('Turn        turn-9');
+      expect(rendered).toContain('Call        call-exec');
+      expect(rendered).toContain('Status      error');
+      expect(rendered).toContain('Time        1.3s');
+      expect(rendered).toContain('Command      cd /repo && Authorization: [REDACTED_SECRET] && npm test');
+      expect(rendered).toContain(`Command full /artifacts show ${argsArtifact.id} --full`);
+      expect(rendered).toContain('Output      50 KB, model-visible 1.0 KB');
+      expect(rendered).toContain(`Output full /artifacts show ${outputArtifact.id} --full`);
+      expect(rendered).toContain('Error       Authorization: [REDACTED_SECRET] failed');
+      expect(rendered).toContain('Command preview');
+      expect(rendered).toContain('cd /repo && Authorization: [REDACTED_SECRET] && npm test');
+      expect(rendered).toContain('Output preview');
+      expect(rendered).toContain('test output');
+      expect(rendered).toContain('Use /last-tool --full for redacted full previews');
+      expect(rendered).not.toContain('secret-token-123456');
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.OPENHORSE_CONFIG_DIR;
+      } else {
+        process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+      }
+    }
+  });
+
+  it('supports /last-tool preview controls for full and metadata-only output', async () => {
+    const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+    process.env.OPENHORSE_CONFIG_DIR = join(root, 'config-last-tool-preview-controls');
+    try {
+      const cwd = join(root, 'packages', 'cli');
+      const config = loadConfig({ apiKey: 'test-key' });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'gpt-4o',
+      });
+      const longOutput = `head\n${'x'.repeat(5000)}\ntail-marker Authorization: Bearer secret-token-123456`;
+      const artifact = storeArtifact(cwd, 'exec_command', longOutput, Buffer.byteLength(longOutput, 'utf8'))!;
+      const session = createSession(cwd, 'gpt-4o');
+      appendSessionTraceEvent(session.id, {
+        turnId: 'turn-preview',
+        type: 'tool_result',
+        name: 'exec_command',
+        callId: 'call-preview',
+        success: true,
+        duration: 10,
+        outputBytes: artifact.outputBytes,
+        modelVisibleBytes: 1024,
+        artifactId: artifact.id,
+      });
+      const ctx: CommandContext = {
+        cwd,
+        config,
+        store,
+        llm: null,
+        runtime: makeRuntime() as any,
+        sessionId: session.id,
+        getSession: () => session,
+      };
+
+      const metadataOnly = await findCommand('last-tool')!.execute(ctx, '--no-preview');
+      let rendered = stripAnsi(logs.join('\n'));
+      expect(metadataOnly.success).toBe(true);
+      expect(rendered).toContain(`Output full /artifacts show ${artifact.id} --full`);
+      expect(rendered).not.toContain('head');
+      expect(rendered).not.toContain('tail-marker');
+
+      logs = [];
+      const full = await findCommand('last-tool')!.execute(ctx, '--full');
+      rendered = stripAnsi(logs.join('\n'));
+      expect(full.success).toBe(true);
+      expect(rendered).toContain('Output preview');
+      expect(rendered).toContain('head');
+      expect(rendered).toContain('tail-marker Authorization: [REDACTED_SECRET]');
+      expect(rendered).not.toContain('secret-token-123456');
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.OPENHORSE_CONFIG_DIR;
+      } else {
+        process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+      }
+    }
+  });
+
+  it('keeps /last-tool argument labels for non-command tools', async () => {
+    const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+    process.env.OPENHORSE_CONFIG_DIR = join(root, 'config-last-tool-non-command');
+    try {
+      const cwd = join(root, 'packages', 'cli');
+      const config = loadConfig({ apiKey: 'test-key' });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'gpt-4o',
+      });
+      const session = createSession(cwd, 'gpt-4o');
+      appendSessionTraceEvent(session.id, {
+        turnId: 'turn-read',
+        type: 'tool_call',
+        name: 'read_file',
+        callId: 'call-read',
+        argsSummary: 'src/index.ts',
+      });
+      appendSessionTraceEvent(session.id, {
+        turnId: 'turn-read',
+        type: 'tool_result',
+        name: 'read_file',
+        callId: 'call-read',
+        success: true,
+        duration: 8,
+        outputBytes: 512,
+        modelVisibleBytes: 512,
+      });
+      const ctx: CommandContext = {
+        cwd,
+        config,
+        store,
+        llm: null,
+        runtime: makeRuntime() as any,
+        sessionId: session.id,
+        getSession: () => session,
+      };
+
+      const result = await findCommand('last-tool')!.execute(ctx, '');
+      const rendered = stripAnsi(logs.join('\n'));
+
+      expect(result.success).toBe(true);
+      expect(rendered).toContain('Tool        read_file');
+      expect(rendered).toContain('Args         src/index.ts');
+      expect(rendered).not.toContain('Command      src/index.ts');
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.OPENHORSE_CONFIG_DIR;
+      } else {
+        process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+      }
+    }
+  });
+
+  it('handles /last-tool before any tool trace exists', async () => {
+    const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+    process.env.OPENHORSE_CONFIG_DIR = join(root, 'config-last-tool-empty');
+    try {
+      const cwd = join(root, 'packages', 'cli');
+      const config = loadConfig({ apiKey: 'test-key' });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'gpt-4o',
+      });
+      const session = createSession(cwd, 'gpt-4o');
+      appendSessionTraceEvent(session.id, {
+        turnId: 'turn-1',
+        type: 'turn_start',
+        inputBytes: 4,
+      });
+      const ctx: CommandContext = {
+        cwd,
+        config,
+        store,
+        llm: null,
+        runtime: makeRuntime() as any,
+        sessionId: session.id,
+        getSession: () => session,
+      };
+
+      const result = await findCommand('last-tool')!.execute(ctx, '');
+      const rendered = stripAnsi(logs.join('\n'));
+
+      expect(result.success).toBe(true);
+      expect(rendered).toContain(`No tool trace events recorded for session ${session.id.slice(0, 8)} yet.`);
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.OPENHORSE_CONFIG_DIR;
+      } else {
+        process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+      }
+    }
+  });
+
+  it('uses result-carried args details when /last-tool cannot find a matching tool call', async () => {
+    const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+    process.env.OPENHORSE_CONFIG_DIR = join(root, 'config-last-tool-result-only');
+    try {
+      const cwd = join(root, 'packages', 'cli');
+      const config = loadConfig({ apiKey: 'test-key' });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'gpt-4o',
+      });
+      const session = createSession(cwd, 'gpt-4o');
+      appendSessionTraceEvent(session.id, {
+        turnId: 'turn-result-only',
+        type: 'tool_result',
+        name: 'exec_command',
+        callId: 'call-result-only',
+        argsSummary: 'npm test -- --runInBand',
+        argsArtifactId: 'exec_command-args-result-only',
+        argsBytes: 2048,
+        success: true,
+        duration: 40,
+        outputBytes: 512,
+        modelVisibleBytes: 256,
+      });
+      const ctx: CommandContext = {
+        cwd,
+        config,
+        store,
+        llm: null,
+        runtime: makeRuntime() as any,
+        sessionId: session.id,
+        getSession: () => session,
+      };
+
+      const result = await findCommand('last-tool')!.execute(ctx, '');
+      const rendered = stripAnsi(logs.join('\n'));
+
+      expect(result.success).toBe(true);
+      expect(rendered).toContain('Tool        exec_command');
+      expect(rendered).toContain('Turn        turn-result-only');
+      expect(rendered).toContain('Command      npm test -- --runInBand');
+      expect(rendered).toContain('Command full /artifacts show exec_command-args-result-only --full (2.0 KB)');
     } finally {
       if (previousConfigDir === undefined) {
         delete process.env.OPENHORSE_CONFIG_DIR;

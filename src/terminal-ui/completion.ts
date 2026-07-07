@@ -1,4 +1,5 @@
 import { getVisibleCommands } from '../commands';
+import { createFilePickerState, getFileMentionQuery } from '../runtime/ui-view-model';
 import { matchFiles } from '../services/file-glob';
 
 export type ReadlineCompleter = (line: string) => [string[], string];
@@ -34,15 +35,17 @@ export function completeSlashCommand(line: string): [string[], string] {
 }
 
 export function completeFileMention(line: string, cwd: string): [string[], string] {
-  const match = line.match(/(^|\s)@([^\s]*)$/u);
-  if (!match || match.index === undefined) return [[], line];
+  const query = getFileMentionQuery(line);
+  if (!query) return [[], line];
 
-  const atIndex = match.index + match[1].length;
-  const query = match[2];
-  const prefix = line.slice(0, atIndex + 1);
-  const completions = matchFiles(query, cwd).map(file =>
-    `${prefix}${file.path}${file.isDirectory ? '/' : ' '}`
-  );
+  const state = createFilePickerState({
+    input: line,
+    files: matchFiles(query.query, cwd),
+  });
+  const prefix = `${query.base}@`;
+  const completions = state?.visibleItems.map(file =>
+    `${prefix}${file.value}${file.isDirectory ? '' : ' '}`
+  ) ?? [];
 
   return [unique(completions), line];
 }

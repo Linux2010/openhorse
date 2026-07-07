@@ -1071,6 +1071,152 @@ describe('AgentRuntimeController', () => {
     });
   });
 
+  it('records local fast-path output artifacts in tool events and trace', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      writeFileSync(join(projectDir, 'large-output.txt'), `${'local-fast-path-output\n'.repeat(160)}`, 'utf-8');
+      const config = loadConfig({
+        apiKey: 'test-key',
+        model: 'test-model',
+      });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'test-model',
+      });
+      const llm = {
+        getModel: jest.fn(() => 'test-model'),
+        chatStream: jest.fn(async () => ({ content: 'should not run', model: 'test-model' })),
+      };
+      let session: SessionMeta | null = null;
+      const runtime = createRuntime({
+        cwd: projectDir,
+        config,
+        store,
+        llm: llm as any,
+        isConfigured: true,
+        ensureSession: jest.fn(() => {
+          session ??= createSession(projectDir, 'test-model');
+          return session;
+        }),
+        getSession: jest.fn(() => session),
+        setSession: jest.fn(nextSession => {
+          session = nextSession;
+        }),
+      });
+      const { events, appended } = createEvents();
+      const controller = new AgentChatController(runtime, events);
+
+      await expect(controller.runInput('read large-output.txt', { turnId: 'turn-large-local-output' })).resolves.toBeUndefined();
+
+      expect(llm.chatStream).not.toHaveBeenCalled();
+      expect(session).not.toBeNull();
+      expect(appended.at(-1)).toMatchObject({
+        role: 'tool',
+        content: expect.stringContaining('Full output: /artifacts show read_file-'),
+      });
+      expect(appended.at(-1)?.content).toContain('--full (3.6 KB)');
+
+      const traceEvents = readSessionTraceEvents(session!.id);
+      const toolResult = traceEvents.find(event => event.type === 'tool_result' && event.name === 'read_file');
+      expect(toolResult).toMatchObject({
+        type: 'tool_result',
+        artifactId: expect.stringMatching(/^read_file-/),
+        outputBytes: expect.any(Number),
+        modelVisibleBytes: 0,
+      });
+
+      const artifact = listArtifacts(projectDir).find(item => item.id === toolResult!.artifactId);
+      expect(artifact).toBeDefined();
+      const content = retrieveArtifact(artifact!.path);
+      expect(content).toContain('local-fast-path-output');
+      expect(content).toBe(`${'local-fast-path-output\n'.repeat(160)}`);
+      expect(Buffer.byteLength(content!, 'utf8')).toBe(toolResult!.outputBytes);
+    });
+  });
+
+  it('derives command UI capabilities from the active renderer when no explicit override is supplied', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'test-model',
+      });
+      const runtime = createRuntime({
+        cwd: projectDir,
+        config,
+        store,
+        runtime: ({
+          brain: {
+            getStatus: () => ({ agents: [], pendingTasks: 0, strategy: 'sequential' }),
+          },
+          memory: {
+            getStatus: () => ({ working: 0, 'short-term': 0, 'long-term': 0 }),
+          },
+          store: {
+            getStats: () => ({ working: 0, 'short-term': 0, 'long-term': 0 }),
+          },
+        } as unknown) as OpenHorseUiRuntime['runtime'],
+      });
+      const { events, appended } = createEvents();
+      const controller = new AgentRuntimeController({
+        runtime,
+        events,
+        uiRenderer: 'print',
+      });
+
+      expect(controller.submit('/status')).toEqual({ type: 'started' });
+      await controller.waitForIdle();
+
+      const status = appended.map(entry => entry.content).join('\n');
+      expect(status).toContain('Renderer   print non-interactive');
+      expect(status).toContain('text-pickers, legacy-progress, legacy-meta, compact-spacing, abort-notice');
+    });
+  });
+
+  it('derives command UI capabilities from nested chat renderer options', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'test-model',
+      });
+      const runtime = createRuntime({
+        cwd: projectDir,
+        config,
+        store,
+        runtime: ({
+          brain: {
+            getStatus: () => ({ agents: [], pendingTasks: 0, strategy: 'sequential' }),
+          },
+          memory: {
+            getStatus: () => ({ working: 0, 'short-term': 0, 'long-term': 0 }),
+          },
+          store: {
+            getStats: () => ({ working: 0, 'short-term': 0, 'long-term': 0 }),
+          },
+        } as unknown) as OpenHorseUiRuntime['runtime'],
+      });
+      const { events, appended } = createEvents();
+      const controller = new AgentRuntimeController({
+        runtime,
+        events,
+        chatOptions: {
+          uiRenderer: 'print',
+        },
+      });
+
+      expect(controller.submit('/status')).toEqual({ type: 'started' });
+      await controller.waitForIdle();
+
+      const status = appended.map(entry => entry.content).join('\n');
+      expect(status).toContain('Renderer   print non-interactive');
+      expect(status).toContain('text-pickers, legacy-progress, legacy-meta, compact-spacing, abort-notice');
+    });
+  });
+
   it('passes renderer capabilities from the runtime controller boundary into commands', async () => {
     await withTempConfig(async ({ projectDir }) => {
       createRestorableSession(projectDir, 'older task');
@@ -2117,9 +2263,9 @@ describe('AgentRuntimeController', () => {
       await expect(controller.runInput('read both files', { turnId: 'turn-tools' })).resolves.toBeUndefined();
 
       expect(statuses).toEqual(expect.arrayContaining([
-        'Thinking...',
-        'Running 2 tools...',
-        'Reading tool results...',
+        'Working: thinking',
+        'Working: running 2 tools',
+        'Working: reading tool results',
       ]));
       expect(llm.chatStream).toHaveBeenCalledTimes(2);
       expect(session).not.toBeNull();
@@ -2136,6 +2282,74 @@ describe('AgentRuntimeController', () => {
         'complete',
       ]));
       expect(readSessionTraceEvents(session!.id).filter(event => event.type === 'tool_result')).toHaveLength(2);
+    });
+  });
+
+  it('emits a running status for a single model-requested tool', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(projectDir, { recursive: true });
+      writeFileSync(join(projectDir, 'a.txt'), 'alpha', 'utf-8');
+
+      const config = loadConfig({
+        apiKey: 'test-key',
+        model: 'test-model',
+      });
+      const store = new Store({
+        config,
+        tools: TOOLS,
+        currentModel: 'test-model',
+      });
+      const toolCalls = [
+        {
+          id: 'call-a',
+          type: 'function' as const,
+          function: { name: 'read_file', arguments: JSON.stringify({ path: 'a.txt' }) },
+        },
+      ];
+      const llm = {
+        getModel: jest.fn(() => 'test-model'),
+        chatStream: jest.fn()
+          .mockResolvedValueOnce({
+            content: '',
+            model: 'test-model',
+            toolCalls,
+            usage: { promptTokens: 10, completionTokens: 1 },
+          })
+          .mockResolvedValueOnce({
+            content: 'done',
+            model: 'test-model',
+            usage: { promptTokens: 12, completionTokens: 2 },
+          }),
+      };
+      let session: SessionMeta | null = null;
+      const runtime = createRuntime({
+        cwd: projectDir,
+        config,
+        store,
+        llm: llm as any,
+        isConfigured: true,
+        ensureSession: jest.fn(() => {
+          session ??= createSession(projectDir, 'test-model');
+          return session;
+        }),
+        getSession: jest.fn(() => session),
+        setSession: jest.fn(nextSession => {
+          session = nextSession;
+        }),
+      });
+      const { events, statuses } = createEvents();
+      const controller = new AgentChatController(runtime, events);
+
+      await expect(controller.runInput('read one file', { turnId: 'turn-one-tool' })).resolves.toBeUndefined();
+
+      expect(statuses).toEqual(expect.arrayContaining([
+        'Working: thinking',
+        'Working: running tool',
+        'Working: reading tool results',
+      ]));
+      expect(llm.chatStream).toHaveBeenCalledTimes(2);
+      expect(session).not.toBeNull();
+      expect(readSessionTraceEvents(session!.id).filter(event => event.type === 'tool_result')).toHaveLength(1);
     });
   });
 
@@ -2734,6 +2948,63 @@ describe('AgentRuntimeController', () => {
     });
 
     expect(appended[0].content).toBe(`Running exec_command\n  $ ${command}`);
+  });
+
+  it('keeps long non-exec tool arguments visible in tool transcript entries', () => {
+    const { events, appended } = createEvents();
+    const presenter = createToolEventPresenter(events);
+    const path = `/Users/hope/ai-project/openhorse/${'deep-directory/'.repeat(14)}target-file.ts`;
+
+    presenter.start({
+      type: 'tool_call',
+      callId: 'call-read-long-path',
+      name: 'read_file',
+      args: { path },
+      batchCount: 1,
+      batchIndex: 0,
+    });
+
+    expect(path.length).toBeGreaterThan(160);
+    expect(appended[0].content).toBe(`Running read_file ${path}`);
+  });
+
+  it('passes batch metadata through tool activity events', () => {
+    const { events, appended } = createEvents();
+    const presenter = createToolEventPresenter(events);
+
+    presenter.start({
+      type: 'tool_call',
+      callId: 'call-batch',
+      name: 'read_file',
+      args: { path: 'src/a.ts' },
+      batchCount: 3,
+      batchIndex: 1,
+    });
+    presenter.finish({
+      type: 'tool_result',
+      callId: 'call-batch',
+      name: 'read_file',
+      args: { path: 'src/a.ts' },
+      result: JSON.stringify({ success: true, output: 'alpha' }),
+      modelVisibleResult: JSON.stringify({ success: true, output: 'alpha' }),
+      success: true,
+      duration: 11,
+      batchCount: 3,
+      batchIndex: 1,
+    });
+
+    expect(events.toolStarted).toHaveBeenCalledWith(expect.objectContaining({
+      callId: 'call-batch',
+      batchCount: 3,
+      batchIndex: 1,
+    }));
+    expect(events.toolFinished).toHaveBeenCalledWith(expect.objectContaining({
+      callId: 'call-batch',
+      success: true,
+      batchCount: 3,
+      batchIndex: 1,
+    }));
+    expect(appended[0].content).toContain('Batch 2/3');
   });
 
   it('adapts a protocol event sink back into UiEventSink for renderer compatibility', () => {

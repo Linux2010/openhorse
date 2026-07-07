@@ -65,6 +65,20 @@ class TerminalModel:
     def lines(self) -> list[str]:
         return ["".join(row) for row in self.screen]
 
+    def resize(self, rows: int, cols: int) -> None:
+        old_lines = self.lines()
+        self.rows = rows
+        self.cols = cols
+        kept = old_lines[-rows:]
+        self.screen = []
+        for line in kept:
+            chars = list(line[:cols])
+            self.screen.append(chars + [" "] * (cols - len(chars)))
+        while len(self.screen) < rows:
+            self.screen.insert(0, [" "] * cols)
+        self.row = min(self.row, rows - 1)
+        self.col = min(self.col, cols - 1)
+
     def _consume_escape(self, text: str, index: int) -> int:
         if index + 1 >= len(text):
             return index + 1
@@ -452,6 +466,21 @@ def main() -> int:
         compact_visible = visible.replace(" ", "")
         if "开源小？事收到" in compact_visible or "开源小？事收" not in compact_visible:
             raise AssertionError(f"Backspace did not update the visible terminal editor buffer:\n{visible}")
+
+        set_window_size(master, rows=24, cols=42)
+        model.resize(rows=24, cols=42)
+        time.sleep(0.35)
+        visible_after_resize = sync_screen()
+        compact_after_resize = visible_after_resize.replace(" ", "")
+        if "›" not in visible_after_resize or "开源小？事收" not in compact_after_resize:
+            raise AssertionError(
+                "Terminal editor did not redraw the current CJK input after resize:\n"
+                + visible_after_resize
+            )
+        set_window_size(master, rows=24, cols=100)
+        model.resize(rows=24, cols=100)
+        time.sleep(0.2)
+        sync_screen()
 
         os.write(master, b"\x15stream revise\r")
         wait_for(master, output, "mock-stream-chunk-1", timeout=8)
