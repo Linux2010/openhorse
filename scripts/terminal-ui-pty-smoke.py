@@ -203,6 +203,19 @@ def wait_for(fd: int, output: list[bytes], needle: str, timeout: float = 8.0) ->
     raise AssertionError(f"Timed out waiting for {needle!r}. Tail:\n{plain[-2000:]}")
 
 
+def assert_output_order(output: str, markers: list[str]) -> None:
+  """Assert all markers appear in strict order inside `output`."""
+  cursor = 0
+  for marker in markers:
+    index = output.find(marker, cursor)
+    if index < 0:
+      raise AssertionError(
+        f"Could not find expected timeline marker {marker!r} after position {cursor}.\n"
+        f"Output tail:\n{output[-4000:]}"
+      )
+    cursor = index + len(marker)
+
+
 class MockOpenAIHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -513,6 +526,12 @@ def main() -> int:
         os.write(master, b"confirm allow\r")
         wait_for(master, output, "Allow tool write_file?", timeout=8)
         wait_for(master, output, CONFIRM_APPROVE_TARGET, timeout=8)
+        plain_after_approve = strip_ansi(b"".join(output).decode("utf-8", errors="replace"))
+        assert_output_order(plain_after_approve, [
+            f"requesting write to {CONFIRM_APPROVE_TARGET}",
+            "Allow tool write_file?",
+            "confirmation-allowed-final",
+        ])
         os.write(master, b"y\r")
         wait_for(master, output, "confirmation-allowed-final", timeout=10)
         if not approve_path.exists() or approve_path.read_text(encoding="utf-8") != "approved":
@@ -521,6 +540,12 @@ def main() -> int:
         os.write(master, b"confirm deny\r")
         wait_for(master, output, "Allow tool write_file?", timeout=8)
         wait_for(master, output, CONFIRM_DENY_TARGET, timeout=8)
+        plain_after_deny = strip_ansi(b"".join(output).decode("utf-8", errors="replace"))
+        assert_output_order(plain_after_deny, [
+            f"requesting write to {CONFIRM_DENY_TARGET}",
+            "Allow tool write_file?",
+            "permission was denied (user)",
+        ])
         os.write(master, b"n\r")
         wait_for(master, output, "permission was denied (user)", timeout=10)
         if deny_path.exists():
