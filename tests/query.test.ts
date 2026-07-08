@@ -1,4 +1,4 @@
-import { query } from '../src/framework/query';
+import { DEFAULT_LOOP_BUDGET, query } from '../src/framework/query';
 import type { QueryEvent } from '../src/framework/query';
 import { buildTool } from '../src/framework/tool';
 import type { OpenHorseTool, ToolContext } from '../src/framework/tool';
@@ -95,6 +95,68 @@ describe('query generator', () => {
     expect(events[0]).toMatchObject({ type: 'request_start', model: 'test-model', turn: 1 });
     expect(events[1]).toMatchObject({ type: 'message', role: 'assistant', content: 'Hello!' });
     expect(events[2]).toMatchObject({ type: 'complete', content: 'Hello!', model: 'test-model' });
+  });
+
+  test('yields prompt assembly stats before model response when harness is active', async () => {
+    const llm = makeMockLLM([
+      { content: 'Hello with context', model: 'test-model' },
+    ]);
+    const messages: Message[] = [
+      { role: 'system', content: 'You are a bot.' },
+      { role: 'user', content: 'Hi' },
+    ];
+    const promptAssemblyStats = {
+      createdAt: 1,
+      modelId: 'test-model',
+      budgetTokens: 1200,
+      estimatedTokens: 240,
+      coreTokens: 120,
+      evidenceBudgetTokens: 300,
+      recentTurnBudgetTokens: 200,
+      includedEvidence: [
+        { id: 'ledger-1', kind: 'user_requirement', score: 42, tokens: 20, reason: 'relevant' },
+      ],
+      omittedEvidence: [
+        { id: 'ledger-2', kind: 'tool_result', score: 2, tokens: 50, reason: 'budget' },
+      ],
+      sections: ['core', 'ranked_evidence'],
+    };
+    const harness = {
+      assembleMessages: jest.fn((inputMessages: Message[]) => inputMessages),
+      getCapsule: jest.fn(() => ({ summary: '' })),
+      recordAssistantResponse: jest.fn(),
+      beforeComplete: jest.fn(() => ({ canComplete: true })),
+      toJSON: jest.fn(() => ({ promptAssemblyStats })),
+    };
+    const events: QueryEvent[] = [];
+
+    for await (const event of query({
+      messages,
+      tools: [mockTool],
+      toolExecutor: async () => 'result',
+      llm,
+      harness: harness as any,
+    })) {
+      events.push(event);
+    }
+
+    expect(events.map(event => event.type)).toEqual([
+      'request_start',
+      'prompt_assembly',
+      'message',
+      'complete',
+    ]);
+    expect(events[1]).toMatchObject({
+      type: 'prompt_assembly',
+      modelId: 'test-model',
+      estimatedTokens: 240,
+      budgetTokens: 1200,
+      sections: ['core', 'ranked_evidence'],
+      includedEvidence: ['ledger-1:user_requirement:score=42:tokens=20'],
+      omittedEvidence: ['ledger-2:tool_result:score=2:tokens=50'],
+      includedEvidenceCount: 1,
+      omittedEvidenceCount: 1,
+    });
   });
 
   test('yields tool_call and tool_result when tool is called', async () => {
@@ -292,6 +354,343 @@ describe('query generator', () => {
     expect(complete.stats?.modelVisibleToolBytes).toBeGreaterThan(0);
   });
 
+  test('merges provider retry and fallback diagnostics into loop stats', async () => {
+    const llm = makeMockLLM([
+      { content: 'Recovered', model: 'fallback-model' },
+    ]);
+    (llm as any).getLastRequestDiagnostics = jest.fn(() => ({
+      retryCount: 3,
+      retryDelayMs: 12,
+      retryErrorTypes: ['rate_limit', 'provider_busy', 'rate_limit'],
+      lastRetryErrorType: 'rate_limit',
+      lastRetryStatus: 429,
+      fallbackTriggered: true,
+      fallbackFromModel: 'primary-model',
+      fallbackToModel: 'fallback-model',
+      finalModel: 'fallback-model',
+      usingFallback: true,
+    }));
+
+    const events: QueryEvent[] = [];
+    for await (const event of query({
+      messages: [
+        { role: 'system', content: 'You are a bot.' },
+        { role: 'user', content: 'Recover from provider pressure' },
+      ],
+      tools: [mockTool],
+      toolExecutor: async () => 'result',
+      llm,
+    })) {
+      events.push(event);
+    }
+
+    const complete = events.find(event => event.type === 'complete') as Extract<QueryEvent, { type: 'complete' }>;
+    expect(complete.stats).toMatchObject({
+      finishReason: 'completed',
+      providerRetryCount: 3,
+      providerRetryDelayMs: 12,
+      providerRetryErrorTypes: ['rate_limit', 'provider_busy'],
+      providerLastRetryErrorType: 'rate_limit',
+      providerLastRetryStatus: 429,
+      providerFallbackCount: 1,
+      providerFallbackFromModel: 'primary-model',
+      providerFallbackToModel: 'fallback-model',
+      providerFinalModel: 'fallback-model',
+      providerUsingFallback: true,
+    });
+  });
+
+  test('stops before another model request when LLM request budget is reached', async () => {
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/test"}' } },
+        ],
+      },
+      { content: 'should not be requested', model: 'test-model' },
+    ]);
+
+    const events: QueryEvent[] = [];
+    for await (const event of query({
+      messages: [
+        { role: 'system', content: 'You are a bot.' },
+        { role: 'user', content: 'Read repeatedly' },
+      ],
+      tools: [mockTool],
+      toolExecutor: async () => JSON.stringify({ success: true, output: 'file content' }),
+      llm,
+      loopBudget: { maxLlmRequestsPerUserTurn: 1 },
+    })) {
+      events.push(event);
+    }
+
+    const complete = events[events.length - 1] as Extract<QueryEvent, { type: 'complete' }>;
+    expect(llm.chatStream).toHaveBeenCalledTimes(1);
+    expect(complete).toMatchObject({
+      type: 'complete',
+      stats: {
+        finishReason: 'budget_exceeded',
+        budgetExceededReason: 'LLM request budget 1 reached',
+        llmRequests: 1,
+        loopBudgetSource: 'config',
+        loopBudgetMaxLlmRequests: 1,
+        loopBudgetMaxToolCalls: DEFAULT_LOOP_BUDGET.maxToolCallsPerUserTurn,
+        loopBudgetConfigOverride: true,
+        continuationActions: [
+          'reply_continue',
+          'narrow_instruction',
+          'inspect_loop_stats',
+          'raise_budget',
+        ],
+      },
+    });
+    expect(complete.stats?.continuationHint).toContain('Reply `继续`');
+    expect(complete.content).toContain('Agent loop budget reached');
+    expect(complete.content).toContain('preserved the current session state');
+    expect(complete.content).toContain('reply `继续`');
+    expect(complete.content).toContain('raise agentLoop.budget');
+  });
+
+  test('stops before executing tools when tool-call budget would be exceeded', async () => {
+    const llm = makeMockLLM([
+      {
+        content: 'Need several files',
+        model: 'test-model',
+        toolCalls: [
+          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/one"}' } },
+          { id: 'call-2', type: 'function', function: { name: 'read_file', arguments: '{"path":"/two"}' } },
+        ],
+      },
+    ]);
+    const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'file content' }));
+
+    const events: QueryEvent[] = [];
+    for await (const event of query({
+      messages: [
+        { role: 'system', content: 'You are a bot.' },
+        { role: 'user', content: 'Read both files' },
+      ],
+      tools: [mockTool],
+      toolExecutor,
+      llm,
+      loopBudget: { maxToolCallsPerUserTurn: 1 },
+    })) {
+      events.push(event);
+    }
+
+    const complete = events[events.length - 1] as Extract<QueryEvent, { type: 'complete' }>;
+    expect(llm.chatStream).toHaveBeenCalledTimes(1);
+    expect(toolExecutor).not.toHaveBeenCalled();
+    expect(events.some(event => event.type === 'assistant_tool_calls')).toBe(false);
+    expect(events.some(event => event.type === 'tool_call')).toBe(false);
+    expect(complete).toMatchObject({
+      type: 'complete',
+      stats: {
+        finishReason: 'budget_exceeded',
+        budgetExceededReason: 'tool call budget 1 would be exceeded by 2 requested tools',
+        llmRequests: 1,
+        toolCalls: 0,
+        loopBudgetMaxToolCalls: 1,
+        continuationActions: [
+          'reply_continue',
+          'narrow_instruction',
+          'inspect_loop_stats',
+          'raise_budget',
+        ],
+      },
+    });
+    expect(complete.stats?.continuationHint).toContain('Reply `继续`');
+  });
+
+  test('promotes default budget when a task becomes a tool-heavy loop', async () => {
+    const toolResponses: LLMResponse[] = Array.from({ length: 24 }, (_, index) => ({
+      content: '',
+      model: 'test-model',
+      toolCalls: [
+        {
+          id: `call-${index}`,
+          type: 'function',
+          function: { name: 'read_file', arguments: `{"path":"/test-${index}"}` },
+        },
+      ],
+    }));
+    const llm = makeMockLLM([
+      ...toolResponses,
+      { content: 'Done after promoted budget', model: 'test-model' },
+    ]);
+
+    const events: QueryEvent[] = [];
+    for await (const event of query({
+      messages: [
+        { role: 'system', content: 'You are a bot.' },
+        { role: 'user', content: 'work on it' },
+      ],
+      tools: [mockTool],
+      toolExecutor: async () => JSON.stringify({ success: true, output: 'file content' }),
+      llm,
+    })) {
+      events.push(event);
+    }
+
+    const complete = events[events.length - 1] as Extract<QueryEvent, { type: 'complete' }>;
+    expect(llm.chatStream).toHaveBeenCalledTimes(25);
+    expect(complete).toMatchObject({
+      type: 'complete',
+      content: 'Done after promoted budget',
+      stats: {
+        finishReason: 'completed',
+        llmRequests: 25,
+        toolCalls: 24,
+        loopBudgetSource: 'complex',
+        loopBudgetBaseProfile: 'complex',
+        loopBudgetMaxLlmRequests: 48,
+        loopBudgetMaxToolCalls: 180,
+      },
+    });
+  });
+
+  test('does not promote direct custom LLM request caps', async () => {
+    const toolResponses: LLMResponse[] = Array.from({ length: 8 }, (_, index) => ({
+      content: '',
+      model: 'test-model',
+      toolCalls: [
+        {
+          id: `call-${index}`,
+          type: 'function',
+          function: { name: 'read_file', arguments: `{"path":"/test-${index}"}` },
+        },
+      ],
+    }));
+    const llm = makeMockLLM([
+      ...toolResponses,
+      { content: 'should not be requested', model: 'test-model' },
+    ]);
+
+    const events: QueryEvent[] = [];
+    for await (const event of query({
+      messages: [
+        { role: 'system', content: 'You are a bot.' },
+        { role: 'user', content: 'work on it' },
+      ],
+      tools: [mockTool],
+      toolExecutor: async () => JSON.stringify({ success: true, output: 'file content' }),
+      llm,
+      loopBudget: { maxLlmRequestsPerUserTurn: 8 },
+    })) {
+      events.push(event);
+    }
+
+    const complete = events[events.length - 1] as Extract<QueryEvent, { type: 'complete' }>;
+    expect(llm.chatStream).toHaveBeenCalledTimes(8);
+    expect(complete).toMatchObject({
+      type: 'complete',
+      stats: {
+        finishReason: 'budget_exceeded',
+        budgetExceededReason: 'LLM request budget 8 reached',
+        llmRequests: 8,
+        toolCalls: 8,
+        loopBudgetSource: 'config',
+        loopBudgetMaxLlmRequests: 8,
+        loopBudgetConfigOverride: true,
+      },
+    });
+  });
+
+  test('does not promote the default budget for repeated model-only completion-gate loops', async () => {
+    const llm = makeMockLLM([
+      ...Array.from({ length: 24 }, (_, index) => ({
+        content: `pass ${index}`,
+        model: 'test-model',
+      })),
+      { content: 'should not be requested', model: 'test-model' },
+    ]);
+    const harness = {
+      assembleMessages: jest.fn((inputMessages: Message[]) => inputMessages),
+      getCapsule: jest.fn(() => ({ summary: '' })),
+      recordAssistantResponse: jest.fn(),
+      beforeComplete: jest.fn(() => ({ canComplete: false, reason: 'needs verification' })),
+      asCompletionBlockedMessage: jest.fn(() => ({
+        role: 'user' as const,
+        content: 'Continue until verified.',
+      })),
+      toJSON: jest.fn(() => ({})),
+    };
+
+    const events: QueryEvent[] = [];
+    for await (const event of query({
+      messages: [
+        { role: 'system', content: 'You are a bot.' },
+        { role: 'user', content: 'Answer carefully' },
+      ],
+      tools: [mockTool],
+      toolExecutor: async () => JSON.stringify({ success: true, output: 'unused' }),
+      llm,
+      harness: harness as any,
+    })) {
+      events.push(event);
+    }
+
+    const complete = events[events.length - 1] as Extract<QueryEvent, { type: 'complete' }>;
+    expect(llm.chatStream).toHaveBeenCalledTimes(24);
+    expect(complete).toMatchObject({
+      type: 'complete',
+      stats: {
+        finishReason: 'budget_exceeded',
+        budgetExceededReason: 'LLM request budget 24 reached',
+        llmRequests: 24,
+        toolCalls: 0,
+        loopBudgetSource: 'default',
+        loopBudgetBaseProfile: 'default',
+        loopBudgetMaxLlmRequests: 24,
+      },
+    });
+  });
+
+  test('records fragmented single read-only turns and injects batch_read guidance', async () => {
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/one"}' } },
+        ],
+      },
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          { id: 'call-2', type: 'function', function: { name: 'read_file', arguments: '{"path":"/two"}' } },
+        ],
+      },
+      { content: 'Done', model: 'test-model' },
+    ]);
+
+    const events: QueryEvent[] = [];
+    for await (const event of query({
+      messages: [
+        { role: 'system', content: 'You are a bot.' },
+        { role: 'user', content: 'Inspect slowly' },
+      ],
+      tools: [mockTool],
+      toolExecutor: async (_name, args) => JSON.stringify({ success: true, output: `content:${args.path}` }),
+      llm,
+      loopBudget: { maxReadOnlyFragmentation: 2 },
+    })) {
+      events.push(event);
+    }
+
+    const thirdRequestMessages = (llm.chatStream as jest.Mock).mock.calls[2][0] as Message[];
+    expect(thirdRequestMessages.map(message => message.content).join('\n')).toContain('prefer batch_read');
+    const complete = events.find(event => event.type === 'complete') as Extract<QueryEvent, { type: 'complete' }>;
+    expect(complete.stats).toMatchObject({
+      singleReadOnlyStreak: 2,
+      batchReadSuggestionCount: 1,
+      loopBudgetMaxReadOnlyFragmentation: 2,
+    });
+  });
+
   test('compresses model-visible tool results while preserving full UI event results', async () => {
     const largeOutput = 'line with details\n'.repeat(1000);
     const llm = makeMockLLM([
@@ -340,6 +739,51 @@ describe('query generator', () => {
 
     const complete = events.find(event => event.type === 'complete') as Extract<QueryEvent, { type: 'complete' }>;
     expect(complete.stats?.toolResultBytes).toBe(Buffer.byteLength(largeOutput, 'utf8'));
+    expect(complete.stats?.modelVisibleToolBytes).toBeLessThan(complete.stats?.toolResultBytes ?? 0);
+    expect(complete.stats?.summarizedBytes).toBeGreaterThan(0);
+  });
+
+  test('caps aggregate model-visible tool result bytes while preserving full event results', async () => {
+    const largeOutput = 'line with details\n'.repeat(1000);
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        toolCalls: [
+          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/one"}' } },
+          { id: 'call-2', type: 'function', function: { name: 'read_file', arguments: '{"path":"/two"}' } },
+        ],
+      },
+      { content: 'Done', model: 'test-model' },
+    ]);
+    const events: QueryEvent[] = [];
+
+    for await (const event of query({
+      messages: [
+        { role: 'system', content: 'You are a bot.' },
+        { role: 'user', content: 'Read large files' },
+      ],
+      tools: [mockTool],
+      toolExecutor: async () => JSON.stringify({
+        success: true,
+        output: largeOutput,
+        summary: 'large read',
+        outputBytes: Buffer.byteLength(largeOutput, 'utf8'),
+        artifactRef: { id: 'large-output', outputBytes: Buffer.byteLength(largeOutput, 'utf8') },
+      }),
+      llm,
+      maxModelVisibleToolResultBytes: 700,
+      loopBudget: { maxModelVisibleToolBytes: 700 },
+    })) {
+      events.push(event);
+    }
+
+    const toolResults = events.filter(event => event.type === 'tool_result') as Array<Extract<QueryEvent, { type: 'tool_result' }>>;
+    expect(toolResults).toHaveLength(2);
+    expect(JSON.parse(toolResults[0].result).output).toContain(largeOutput.slice(0, 100));
+    expect(JSON.parse(toolResults[1].result).output).toContain(largeOutput.slice(0, 100));
+    expect(toolResults[1].modelVisibleResult).toContain('modelVisibleBudgetExceeded');
+    const complete = events.find(event => event.type === 'complete') as Extract<QueryEvent, { type: 'complete' }>;
     expect(complete.stats?.modelVisibleToolBytes).toBeLessThan(complete.stats?.toolResultBytes ?? 0);
     expect(complete.stats?.summarizedBytes).toBeGreaterThan(0);
   });
@@ -873,9 +1317,17 @@ describe('query generator', () => {
     }
 
     const toolResult = events.find(event => event.type === 'tool_result') as Extract<QueryEvent, { type: 'tool_result' }>;
+    const complete = events.find(event => event.type === 'complete') as Extract<QueryEvent, { type: 'complete' }>;
     expect(toolExecutor).not.toHaveBeenCalled();
     expect(toolResult.success).toBe(false);
     expect(toolResult.error).toContain('toolConfirmation=deny');
+    expect(llm.chatStream).toHaveBeenCalledTimes(1);
+    expect(complete.content).toContain('permission was denied');
+    expect(complete.stats).toMatchObject({
+      finishReason: 'blocked',
+      llmRequests: 1,
+      toolCalls: 1,
+    });
   });
 
   test('does not inject extra user noise after failed tool results', async () => {
@@ -938,8 +1390,9 @@ describe('query generator', () => {
     ];
     const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'ok' }));
     const confirmToolUse = jest.fn(async () => true);
+    const events: QueryEvent[] = [];
 
-    for await (const _event of query({
+    for await (const event of query({
       messages,
       tools: [askTool],
       toolExecutor,
@@ -949,7 +1402,7 @@ describe('query generator', () => {
       confirmToolUse,
       toolContext,
     })) {
-      // consume
+      events.push(event);
     }
 
     expect(confirmToolUse).toHaveBeenCalledWith(expect.objectContaining({
@@ -958,6 +1411,20 @@ describe('query generator', () => {
       reason: 'External query',
     }));
     expect(toolExecutor).toHaveBeenCalledWith('web_search', { query: 'openhorse' }, undefined);
+    const eventTypes = events.map(event => event.type);
+    expect(eventTypes.indexOf('permission_decision')).toBeGreaterThan(eventTypes.indexOf('tool_call'));
+    expect(eventTypes.indexOf('permission_decision')).toBeLessThan(eventTypes.indexOf('tool_result'));
+    expect(events.find(event => event.type === 'permission_decision')).toMatchObject({
+      type: 'permission_decision',
+      name: 'web_search',
+      callId: 'call-1',
+      decision: {
+        behavior: 'ask',
+        approved: true,
+        source: 'user',
+        reason: 'External query',
+      },
+    });
   });
 
   test('interactive confirmation hook can deny ask-permission tools', async () => {
@@ -993,8 +1460,23 @@ describe('query generator', () => {
     }
 
     const toolResult = events.find(event => event.type === 'tool_result') as Extract<QueryEvent, { type: 'tool_result' }>;
+    const decision = events.find(event => event.type === 'permission_decision') as Extract<QueryEvent, { type: 'permission_decision' }>;
+    const complete = events.find(event => event.type === 'complete') as Extract<QueryEvent, { type: 'complete' }>;
     expect(toolExecutor).not.toHaveBeenCalled();
+    expect(decision.decision).toMatchObject({
+      behavior: 'ask',
+      approved: false,
+      source: 'user',
+      reason: 'External query',
+    });
     expect(toolResult.success).toBe(false);
     expect(toolResult.error).toContain('denied by user');
+    expect(llm.chatStream).toHaveBeenCalledTimes(1);
+    expect(complete.content).toContain('permission was denied');
+    expect(complete.stats).toMatchObject({
+      finishReason: 'blocked',
+      llmRequests: 1,
+      toolCalls: 1,
+    });
   });
 });

@@ -9,7 +9,8 @@
  * chunks directly to stdout via the callback.
  */
 
-import type { LLMService, Message, StreamCallbacks, Tool } from '../services/llm';
+import type { LLMRequestDiagnostics, LLMService, Message, StreamCallbacks, Tool } from '../services/llm';
+import type { ProviderErrorType } from '../services/provider-diagnostics';
 import type { OpenHorseTool, ToolContext } from './tool';
 import type { PermissionMode } from '../commands/types';
 import type { CostTracker } from '../core/cost-tracker';
@@ -18,7 +19,14 @@ import { toOpenAITools } from './tool';
 import { createStrategyTracker, type StrategyTracker, type StrategyResult } from '../core/strategy-tracker';
 import { getAutoCompact } from '../services/compact/auto-compact';
 import type { ContextHarness } from '../harness';
-import { prepareToolCalls, executeToolCalls, type PreparedToolCall, type ExecutedToolCall } from './tool-scheduler';
+import type { PromptAssemblyStats } from '../harness/types';
+import {
+  prepareToolCalls,
+  executeToolCalls,
+  type PreparedToolCall,
+  type ExecutedToolCall,
+  type ToolPermissionDecision,
+} from './tool-scheduler';
 import { estimateMessagesTokens } from '../utils/token-estimate';
 import { parseToolResultEnvelope, serializeToolResult } from './tool-serializer';
 
@@ -95,9 +103,56 @@ function parseBatchReadEvidenceSteps(result: string): BatchReadEvidenceStep[] {
 export type LoopFinishReason =
   | 'completed'
   | 'cancelled'
+  | 'failed'
+  | 'blocked'
   | 'max_turns'
   | 'completion_gate'
+  | 'budget_exceeded'
   | 'running';
+
+export type LoopBudgetBaseProfile = 'default' | 'complex' | 'release';
+export type LoopBudgetSource = LoopBudgetBaseProfile | 'config';
+export type LoopContinuationAction =
+  | 'reply_continue'
+  | 'narrow_instruction'
+  | 'inspect_loop_stats'
+  | 'raise_budget';
+
+export interface LoopBudget {
+  /** Maximum LLM requests allowed for one user turn before stopping. */
+  maxLlmRequestsPerUserTurn: number;
+  /** Maximum tool calls allowed for one user turn before stopping. */
+  maxToolCallsPerUserTurn: number;
+  /** Consecutive single read-only tool turns before injecting a batch_read hint. */
+  maxReadOnlyFragmentation: number;
+  /** Maximum aggregate tool-result bytes exposed to the model in one user turn. */
+  maxModelVisibleToolBytes: number;
+  /** Budget source after config overrides are applied. */
+  profile?: LoopBudgetSource;
+  /** Adaptive profile selected before config overrides, when applicable. */
+  baseProfile?: LoopBudgetBaseProfile;
+  /** Whether user/global/env config changed one or more numeric budget fields. */
+  configOverride?: boolean;
+}
+
+export const DEFAULT_LOOP_BUDGET: LoopBudget = {
+  maxLlmRequestsPerUserTurn: 24,
+  maxToolCallsPerUserTurn: 120,
+  maxReadOnlyFragmentation: 3,
+  maxModelVisibleToolBytes: 64 * 1024,
+  profile: 'default',
+  baseProfile: 'default',
+  configOverride: false,
+};
+
+const COMPLEX_LOOP_BUDGET: Pick<
+  LoopBudget,
+  'maxLlmRequestsPerUserTurn' | 'maxToolCallsPerUserTurn' | 'maxModelVisibleToolBytes'
+> = {
+  maxLlmRequestsPerUserTurn: 48,
+  maxToolCallsPerUserTurn: 180,
+  maxModelVisibleToolBytes: 96 * 1024,
+};
 
 export interface LoopStats {
   turnsStarted: number;
@@ -110,6 +165,48 @@ export interface LoopStats {
   summarizedBytes: number;
   compactTrigger?: 'pre_turn' | 'post_turn';
   finishReason: LoopFinishReason;
+  budgetExceededReason?: string;
+  loopBudgetSource?: LoopBudgetSource;
+  loopBudgetBaseProfile?: LoopBudgetBaseProfile;
+  loopBudgetMaxLlmRequests?: number;
+  loopBudgetMaxToolCalls?: number;
+  loopBudgetMaxReadOnlyFragmentation?: number;
+  loopBudgetMaxModelVisibleBytes?: number;
+  loopBudgetConfigOverride?: boolean;
+  providerRetryCount?: number;
+  providerRetryDelayMs?: number;
+  providerRetryErrorTypes?: ProviderErrorType[];
+  providerLastRetryErrorType?: ProviderErrorType;
+  providerLastRetryStatus?: number;
+  providerFallbackCount?: number;
+  providerFallbackFromModel?: string;
+  providerFallbackToModel?: string;
+  providerFinalModel?: string;
+  providerUsingFallback?: boolean;
+  continuationActions?: LoopContinuationAction[];
+  continuationHint?: string;
+  verificationProfile?: string;
+  verificationRequired?: boolean;
+  verificationClaimAllowed?: boolean;
+  verificationPassedCommands?: string[];
+  verificationFailedCommands?: string[];
+  verificationMissingCommands?: string[];
+  verificationSkippedReason?: string;
+  singleReadOnlyStreak: number;
+  batchReadSuggestionCount: number;
+  localFastPathUsed: boolean;
+}
+
+export class QueryLoopError extends Error {
+  readonly originalError: unknown;
+  readonly stats: LoopStats;
+
+  constructor(error: unknown, stats: LoopStats) {
+    super(error instanceof Error ? error.message : String(error));
+    this.name = 'QueryLoopError';
+    this.originalError = error;
+    this.stats = stats;
+  }
 }
 
 function createLoopStats(): LoopStats {
@@ -123,6 +220,14 @@ function createLoopStats(): LoopStats {
     modelVisibleToolBytes: 0,
     summarizedBytes: 0,
     finishReason: 'running',
+    providerRetryCount: 0,
+    providerRetryDelayMs: 0,
+    providerRetryErrorTypes: [],
+    providerFallbackCount: 0,
+    providerUsingFallback: false,
+    singleReadOnlyStreak: 0,
+    batchReadSuggestionCount: 0,
+    localFastPathUsed: false,
   };
 }
 
@@ -135,6 +240,191 @@ function cloneLoopStats(stats: LoopStats, finishReason?: LoopFinishReason): Loop
 
 function byteLength(text: string): number {
   return Buffer.byteLength(text, 'utf8');
+}
+
+export function createLocalFastPathLoopStats(overrides: Partial<LoopStats> = {}): LoopStats {
+  return {
+    ...createLoopStats(),
+    turnsStarted: 1,
+    finishReason: 'completed',
+    localFastPathUsed: true,
+    ...overrides,
+  };
+}
+
+export function createFailedLoopStats(options: Partial<LoopStats> & {
+  loopBudget?: Partial<LoopBudget>;
+  diagnostics?: LLMRequestDiagnostics;
+} = {}): LoopStats {
+  const { loopBudget, diagnostics, ...overrides } = options;
+  const stats: LoopStats = {
+    ...createLoopStats(),
+    turnsStarted: 1,
+    llmRequests: 1,
+    finishReason: 'failed',
+    ...overrides,
+  };
+  applyLoopBudgetStats(stats, resolveLoopBudget(loopBudget));
+  applyLlmRequestDiagnostics(stats, diagnostics);
+  return stats;
+}
+
+function isLoopBudgetSource(value: unknown): value is LoopBudgetSource {
+  return value === 'default' || value === 'complex' || value === 'release' || value === 'config';
+}
+
+function isLoopBudgetBaseProfile(value: unknown): value is LoopBudgetBaseProfile {
+  return value === 'default' || value === 'complex' || value === 'release';
+}
+
+function resolveLoopBudget(partial?: Partial<LoopBudget>): LoopBudget {
+  const numericOverrides = Object.fromEntries(
+    Object.entries(partial ?? {}).filter(([, value]) =>
+      typeof value === 'number' && Number.isFinite(value) && value > 0
+    )
+  );
+  const hasNumericOverrides = Object.keys(numericOverrides).length > 0;
+  const hasExplicitProfile = partial?.profile !== undefined || partial?.baseProfile !== undefined;
+  const inferredConfigOverride = hasNumericOverrides && !hasExplicitProfile;
+  const configOverride = partial?.configOverride === true || inferredConfigOverride;
+
+  return {
+    ...DEFAULT_LOOP_BUDGET,
+    ...numericOverrides,
+    profile: isLoopBudgetSource(partial?.profile)
+      ? partial.profile
+      : configOverride
+        ? 'config'
+        : DEFAULT_LOOP_BUDGET.profile,
+    baseProfile: isLoopBudgetBaseProfile(partial?.baseProfile) ? partial.baseProfile : DEFAULT_LOOP_BUDGET.baseProfile,
+    configOverride,
+  };
+}
+
+function applyLoopBudgetStats(stats: LoopStats, budget: LoopBudget): void {
+  stats.loopBudgetSource = budget.profile ?? 'default';
+  stats.loopBudgetBaseProfile = budget.baseProfile ?? (
+    budget.profile === 'config' ? 'default' : budget.profile ?? 'default'
+  );
+  stats.loopBudgetMaxLlmRequests = budget.maxLlmRequestsPerUserTurn;
+  stats.loopBudgetMaxToolCalls = budget.maxToolCallsPerUserTurn;
+  stats.loopBudgetMaxReadOnlyFragmentation = budget.maxReadOnlyFragmentation;
+  stats.loopBudgetMaxModelVisibleBytes = budget.maxModelVisibleToolBytes;
+  stats.loopBudgetConfigOverride = budget.configOverride === true;
+}
+
+function shouldPromoteDefaultBudget(stats: LoopStats, budget: LoopBudget): boolean {
+  if (budget.configOverride === true || budget.profile !== 'default') return false;
+  if (stats.llmRequests < budget.maxLlmRequestsPerUserTurn) return false;
+
+  return stats.toolCalls >= 8
+    || stats.readOnlyToolCalls >= 6
+    || stats.modelVisibleToolBytes >= 16 * 1024;
+}
+
+function promoteDefaultBudgetToComplex(budget: LoopBudget): LoopBudget {
+  return {
+    ...budget,
+    maxLlmRequestsPerUserTurn: Math.max(
+      budget.maxLlmRequestsPerUserTurn,
+      COMPLEX_LOOP_BUDGET.maxLlmRequestsPerUserTurn,
+    ),
+    maxToolCallsPerUserTurn: Math.max(
+      budget.maxToolCallsPerUserTurn,
+      COMPLEX_LOOP_BUDGET.maxToolCallsPerUserTurn,
+    ),
+    maxModelVisibleToolBytes: Math.max(
+      budget.maxModelVisibleToolBytes,
+      COMPLEX_LOOP_BUDGET.maxModelVisibleToolBytes,
+    ),
+    profile: 'complex',
+    baseProfile: 'complex',
+    configOverride: false,
+  };
+}
+
+function getLlmRequestDiagnostics(llm: LLMService): LLMRequestDiagnostics | undefined {
+  const diagnosticsReader = (llm as unknown as {
+    getLastRequestDiagnostics?: () => LLMRequestDiagnostics;
+  }).getLastRequestDiagnostics;
+  return typeof diagnosticsReader === 'function' ? diagnosticsReader.call(llm) : undefined;
+}
+
+function applyLlmRequestDiagnostics(stats: LoopStats, diagnostics: LLMRequestDiagnostics | undefined): void {
+  if (!diagnostics) return;
+  const existingTypes = stats.providerRetryErrorTypes ?? [];
+  const retryTypes = diagnostics.retryErrorTypes.filter((type, index, values) =>
+    !existingTypes.includes(type) && values.indexOf(type) === index
+  );
+
+  stats.providerRetryCount = (stats.providerRetryCount ?? 0) + diagnostics.retryCount;
+  stats.providerRetryDelayMs = (stats.providerRetryDelayMs ?? 0) + diagnostics.retryDelayMs;
+  stats.providerRetryErrorTypes = [...existingTypes, ...retryTypes];
+  stats.providerLastRetryErrorType = diagnostics.lastRetryErrorType ?? stats.providerLastRetryErrorType;
+  stats.providerLastRetryStatus = diagnostics.lastRetryStatus ?? stats.providerLastRetryStatus;
+  stats.providerFinalModel = diagnostics.finalModel;
+  stats.providerUsingFallback = diagnostics.usingFallback;
+  if (diagnostics.fallbackTriggered) {
+    stats.providerFallbackCount = (stats.providerFallbackCount ?? 0) + 1;
+    stats.providerFallbackFromModel = diagnostics.fallbackFromModel;
+    stats.providerFallbackToModel = diagnostics.fallbackToModel;
+  }
+}
+
+function budgetExceededEvent(
+  llm: LLMService,
+  stats: LoopStats,
+  reason: string,
+): Extract<QueryEvent, { type: 'complete' }> {
+  const continuationActions: LoopContinuationAction[] = [
+    'reply_continue',
+    'narrow_instruction',
+    'inspect_loop_stats',
+    'raise_budget',
+  ];
+  const continuationHint = 'Reply `继续` to continue the same objective, give a narrower next step, inspect /loop-stats, or raise agentLoop.budget for intentional long work.';
+  return {
+    type: 'complete',
+    content: [
+      `Agent loop budget reached: ${reason}.`,
+      'I stopped this turn to avoid unnecessary model requests and preserved the current session state.',
+      'To continue the same objective, reply `继续` or provide the next concrete step.',
+      'Use /loop-stats to inspect request/tool counts. For intentional long work, raise agentLoop.budget in openhorse.json.',
+    ].join('\n'),
+    model: llm.getModel(),
+    stats: cloneLoopStats({
+      ...stats,
+      budgetExceededReason: reason,
+      continuationActions,
+      continuationHint,
+    }, 'budget_exceeded'),
+  };
+}
+
+function permissionBlockedEvent(
+  llm: LLMService,
+  stats: LoopStats,
+  toolName: string,
+  error?: string,
+  source?: string,
+): Extract<QueryEvent, { type: 'complete' }> {
+  const detail = error ? ` ${error}` : '';
+  const sourceText = source ? ` (${source})` : '';
+  return {
+    type: 'complete',
+    content: `Tool ${toolName} was not executed because permission was denied${sourceText}.${detail}`.trim(),
+    model: llm.getModel(),
+    stats: cloneLoopStats(stats, 'blocked'),
+  };
+}
+
+function compactPromptEvidence(
+  items: PromptAssemblyStats['includedEvidence'],
+  maxItems = 12,
+): string[] {
+  return items.slice(0, maxItems).map(item =>
+    `${item.id}:${item.kind}:score=${item.score}:tokens=${item.tokens}`
+  );
 }
 
 function takeUtf8Prefix(text: string, maxBytes: number): string {
@@ -259,14 +549,60 @@ function summarizeModelVisibleToolResult(
   };
 }
 
+function omitModelVisibleToolResult(
+  executed: ExecutedToolCall,
+  maxAggregateBytes: number,
+): { result: string; bytes: number; summarizedBytes: number } {
+  const fullBytes = executed.outputBytes ?? byteLength(executed.result);
+  const compact = serializeToolResult({
+    success: executed.success,
+    output: `Tool result omitted from model context because the per-turn model-visible tool budget (${maxAggregateBytes}B) was reached.`,
+    outputBytes: fullBytes,
+    artifactRef: executed.artifactRef,
+    metadata: {
+      modelVisibleCompressed: true,
+      modelVisibleBudgetExceeded: true,
+    },
+  });
+  const bytes = byteLength(compact);
+  return {
+    result: compact,
+    bytes,
+    summarizedBytes: Math.max(0, fullBytes - bytes),
+  };
+}
+
 // ============================================================================
 // 事件类型
 // ============================================================================
 
 export type QueryEvent =
   | { type: 'request_start'; model: string; turn: number }
+  | {
+      type: 'prompt_assembly';
+      modelId: string;
+      estimatedTokens: number;
+      budgetTokens: number;
+      coreTokens: number;
+      evidenceBudgetTokens: number;
+      recentTurnBudgetTokens: number;
+      sections: string[];
+      includedEvidence: string[];
+      omittedEvidence: string[];
+      includedEvidenceCount: number;
+      omittedEvidenceCount: number;
+    }
   | { type: 'assistant_tool_calls'; content: string; toolCalls: NonNullable<Message['tool_calls']> }
   | { type: 'tool_call'; name: string; args: Record<string, unknown>; callId: string; batchCount?: number; batchIndex?: number }
+  | {
+      type: 'permission_decision';
+      name: string;
+      args: Record<string, unknown>;
+      callId: string;
+      decision: ToolPermissionDecision;
+      batchCount?: number;
+      batchIndex?: number;
+    }
   | {
       type: 'tool_result';
       name: string;
@@ -338,6 +674,8 @@ export interface QueryParams {
   maxParallelToolCalls?: number;
   /** Maximum bytes of one tool result to expose to the next model request. */
   maxModelVisibleToolResultBytes?: number;
+  /** Per-user-turn budget guardrails for model requests, tools, and model-visible tool output. */
+  loopBudget?: Partial<LoopBudget>;
 }
 
 // ============================================================================
@@ -378,10 +716,13 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
   const openaiTools = toOpenAITools(tools) as unknown as Tool[];
   let turn = 0;
   const stats = createLoopStats();
+  let loopBudget = resolveLoopBudget(params.loopBudget);
+  applyLoopBudgetStats(stats, loopBudget);
   const maxModelVisibleToolResultBytes = Math.max(
     512,
     params.maxModelVisibleToolResultBytes ?? DEFAULT_MAX_MODEL_VISIBLE_TOOL_RESULT_BYTES,
   );
+  const fragmentedReadOnlyTools = new Set(['read_file', 'glob', 'grep', 'list_files', 'git_status']);
 
   // 无限循环，依赖安全机制停止
   while (true) {
@@ -401,6 +742,20 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         model: llm.getModel(),
         stats: cloneLoopStats(stats, 'max_turns'),
       };
+      return;
+    }
+
+    if (shouldPromoteDefaultBudget(stats, loopBudget)) {
+      loopBudget = promoteDefaultBudgetToComplex(loopBudget);
+      applyLoopBudgetStats(stats, loopBudget);
+    }
+
+    if (stats.llmRequests >= loopBudget.maxLlmRequestsPerUserTurn) {
+      yield budgetExceededEvent(
+        llm,
+        stats,
+        `LLM request budget ${loopBudget.maxLlmRequestsPerUserTurn} reached`,
+      );
       return;
     }
 
@@ -431,33 +786,66 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         : messages;
     }
 
+    const assemblyStats = harness?.toJSON().promptAssemblyStats;
+    if (assemblyStats) {
+      yield {
+        type: 'prompt_assembly',
+        modelId: assemblyStats.modelId,
+        estimatedTokens: assemblyStats.estimatedTokens,
+        budgetTokens: assemblyStats.budgetTokens,
+        coreTokens: assemblyStats.coreTokens,
+        evidenceBudgetTokens: assemblyStats.evidenceBudgetTokens,
+        recentTurnBudgetTokens: assemblyStats.recentTurnBudgetTokens,
+        sections: assemblyStats.sections.slice(0, 12),
+        includedEvidence: compactPromptEvidence(assemblyStats.includedEvidence),
+        omittedEvidence: compactPromptEvidence(assemblyStats.omittedEvidence, 8),
+        includedEvidenceCount: assemblyStats.includedEvidence.length,
+        omittedEvidenceCount: assemblyStats.omittedEvidence.length,
+      };
+    }
+
     if (isAborted(abortSignal)) {
       yield cancelledCompleteEvent(llm, stats);
       return;
     }
 
-    const response = await llm.chatStream(requestMessages, streamCallbacks, openaiTools, { abortSignal });
-    stats.llmRequests++;
+    let response: Awaited<ReturnType<LLMService['chatStream']>>;
+    try {
+      stats.llmRequests++;
+      response = await llm.chatStream(requestMessages, streamCallbacks, openaiTools, { abortSignal });
+      applyLlmRequestDiagnostics(stats, getLlmRequestDiagnostics(llm));
+    } catch (error) {
+      applyLlmRequestDiagnostics(stats, getLlmRequestDiagnostics(llm));
+      throw new QueryLoopError(error, cloneLoopStats(stats, 'failed'));
+    }
 
     if (isAborted(abortSignal)) {
       yield cancelledCompleteEvent(llm, stats);
       return;
     }
-
-    // Save assistant message to history
-    const assistantMsg: Message = {
-      role: 'assistant',
-      content: response.content,
-    };
-    if (response.toolCalls) {
-      assistantMsg.tool_calls = response.toolCalls;
-    }
-    messages.push(assistantMsg);
-    harness?.recordAssistantResponse(response);
 
     // Handle tool calls
     if (response.toolCalls && response.toolCalls.length > 0) {
       const toolCalls = response.toolCalls;
+      if (stats.toolCalls + toolCalls.length > loopBudget.maxToolCallsPerUserTurn) {
+        yield budgetExceededEvent(
+          llm,
+          stats,
+          `tool call budget ${loopBudget.maxToolCallsPerUserTurn} would be exceeded by ${toolCalls.length} requested tools`,
+        );
+        return;
+      }
+
+      // Save assistant tool-call message only after budget checks, so future
+      // requests never inherit unresolved tool calls if this turn is stopped.
+      const assistantMsg: Message = {
+        role: 'assistant',
+        content: response.content,
+        tool_calls: toolCalls,
+      };
+      messages.push(assistantMsg);
+      harness?.recordAssistantResponse(response);
+
       yield {
         type: 'assistant_tool_calls',
         content: response.content,
@@ -486,6 +874,12 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           stats.unsafeToolCalls++;
         }
       }
+      const singleFragmentedReadOnlyCall = preparedCalls.length === 1
+        && preparedCalls[0].tool?.isReadOnly?.(preparedCalls[0].args) === true
+        && fragmentedReadOnlyTools.has(preparedCalls[0].tc.function.name);
+      stats.singleReadOnlyStreak = singleFragmentedReadOnlyCall
+        ? stats.singleReadOnlyStreak + 1
+        : 0;
 
       for (const prepared of preparedCalls) {
         yield {
@@ -514,10 +908,13 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 
         const { prepared } = executed;
         const { tc, args, attemptId } = prepared;
-        const modelVisible = summarizeModelVisibleToolResult(
-          executed,
-          maxModelVisibleToolResultBytes,
-        );
+        const remainingModelVisibleBytes = loopBudget.maxModelVisibleToolBytes - stats.modelVisibleToolBytes;
+        const modelVisible = remainingModelVisibleBytes < 512
+          ? omitModelVisibleToolResult(executed, loopBudget.maxModelVisibleToolBytes)
+          : summarizeModelVisibleToolResult(
+              executed,
+              Math.min(maxModelVisibleToolResultBytes, remainingModelVisibleBytes),
+            );
         stats.toolResultBytes += executed.outputBytes ?? byteLength(executed.result);
         stats.modelVisibleToolBytes += modelVisible.bytes;
         stats.summarizedBytes += modelVisible.summarizedBytes;
@@ -551,6 +948,18 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           }
         }
 
+        if (executed.permissionDecision) {
+          yield {
+            type: 'permission_decision',
+            name: tc.function.name,
+            args,
+            callId: tc.id,
+            decision: executed.permissionDecision,
+            batchCount: toolCalls.length,
+            batchIndex: prepared.index,
+          };
+        }
+
         yield {
           type: 'tool_result',
           name: tc.function.name,
@@ -574,6 +983,17 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
           tool_call_id: tc.id,
         });
 
+        if (executed.permissionDecision?.approved === false) {
+          yield permissionBlockedEvent(
+            llm,
+            stats,
+            tc.function.name,
+            executed.error,
+            executed.permissionDecision.source,
+          );
+          return;
+        }
+
         if (strategyTracker.isExhausted()) {
           const suggestion = strategyTracker.suggestAlternative();
           if (suggestion) {
@@ -587,9 +1007,28 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         }
       }
 
+      if (stats.singleReadOnlyStreak >= loopBudget.maxReadOnlyFragmentation) {
+        messages.push({
+          role: 'system',
+          content: [
+            '[OpenHorse loop hint]',
+            `You have made ${stats.singleReadOnlyStreak} consecutive turns with a single read-only local tool call.`,
+            'For independent local exploration, prefer batch_read with up to 8 steps using git_status, list_files, glob, grep, and read_file.',
+          ].join(' '),
+        });
+        stats.batchReadSuggestionCount++;
+      }
+
       // Continue to next turn
       continue;
     }
+
+    const assistantMsg: Message = {
+      role: 'assistant',
+      content: response.content,
+    };
+    messages.push(assistantMsg);
+    harness?.recordAssistantResponse(response);
 
     // No tool calls — done, unless the harness requires one more pass.
     const completionGate = harness?.beforeComplete();

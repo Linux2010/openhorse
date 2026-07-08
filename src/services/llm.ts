@@ -10,6 +10,7 @@
 import OpenAI from 'openai';
 import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions';
 import { diagnoseProviderError, toLLMProviderError } from './provider-diagnostics';
+import type { ProviderErrorType } from './provider-diagnostics';
 
 export { LLMProviderError } from './provider-diagnostics';
 export type { ProviderErrorDiagnostic, ProviderErrorType } from './provider-diagnostics';
@@ -48,6 +49,19 @@ export interface RetryConfig {
   abortSignal?: AbortSignal;
   /** 重试回调 */
   onRetry?: (attempt: number, error: Error, delayMs: number) => void;
+}
+
+export interface LLMRequestDiagnostics {
+  retryCount: number;
+  retryDelayMs: number;
+  retryErrorTypes: ProviderErrorType[];
+  lastRetryErrorType?: ProviderErrorType;
+  lastRetryStatus?: number;
+  fallbackTriggered: boolean;
+  fallbackFromModel?: string;
+  fallbackToModel?: string;
+  finalModel: string;
+  usingFallback: boolean;
 }
 
 /** Fallback 触发错误 */
@@ -151,15 +165,6 @@ const MAX_529_RETRIES = 3;
 /** 判断错误是否可重试 */
 function isRetryableError(error: unknown): boolean {
   return diagnoseProviderError(error).retryable;
-}
-
-/** 判断是否为 529 错误 */
-function is529Error(error: unknown): boolean {
-  return diagnoseProviderError(error).status === 529;
-}
-
-function isProviderBusyError(error: unknown): boolean {
-  return diagnoseProviderError(error).type === 'provider_busy';
 }
 
 function isRateLimitError(error: unknown): boolean {
@@ -301,6 +306,7 @@ export class LLMService {
   };
   private consecutive529Errors = 0;
   private usingFallback = false;
+  private lastRequestDiagnostics: LLMRequestDiagnostics;
 
   constructor(config: LLMConfig) {
     this.client = new OpenAI({
@@ -320,11 +326,19 @@ export class LLMService {
       maxRetries: DEFAULT_MAX_RETRIES,
       retryBaseDelay: DEFAULT_RETRY_DELAY,
     };
+    this.lastRequestDiagnostics = this.createRequestDiagnostics();
   }
 
   /** 是否正在使用 fallback model */
   isUsingFallback(): boolean {
     return this.usingFallback;
+  }
+
+  getLastRequestDiagnostics(): LLMRequestDiagnostics {
+    return {
+      ...this.lastRequestDiagnostics,
+      retryErrorTypes: [...this.lastRequestDiagnostics.retryErrorTypes],
+    };
   }
 
   /** 触发 fallback */
@@ -402,25 +416,42 @@ export class LLMService {
   ): Promise<LLMResponse> {
     const onChunk = typeof callbacks === 'function' ? callbacks : callbacks?.onChunk;
     const onThinking = typeof callbacks === 'object' ? callbacks?.onThinking : undefined;
+    const requestDiagnostics = this.createRequestDiagnostics();
+    this.lastRequestDiagnostics = requestDiagnostics;
 
     const retryConfig: RetryConfig = {
       maxRetries: this.config.maxRetries,
       baseDelayMs: this.config.retryBaseDelay,
       maxDelayMs: 10000,
       abortSignal: options?.abortSignal,
-      onRetry: (_attempt, error, _delayMs) => {
+      onRetry: (_attempt, error, delayMs) => {
+        const diagnostic = diagnoseProviderError(error);
+        requestDiagnostics.retryCount++;
+        requestDiagnostics.retryDelayMs += delayMs;
+        requestDiagnostics.retryErrorTypes.push(diagnostic.type);
+        requestDiagnostics.lastRetryErrorType = diagnostic.type;
+        requestDiagnostics.lastRetryStatus = diagnostic.status;
+
         // Provider overload/busy errors can often recover by retrying or using fallback.
-        if (is529Error(error) || isProviderBusyError(error) || isRateLimitError(error)) {
+        if (diagnostic.status === 529 || diagnostic.type === 'provider_busy' || diagnostic.type === 'rate_limit') {
           this.consecutive529Errors++;
-          if (this.consecutive529Errors >= MAX_529_RETRIES && this.config.fallbackModel) {
+          if (this.consecutive529Errors >= MAX_529_RETRIES && this.config.fallbackModel && !this.usingFallback) {
+            const originalModel = this.config.model;
             this.triggerFallback();
+            if (this.config.model !== originalModel) {
+              requestDiagnostics.fallbackTriggered = true;
+              requestDiagnostics.fallbackFromModel = originalModel;
+              requestDiagnostics.fallbackToModel = this.config.model;
+            }
           }
         }
+        requestDiagnostics.finalModel = this.config.model;
+        requestDiagnostics.usingFallback = this.usingFallback;
       },
     };
 
     try {
-      return await withRetry(
+      const response = await withRetry(
         async () => {
           throwIfAborted(options?.abortSignal);
 
@@ -538,6 +569,12 @@ export class LLMService {
           }
 
           this.consecutive529Errors = 0;
+          requestDiagnostics.finalModel = usedModel;
+          requestDiagnostics.usingFallback = this.usingFallback;
+          this.lastRequestDiagnostics = {
+            ...requestDiagnostics,
+            retryErrorTypes: [...requestDiagnostics.retryErrorTypes],
+          };
           return {
             content,
             model: usedModel,
@@ -547,7 +584,20 @@ export class LLMService {
         },
         retryConfig,
       );
+      requestDiagnostics.finalModel = response.model;
+      requestDiagnostics.usingFallback = this.usingFallback;
+      this.lastRequestDiagnostics = {
+        ...requestDiagnostics,
+        retryErrorTypes: [...requestDiagnostics.retryErrorTypes],
+      };
+      return response;
     } catch (error) {
+      requestDiagnostics.finalModel = this.config.model;
+      requestDiagnostics.usingFallback = this.usingFallback;
+      this.lastRequestDiagnostics = {
+        ...requestDiagnostics,
+        retryErrorTypes: [...requestDiagnostics.retryErrorTypes],
+      };
       if (isAbortError(error)) throw error;
       throw toLLMProviderError(error);
     }
@@ -632,6 +682,17 @@ export class LLMService {
   }
 
   // ---- Internal ----
+
+  private createRequestDiagnostics(): LLMRequestDiagnostics {
+    return {
+      retryCount: 0,
+      retryDelayMs: 0,
+      retryErrorTypes: [],
+      fallbackTriggered: false,
+      finalModel: this.config.model,
+      usingFallback: this.usingFallback,
+    };
+  }
 
   /** 转换为 OpenAI SDK 消息格式 */
   private toOpenAIMessages(messages: Message[]): ChatCompletionMessageParam[] {

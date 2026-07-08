@@ -2,6 +2,7 @@ import {
   createSession,
   saveSessionMeta,
   loadSessionMeta,
+  markSessionTranscriptDisplayStart,
   updateSessionStats,
   updateSessionSkills,
   endSession,
@@ -12,6 +13,7 @@ import {
   appendSessionMessages,
   readSessionMessages,
   loadSessionHistory,
+  updateSessionSummary,
   truncateSessionToLastComplete,
   listProjectSessions,
   findSession,
@@ -366,6 +368,44 @@ describe('session-storage', () => {
       expect(history[1].content).not.toContain('full line');
     });
 
+    test('loadSessionHistory falls back to full history for legacy compact boundary without persisted summary', () => {
+      const session = createSession('/tmp/project-legacy-compact-boundary', 'gpt-4o');
+      appendSessionMessages(session.id, [
+        { role: 'user', content: 'old context', timestamp: 1000 },
+        { role: 'assistant', content: 'old answer', timestamp: 1001 },
+        { role: 'user', content: 'tail after boundary', timestamp: 2000 },
+      ]);
+      markSessionTranscriptDisplayStart(session.id, 2000);
+
+      const history = loadSessionHistory(session.id);
+
+      expect(history.map(message => message.content)).toEqual([
+        'old context',
+        'old answer',
+        'tail after boundary',
+      ]);
+    });
+
+    test('loadSessionHistory hides pre-compact transcript when compact summary was persisted', () => {
+      const session = createSession('/tmp/project-persisted-compact-boundary', 'gpt-4o');
+      appendSessionMessages(session.id, [
+        { role: 'user', content: 'raw old context', timestamp: 1000 },
+        { role: 'assistant', content: 'raw old answer', timestamp: 1001 },
+        { role: 'user', content: '[Context Summary]\nold context summarized', timestamp: 2000 },
+        { role: 'assistant', content: 'I understand the context.', timestamp: 2000 },
+        { role: 'user', content: 'recent tail', timestamp: 2001 },
+      ]);
+      markSessionTranscriptDisplayStart(session.id, 2000);
+
+      const history = loadSessionHistory(session.id);
+
+      expect(history.map(message => message.content)).toEqual([
+        '[Context Summary]\nold context summarized',
+        'I understand the context.',
+        'recent tail',
+      ]);
+    });
+
     test('readSessionMessages returns empty array for non-existent session', () => {
       const messages = readSessionMessages('non-existent');
       expect(messages).toEqual([]);
@@ -473,6 +513,43 @@ describe('session-storage', () => {
       expect(index?.topics).toContain('batch topic');
       expect(index?.tools.read_file).toBe(1);
       expect(index?.files).toContain('src/index.ts');
+    });
+
+    test('redacts secret-like values from session summaries and indexes', () => {
+      const session = createSession('/tmp/project-index-redaction', 'gpt-4o');
+      appendSessionMessages(session.id, [
+        {
+          role: 'user',
+          content: 'fix config {"apiKey":"dashscope-secret-value"} and sk-secretvalue123456',
+          timestamp: Date.now(),
+        },
+        {
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          tool_calls: [
+            {
+              id: 'call-1',
+              type: 'function',
+              function: {
+                name: 'read_file',
+                arguments: '{"path":"src/sk-secretvalue123456.ts"}',
+              },
+            },
+          ],
+        },
+      ]);
+
+      updateSessionSummary(session.id, readSessionMessages(session.id));
+      const meta = loadSessionMeta(session.id);
+      const index = loadSessionIndex(session.id, '/tmp/project-index-redaction');
+      const serialized = JSON.stringify({ meta, index });
+
+      expect(meta?.taskSummary).toContain('[REDACTED_SECRET]');
+      expect(index?.topics.join('\n')).toContain('[REDACTED_SECRET]');
+      expect(index?.files.join('\n')).toContain('[REDACTED_SECRET]');
+      expect(serialized).not.toContain('dashscope-secret-value');
+      expect(serialized).not.toContain('sk-secretvalue123456');
     });
 
     test('truncateSessionToLastComplete removes trailing aborted turn and rebuilds index', () => {

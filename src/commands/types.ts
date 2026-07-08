@@ -10,7 +10,12 @@ import type { Store } from '../framework/store';
 import type { LLMService } from '../services/llm';
 import type { OpenHorseCLIConfig } from '../services/config';
 import type { SessionMeta } from '../services/session-storage';
-import type { EditPreviewRequest, SessionPickerRequest, UiRendererCapabilities } from '../runtime/ui-events';
+import type {
+  EditPreviewRequest,
+  RuntimeSessionRestoredEvent,
+  SessionPickerRequest,
+  UiRendererCapabilities,
+} from '../runtime/ui-events';
 
 // ============================================================================
 // 类型定义 (continued)
@@ -29,6 +34,8 @@ export interface CommandContext {
   ensureSession?: () => SessionMeta;
   /** Switch the active session after /resume. */
   setSession?: (session: SessionMeta) => void;
+  /** Notify renderer-independent runtime protocol consumers after /resume. */
+  sessionRestored?: (event: RuntimeSessionRestoredEvent) => void;
   /** Return the active session if one exists. */
   getSession?: () => SessionMeta | null;
   /** Abort signal for the current CLI turn. */

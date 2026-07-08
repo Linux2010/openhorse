@@ -3,6 +3,7 @@ import type { AgentRuntimeEvent, AgentRuntimeEventSink } from '../src/runtime/ag
 import type {
   OpenHorseUiRuntime,
   RuntimeToolFinishedEvent,
+  RuntimeSessionRestoredEvent,
   RuntimeToolStartedEvent,
   ToolPermissionRequest,
   TranscriptAppendEntry,
@@ -55,6 +56,14 @@ function normalizeEvent(event: AgentRuntimeEvent): string {
       return `tool_started:${event.event.callId}:${event.event.name}`;
     case 'tool_finished':
       return `tool_finished:${event.event.callId}:${event.event.name}:${event.event.success}`;
+    case 'session_restored':
+      return `session_restored:${event.event.sessionId}:${event.event.restoredMessages}`;
+    case 'loop_stats_updated':
+      return `loop_stats:${event.stats.finishReason}:${event.stats.llmRequests}:${event.stats.toolCalls}`;
+    case 'trace_event_recorded':
+      return `trace:${event.event.turnId}:${event.event.type}`;
+    case 'harness_diagnostics_updated':
+      return `harness:${event.diagnostics.taskEpoch ?? '?'}:${event.diagnostics.evidenceSize}:${event.diagnostics.turnSummaryCount}`;
     case 'session_picker_requested':
       return `session_picker:${event.request.title}:${event.request.sessions.length}`;
     case 'edit_preview_requested':
@@ -111,6 +120,10 @@ function createRecordingController(mode: SinkMode): {
     showPermissionRequest: request => events.push(normalizeEvent({ type: 'permission_requested', request })),
     toolStarted: (event: RuntimeToolStartedEvent) => events.push(normalizeEvent({ type: 'tool_started', event })),
     toolFinished: (event: RuntimeToolFinishedEvent) => events.push(normalizeEvent({ type: 'tool_finished', event })),
+    sessionRestored: (event: RuntimeSessionRestoredEvent) => events.push(normalizeEvent({ type: 'session_restored', event })),
+    loopStatsUpdated: stats => events.push(normalizeEvent({ type: 'loop_stats_updated', stats })),
+    traceEventRecorded: event => events.push(normalizeEvent({ type: 'trace_event_recorded', event })),
+    harnessDiagnosticsUpdated: diagnostics => events.push(normalizeEvent({ type: 'harness_diagnostics_updated', diagnostics })),
     setProcessing: processing => events.push(normalizeEvent({ type: 'processing_changed', processing })),
   };
 
@@ -213,5 +226,50 @@ describe('runtime/UI renderer parity contract', () => {
     expect(ui.runner.calls.map(call => call.input)).toEqual(runtime.runner.calls.map(call => call.input));
     expect(ui.runner.calls.map(call => call.input)).toEqual(['/resume session-abc --all']);
     expect(ui.events).toEqual(runtime.events);
+  });
+
+  it('adapts session restored events identically across runtime and UI sinks', () => {
+    const ui = createRecordingController('ui-events');
+    const runtime = createRecordingController('runtime-events');
+    const event = {
+      sessionId: 'session-abc',
+      projectPath: '/tmp/project',
+      model: 'test-model',
+      restoredMessages: 3,
+      messageCount: 3,
+      summary: 'restored summary',
+    };
+
+    ui.events.length = 0;
+    runtime.events.length = 0;
+
+    const uiSink: UiEventSink = {
+      append: entry => {
+        ui.events.push(normalizeEvent({ type: 'transcript_append', entry }));
+        return 'ui-entry';
+      },
+      update: (id, patch) => ui.events.push(normalizeEvent({ type: 'transcript_update', id, patch })),
+      finalize: (id, patch) => ui.events.push(normalizeEvent({ type: 'transcript_finalize', id, patch })),
+      remove: id => ui.events.push(normalizeEvent({ type: 'transcript_remove', id })),
+      replaceTranscript: entries => ui.events.push(normalizeEvent({ type: 'transcript_replace', entries })),
+      clearTranscript: () => ui.events.push(normalizeEvent({ type: 'transcript_clear' })),
+      setStatus: message => ui.events.push(normalizeEvent({ type: 'status_changed', message })),
+      showSessionPicker: request => ui.events.push(normalizeEvent({ type: 'session_picker_requested', request })),
+      showEditPreview: request => ui.events.push(normalizeEvent({ type: 'edit_preview_requested', request })),
+      showPermissionRequest: request => ui.events.push(normalizeEvent({ type: 'permission_requested', request })),
+      toolStarted: started => ui.events.push(normalizeEvent({ type: 'tool_started', event: started })),
+      toolFinished: finished => ui.events.push(normalizeEvent({ type: 'tool_finished', event: finished })),
+      sessionRestored: restored => ui.events.push(normalizeEvent({ type: 'session_restored', event: restored })),
+      loopStatsUpdated: stats => ui.events.push(normalizeEvent({ type: 'loop_stats_updated', stats })),
+      traceEventRecorded: trace => ui.events.push(normalizeEvent({ type: 'trace_event_recorded', event: trace })),
+      harnessDiagnosticsUpdated: diagnostics => ui.events.push(normalizeEvent({ type: 'harness_diagnostics_updated', diagnostics })),
+      setProcessing: processing => ui.events.push(normalizeEvent({ type: 'processing_changed', processing })),
+    };
+    uiSink.sessionRestored?.(event);
+
+    runtime.events.push(normalizeEvent({ type: 'session_restored', event }));
+
+    expect(ui.events).toEqual(runtime.events);
+    expect(ui.events).toEqual(['session_restored:session-abc:3']);
   });
 });

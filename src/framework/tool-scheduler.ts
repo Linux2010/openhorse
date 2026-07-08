@@ -40,6 +40,23 @@ export interface ExecutedToolCall {
   artifactRef?: { id: string; outputBytes: number };
   strategyResult: 'success' | 'failed';
   strategyError?: string;
+  permissionDecision?: ToolPermissionDecision;
+}
+
+export type PermissionDecisionSource =
+  | 'tool_policy'
+  | 'config_allow'
+  | 'config_deny'
+  | 'user'
+  | 'missing_confirmation'
+  | 'drift_guard';
+
+export interface ToolPermissionDecision {
+  behavior?: PermissionResult['behavior'];
+  approved: boolean;
+  source: PermissionDecisionSource;
+  reason?: string;
+  duration?: number;
 }
 
 export interface ToolSchedule {
@@ -207,6 +224,7 @@ function executePreparedTool(
 ): Promise<ExecutedToolCall> {
   const start = Date.now();
   const { tc, args, drift, permission } = prepared;
+  let permissionDecision: ToolPermissionDecision | undefined;
 
   const exec = async (): Promise<string> => {
     try {
@@ -221,11 +239,23 @@ function executePreparedTool(
 
   const run = async (): Promise<string> => {
     if (drift?.status === 'block') {
+      permissionDecision = {
+        behavior: 'deny',
+        approved: false,
+        source: 'drift_guard',
+        reason: drift.reason || 'Blocked by Context Harness',
+      };
       return harnessBlockedResult
         ? harnessBlockedResult(drift)
         : JSON.stringify({ success: false, error: 'Blocked by Context Harness' });
     }
     if (permission?.behavior === 'deny') {
+      permissionDecision = {
+        behavior: 'deny',
+        approved: false,
+        source: 'tool_policy',
+        reason: permission.reason || 'Permission denied',
+      };
       return JSON.stringify({
         success: false,
         error: permission.reason || 'Permission denied',
@@ -234,15 +264,29 @@ function executePreparedTool(
     if (permission?.behavior === 'ask' && permissionMode === 'default') {
       const confirmation = toolConfirmation ?? 'ask';
       if (confirmation === 'allow') {
+        permissionDecision = {
+          behavior: 'ask',
+          approved: true,
+          source: 'config_allow',
+          reason: permission.reason,
+        };
         return exec();
       }
       if (confirmToolUse && confirmation === 'ask') {
+        const permissionStart = Date.now();
         const approved = await confirmToolUse({
           name: tc.function.name,
           args,
           reason: permission.reason,
           abortSignal,
         });
+        permissionDecision = {
+          behavior: 'ask',
+          approved,
+          source: 'user',
+          reason: permission.reason,
+          duration: Date.now() - permissionStart,
+        };
         return approved
           ? await exec()
           : JSON.stringify({
@@ -250,6 +294,12 @@ function executePreparedTool(
               error: `Tool ${tc.function.name} requires user confirmation and was denied by user.`,
             });
       }
+      permissionDecision = {
+        behavior: 'ask',
+        approved: false,
+        source: confirmation === 'deny' ? 'config_deny' : 'missing_confirmation',
+        reason: permission.reason,
+      };
       return JSON.stringify({
         success: false,
         error: confirmation === 'deny'
@@ -266,6 +316,7 @@ function executePreparedTool(
       prepared,
       result,
       duration,
+      permissionDecision,
       ...parseToolResult(result),
     };
   });

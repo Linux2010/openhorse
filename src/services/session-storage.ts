@@ -17,11 +17,14 @@ import {
   getProjectSessionMessagesPath,
   getProjectSessionHarnessPath,
   getProjectSessionMetaPath,
+  getProjectSessionTracePath,
   getProjectSessionsDir,
   getProjectsDir,
 } from './config-dir';
 import { atomicWriteFileSync } from './atomic-write';
 import { deleteSessionIndex, updateSessionIndex } from './session-index';
+import { redactTraceText } from './redaction';
+import type { LoopContinuationAction, LoopFinishReason } from '../framework/query';
 import type { Message } from './llm';
 import { summarizeHarnessStateForMeta, upgradeHarnessState, type ContextCapsule, type HarnessSidecar, type HarnessState } from '../harness';
 
@@ -122,6 +125,192 @@ export interface SessionMessage {
   tool_calls?: ToolCallRecord[];
   /** Skills applied for this turn (usually stored on the user message). */
   appliedSkills?: string[];
+}
+
+export type SessionTraceEventType =
+  | 'turn_start'
+  | 'request_start'
+  | 'provider_retry'
+  | 'provider_fallback'
+  | 'prompt_assembly'
+  | 'assistant_tool_calls'
+  | 'checkpoint'
+  | 'tool_call'
+  | 'permission_decision'
+  | 'tool_result'
+  | 'strategy_exhausted'
+  | 'message'
+  | 'complete'
+  | 'local_fast_path'
+  | 'workspace_snapshot'
+  | 'workspace_delta'
+  | 'verification_profile'
+  | 'verification_result'
+  | 'verification_summary'
+  | 'aborted'
+  | 'error';
+
+export interface SessionTraceEvent {
+  sessionId: string;
+  turnId: string;
+  timestamp: number;
+  type: SessionTraceEventType;
+  model?: string;
+  turn?: number;
+  name?: string;
+  callId?: string;
+  argsSummary?: string;
+  argsArtifactId?: string;
+  argsBytes?: number;
+  batchCount?: number;
+  batchIndex?: number;
+  permissionBehavior?: string;
+  permissionApproved?: boolean;
+  permissionSource?: string;
+  permissionReason?: string;
+  permissionDuration?: number;
+  success?: boolean;
+  duration?: number;
+  inputBytes?: number;
+  contentBytes?: number;
+  outputBytes?: number;
+  modelVisibleBytes?: number;
+  toolCallCount?: number;
+  artifactId?: string;
+  checkpointId?: string;
+  checkpointFileCount?: number;
+  checkpointFiles?: string[];
+  promptModelId?: string;
+  promptEstimatedTokens?: number;
+  promptBudgetTokens?: number;
+  promptCoreTokens?: number;
+  promptEvidenceBudgetTokens?: number;
+  promptRecentTurnBudgetTokens?: number;
+  promptSections?: string[];
+  promptIncludedEvidence?: string[];
+  promptOmittedEvidence?: string[];
+  promptIncludedEvidenceCount?: number;
+  promptOmittedEvidenceCount?: number;
+  finishReason?: LoopFinishReason;
+  llmRequests?: number;
+  toolCalls?: number;
+  readOnlyToolCalls?: number;
+  unsafeToolCalls?: number;
+  loopBudgetSource?: string;
+  loopBudgetBaseProfile?: string;
+  loopBudgetMaxLlmRequests?: number;
+  loopBudgetMaxToolCalls?: number;
+  loopBudgetMaxReadOnlyFragmentation?: number;
+  loopBudgetMaxModelVisibleBytes?: number;
+  loopBudgetConfigOverride?: boolean;
+  budgetExceededReason?: string;
+  localFastPathUsed?: boolean;
+  providerRetryCount?: number;
+  providerRetryDelayMs?: number;
+  providerRetryErrorTypes?: string[];
+  providerLastRetryErrorType?: string;
+  providerLastRetryStatus?: number;
+  providerFallbackCount?: number;
+  providerFallbackFromModel?: string;
+  providerFallbackToModel?: string;
+  providerFinalModel?: string;
+  providerUsingFallback?: boolean;
+  continuationActions?: LoopContinuationAction[];
+  continuationHint?: string;
+  workspacePhase?: 'pre_turn' | 'post_turn';
+  workspaceGitAvailable?: boolean;
+  workspaceDirty?: boolean;
+  workspaceBranch?: string;
+  workspaceFileCount?: number;
+  workspaceFiles?: string[];
+  workspaceNewByTurn?: string[];
+  workspaceChangedByTurn?: string[];
+  workspaceModifiedPreExistingByTurn?: string[];
+  workspaceResolvedByTurn?: string[];
+  verificationProfile?: string;
+  verificationRequired?: boolean;
+  verificationCommands?: string[];
+  verificationChangedFiles?: string[];
+  verificationCommand?: string;
+  verificationPassed?: boolean;
+  verificationClaimAllowed?: boolean;
+  verificationPassedCommands?: string[];
+  verificationFailedCommands?: string[];
+  verificationMissingCommands?: string[];
+  error?: string;
+  note?: string;
+}
+
+export { redactTraceText } from './redaction';
+
+function sanitizeTraceEvent(
+  event: Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number },
+): Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number } {
+  const sanitized = { ...event };
+  for (const key of ['argsSummary', 'error', 'note', 'permissionReason', 'continuationHint'] as const) {
+    if (typeof sanitized[key] === 'string') {
+      sanitized[key] = redactTraceText(sanitized[key]);
+    }
+  }
+  if (sanitized.workspaceFiles) {
+    sanitized.workspaceFiles = sanitized.workspaceFiles.map(redactTraceText);
+  }
+  if (sanitized.checkpointFiles) {
+    sanitized.checkpointFiles = sanitized.checkpointFiles.map(redactTraceText);
+  }
+  if (sanitized.promptSections) {
+    sanitized.promptSections = sanitized.promptSections.map(redactTraceText);
+  }
+  if (sanitized.promptIncludedEvidence) {
+    sanitized.promptIncludedEvidence = sanitized.promptIncludedEvidence.map(redactTraceText);
+  }
+  if (sanitized.promptOmittedEvidence) {
+    sanitized.promptOmittedEvidence = sanitized.promptOmittedEvidence.map(redactTraceText);
+  }
+  if (sanitized.workspaceChangedByTurn) {
+    sanitized.workspaceChangedByTurn = sanitized.workspaceChangedByTurn.map(redactTraceText);
+  }
+  if (sanitized.workspaceNewByTurn) {
+    sanitized.workspaceNewByTurn = sanitized.workspaceNewByTurn.map(redactTraceText);
+  }
+  if (sanitized.workspaceModifiedPreExistingByTurn) {
+    sanitized.workspaceModifiedPreExistingByTurn = sanitized.workspaceModifiedPreExistingByTurn.map(redactTraceText);
+  }
+  if (sanitized.workspaceResolvedByTurn) {
+    sanitized.workspaceResolvedByTurn = sanitized.workspaceResolvedByTurn.map(redactTraceText);
+  }
+  if (sanitized.verificationCommands) {
+    sanitized.verificationCommands = sanitized.verificationCommands.map(redactTraceText);
+  }
+  if (typeof sanitized.verificationCommand === 'string') {
+    sanitized.verificationCommand = redactTraceText(sanitized.verificationCommand);
+  }
+  if (sanitized.providerRetryErrorTypes) {
+    sanitized.providerRetryErrorTypes = sanitized.providerRetryErrorTypes.map(redactTraceText);
+  }
+  for (const key of [
+    'providerLastRetryErrorType',
+    'providerFallbackFromModel',
+    'providerFallbackToModel',
+    'providerFinalModel',
+  ] as const) {
+    if (typeof sanitized[key] === 'string') {
+      sanitized[key] = redactTraceText(sanitized[key]);
+    }
+  }
+  if (sanitized.verificationChangedFiles) {
+    sanitized.verificationChangedFiles = sanitized.verificationChangedFiles.map(redactTraceText);
+  }
+  if (sanitized.verificationPassedCommands) {
+    sanitized.verificationPassedCommands = sanitized.verificationPassedCommands.map(redactTraceText);
+  }
+  if (sanitized.verificationFailedCommands) {
+    sanitized.verificationFailedCommands = sanitized.verificationFailedCommands.map(redactTraceText);
+  }
+  if (sanitized.verificationMissingCommands) {
+    sanitized.verificationMissingCommands = sanitized.verificationMissingCommands.map(redactTraceText);
+  }
+  return sanitized;
 }
 
 export interface ListSessionsOptions {
@@ -485,6 +674,34 @@ export function markSessionTranscriptDisplayStart(sessionId: string, timestamp: 
   return session;
 }
 
+export function persistSessionCompactHistory(
+  sessionId: string,
+  messages: Message[],
+  timestamp: number = Date.now(),
+): SessionMeta | null {
+  const session = loadSessionMeta(sessionId);
+  if (!session) return null;
+
+  const compactMessages = messages.map(message => ({
+    role: message.role,
+    content: message.content,
+    timestamp,
+    toolCallId: message.tool_call_id,
+    tool_calls: message.tool_calls,
+  } satisfies SessionMessage));
+
+  appendSessionMessages(sessionId, compactMessages);
+  return markSessionTranscriptDisplayStart(sessionId, timestamp);
+}
+
+function hasPersistedCompactContext(messages: SessionMessage[]): boolean {
+  return messages.some(message =>
+    message.content.includes('[OpenHorse Context State v2]')
+    || message.content.includes('[Context Summary]')
+    || message.content.includes('## Context Capsule')
+  );
+}
+
 /**
  * 结束会话
  */
@@ -532,7 +749,7 @@ export function updateSessionSummary(sessionId: string, messages: SessionMessage
 
   // 提取任务摘要（从第一个用户消息）
   const firstUserMsg = messages.find(m => m.role === 'user' && m.content);
-  const taskSummary = firstUserMsg?.content?.slice(0, 100) || '';
+  const taskSummary = redactTraceText(firstUserMsg?.content ?? '').slice(0, 100);
 
   // 更新 session
   session.toolsUsed = [...new Set(toolsUsed)];  // unique
@@ -720,13 +937,75 @@ export function readSessionMessages(sessionId: string): SessionMessage[] {
   }
 }
 
+export function appendSessionTraceEvent(
+  sessionId: string,
+  event: Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number }
+): SessionTraceEvent | null {
+  const session = loadSessionMeta(sessionId);
+  if (!session) return null;
+
+  ensureConfigDir();
+
+  const safeEvent = sanitizeTraceEvent(event);
+  const traceEvent: SessionTraceEvent = {
+    ...safeEvent,
+    sessionId,
+    turnId: String(safeEvent.turnId),
+    timestamp: safeEvent.timestamp ?? Date.now(),
+  };
+
+  appendFileSync(getProjectSessionTracePath(session.projectPath, sessionId), `${JSON.stringify(traceEvent)}\n`, { mode: 0o600 });
+  return traceEvent;
+}
+
+export function readSessionTraceEvents(sessionId: string): SessionTraceEvent[] {
+  const session = loadSessionMeta(sessionId);
+  if (!session) return [];
+
+  const path = getProjectSessionTracePath(session.projectPath, sessionId);
+  if (!existsSync(path)) return [];
+
+  try {
+    const content = readFileSync(path, 'utf-8');
+    return content.trim().split('\n').filter(Boolean).flatMap(line => {
+      try {
+        const parsed = JSON.parse(line) as Partial<SessionTraceEvent>;
+        if (!parsed.type || !parsed.turnId || !parsed.timestamp) return [];
+        const sanitized = sanitizeTraceEvent({
+          ...parsed,
+          turnId: String(parsed.turnId),
+        } as Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number });
+        return [{
+          ...sanitized,
+          sessionId,
+          turnId: String(sanitized.turnId),
+        } as SessionTraceEvent];
+      } catch {
+        return [];
+      }
+    });
+  } catch {
+    return [];
+  }
+}
+
 /**
  * 读取会话消息并转换为 Message 格式（用于恢复对话历史）
  * 包含完整的 tool_calls 信息，确保 LLM 能理解之前的工具调用
  */
 export function loadSessionHistory(sessionId: string): Message[] {
   const messages = readSessionMessages(sessionId);
-  return messages.map(m => {
+  const session = loadSessionMeta(sessionId);
+  const displayStartTime = session?.transcriptDisplayStartTime;
+  let modelVisibleMessages = messages;
+  if (typeof displayStartTime === 'number') {
+    const afterDisplayStart = messages.filter(message => (message.timestamp ?? 0) >= displayStartTime);
+    modelVisibleMessages = hasPersistedCompactContext(afterDisplayStart)
+      ? afterDisplayStart
+      : messages;
+  }
+
+  return modelVisibleMessages.map(m => {
     const result: Message = {
       role: m.role,
       content: m.modelVisibleContent ?? m.content,
@@ -876,6 +1155,7 @@ export function deleteSession(sessionId: string): boolean {
     getProjectSessionMetaPath(session.projectPath, sessionId),
     getProjectSessionMessagesPath(session.projectPath, sessionId),
     getProjectSessionHarnessPath(session.projectPath, sessionId),
+    getProjectSessionTracePath(session.projectPath, sessionId),
   ];
   deleteSessionIndex(sessionId, session.projectPath);
 

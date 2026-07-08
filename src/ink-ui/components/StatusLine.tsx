@@ -4,7 +4,9 @@ import stringWidth from 'string-width';
 import { calculateCtxPercent } from '../../services/model-context';
 import { mcpManager } from '../../tools/mcp';
 import type { OpenHorseUiRuntime } from '../types';
-import { RunningHorseIndicator, runningHorseLabel } from './RunningHorseIndicator';
+import { runningHorseLabel } from './RunningHorseIndicator';
+
+const RUNNING_HORSE_MARK = '╭◔╮▰╱╲ ·';
 
 export interface StatusLineProps {
   runtime: OpenHorseUiRuntime;
@@ -52,6 +54,22 @@ export function StatusLine({ runtime, running, statusMessage, width = 80 }: Stat
   ].join('  ');
   const usableWidth = Math.max(20, width);
   const rightBudget = Math.max(10, Math.floor(usableWidth * 0.68));
+
+  if (running) {
+    const runningText = truncateVisual(
+      `${compactRightText}  ${RUNNING_HORSE_MARK} ${runningHorseLabel(statusMessage)}`,
+      usableWidth
+    );
+
+    return (
+      <Box width={usableWidth}>
+        <Text color="gray" wrap="truncate">
+          {runningText}
+        </Text>
+      </Box>
+    );
+  }
+
   const rightText = [fullRightText, mediumRightText, compactRightText]
     .find(candidate => stringWidth(candidate) <= rightBudget)
     ?? compactRightText;
@@ -62,13 +80,9 @@ export function StatusLine({ runtime, running, statusMessage, width = 80 }: Stat
 
   return (
     <Box width={usableWidth} justifyContent="space-between">
-      {running ? (
-        <RunningHorseIndicator label={runningHorseLabel(statusMessage)} maxWidth={leftMaxWidth} />
-      ) : (
-        <Text color="gray" wrap="truncate">
-          {leftText}
-        </Text>
-      )}
+      <Text color="gray" wrap="truncate">
+        {leftText}
+      </Text>
       <Text color="gray" wrap="truncate">
         {rightDisplay}
       </Text>

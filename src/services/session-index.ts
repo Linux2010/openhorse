@@ -8,6 +8,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { getProjectSessionsDir } from './config-dir';
+import { redactTraceText } from './redaction';
 
 // ============================================================================
 // Types
@@ -47,7 +48,7 @@ export function updateSessionIndex(
 
   // Track user topics
   if (message.role === 'user' && message.content) {
-    const topic = message.content.slice(0, 50).trim();
+    const topic = redactTraceText(message.content).slice(0, 50).trim();
     if (topic && !index.topics.includes(topic)) {
       index.topics.push(topic);
       // Keep only last 20 topics
@@ -67,8 +68,10 @@ export function updateSessionIndex(
       try {
         const args = JSON.parse(tc.function.arguments);
         const filePath = args.path || args.file || args.file_path;
-        if (filePath && typeof filePath === 'string' && !index.files.includes(filePath)) {
-          index.files.push(filePath);
+        if (filePath && typeof filePath === 'string') {
+          const safeFilePath = redactTraceText(filePath);
+          if (index.files.includes(safeFilePath)) continue;
+          index.files.push(safeFilePath);
           // Keep only last 100 files
           if (index.files.length > 100) {
             index.files = index.files.slice(-100);

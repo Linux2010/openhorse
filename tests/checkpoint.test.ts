@@ -63,13 +63,19 @@ describe('checkpoint', () => {
     expect(createCheckpoint(TEST_PROJECT, 'turn-1', [])).toBeNull();
   });
 
-  test('createCheckpoint skips non-existent files', () => {
+  test('createCheckpoint records non-existent files for deletion on restore', () => {
     const cp = createCheckpoint(TEST_PROJECT, 'turn-2', [
       path.join(TEST_PROJECT, 'nonexistent.txt'),
     ]);
 
     expect(cp).not.toBeNull();
-    expect(cp!.files).toHaveLength(0);
+    expect(cp!.files).toEqual([
+      expect.objectContaining({
+        path: 'nonexistent.txt',
+        existed: false,
+        sizeBytes: 0,
+      }),
+    ]);
   });
 
   test('createCheckpoint is idempotent — second call returns null', () => {
@@ -96,6 +102,44 @@ describe('checkpoint', () => {
     expect(result.restored).toHaveLength(1);
     expect(result.restored[0]).toBe('restore.txt');
     expect(fs.readFileSync(filePath, 'utf8')).toBe('original');
+  });
+
+  test('restoreCheckpoint deletes files that did not exist when checkpoint was created', () => {
+    const filePath = path.join(TEST_PROJECT, 'new-file.txt');
+    createCheckpoint(TEST_PROJECT, 'turn-new-file', [filePath]);
+
+    fs.writeFileSync(filePath, 'created after checkpoint', 'utf8');
+    expect(fs.existsSync(filePath)).toBe(true);
+
+    const result = restoreCheckpoint(TEST_PROJECT, 'turn-new-file');
+    expect(result.error).toBeUndefined();
+    expect(result.restored).toEqual(['new-file.txt']);
+    expect(fs.existsSync(filePath)).toBe(false);
+  });
+
+  test('restoreCheckpoint rejects checkpoint metadata paths outside the project', () => {
+    const checkpointDir = path.join(getProjectCheckpointsDir(TEST_PROJECT), 'evil-turn');
+    fs.mkdirSync(checkpointDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(checkpointDir, '.checkpoint.json'),
+      JSON.stringify({
+        turnId: 'evil-turn',
+        createdAt: Date.now(),
+        files: [{
+          path: '../outside.txt',
+          content: '',
+          sizeBytes: 0,
+        }],
+      }),
+      'utf8',
+    );
+
+    const outside = path.join(TEST_PROJECT, '..', 'outside.txt');
+    if (fs.existsSync(outside)) fs.rmSync(outside, { force: true });
+
+    const result = restoreCheckpoint(TEST_PROJECT, 'evil-turn');
+    expect(result.error).toContain('Invalid checkpoint path');
+    expect(fs.existsSync(outside)).toBe(false);
   });
 
   test('restoreCheckpoint returns error for non-existent checkpoint', () => {

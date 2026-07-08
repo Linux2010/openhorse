@@ -1,8 +1,12 @@
 import type {
   EditPreviewRequest,
+  RuntimeLoopStats,
   RuntimeToolFinishedEvent,
   RuntimeToolStartedEvent,
   SessionPickerRequest,
+  RuntimeTraceEvent,
+  RuntimeHarnessDiagnostics,
+  RuntimeSessionRestoredEvent,
   ToolPermissionRequest,
   TranscriptAppendEntry,
   TranscriptEntry,
@@ -72,6 +76,10 @@ export type AgentRuntimeEvent =
   | { type: 'permission_requested'; request: ToolPermissionRequest }
   | { type: 'tool_started'; event: RuntimeToolStartedEvent }
   | { type: 'tool_finished'; event: RuntimeToolFinishedEvent }
+  | { type: 'session_restored'; event: RuntimeSessionRestoredEvent }
+  | { type: 'loop_stats_updated'; stats: RuntimeLoopStats }
+  | { type: 'trace_event_recorded'; event: RuntimeTraceEvent }
+  | { type: 'harness_diagnostics_updated'; diagnostics: RuntimeHarnessDiagnostics }
   | { type: 'processing_changed'; processing: boolean };
 
 export interface AgentRuntimeEventSink {
@@ -114,6 +122,18 @@ export function emitToUiEventSink(events: UiEventSink, event: AgentRuntimeEvent)
       return undefined;
     case 'tool_finished':
       events.toolFinished?.(event.event);
+      return undefined;
+    case 'session_restored':
+      events.sessionRestored?.(event.event);
+      return undefined;
+    case 'loop_stats_updated':
+      events.loopStatsUpdated?.(event.stats);
+      return undefined;
+    case 'trace_event_recorded':
+      events.traceEventRecorded?.(event.event);
+      return undefined;
+    case 'harness_diagnostics_updated':
+      events.harnessDiagnosticsUpdated?.(event.diagnostics);
       return undefined;
     case 'processing_changed':
       events.setProcessing(event.processing);
@@ -161,6 +181,18 @@ export function createUiEventSinkFromAgentRuntimeEvents(sink: AgentRuntimeEventS
     },
     toolFinished: event => {
       sink.emit({ type: 'tool_finished', event });
+    },
+    sessionRestored: event => {
+      sink.emit({ type: 'session_restored', event });
+    },
+    loopStatsUpdated: stats => {
+      sink.emit({ type: 'loop_stats_updated', stats });
+    },
+    traceEventRecorded: event => {
+      sink.emit({ type: 'trace_event_recorded', event });
+    },
+    harnessDiagnosticsUpdated: diagnostics => {
+      sink.emit({ type: 'harness_diagnostics_updated', diagnostics });
     },
     setProcessing: processing => {
       sink.emit({ type: 'processing_changed', processing });

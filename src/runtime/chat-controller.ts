@@ -1,33 +1,60 @@
 import { findCommand } from '../commands';
 import { parseInput, buildCommandSuggestions } from '../commands/parser';
+import * as path from 'path';
 import type { CommandContext, CommandResult } from '../commands/types';
-import type { Message, StreamCallbacks } from '../services/llm';
-import type { SessionMessage } from '../services/session-storage';
+import type { LLMRequestDiagnostics, Message, StreamCallbacks } from '../services/llm';
+import type { SessionMessage, SessionTraceEvent } from '../services/session-storage';
 import {
   appendSessionMessage,
   appendSessionMessages,
+  appendSessionTraceEvent,
   endSession,
   loadSessionHarnessState,
   loadSessionHistory,
   loadSessionMeta,
   removeLastIncompleteAssistantMessage,
   readSessionMessages,
+  redactTraceText,
   updateSessionHarnessState,
   updateSessionSkills,
   updateSessionSummary,
 } from '../services/session-storage';
 import { isConfigured } from '../services/config';
-import { query, buildSystemPrompt, type PromptContext, type QueryEvent } from '../framework';
+import { query, buildSystemPrompt, QueryLoopError, createFailedLoopStats, createLocalFastPathLoopStats, type LoopFinishReason, type LoopStats, type PromptContext, type QueryEvent } from '../framework';
 import { createContextHarness } from '../harness';
+import type { HarnessState } from '../harness/types';
 import { executeTool, getRuntimeTools } from '../tools';
+import { parseToolResultEnvelope } from '../framework/tool-serializer';
+import { storeArtifact, truncateForContext } from '../core/tool-artifacts';
+import { createCheckpoint } from '../core/checkpoint';
 import { resolveSkillsForTurn, hasMatchingSkill } from '../skills';
 import { buildReferencedFilesPrompt } from '../services/file-context';
 import { refreshProjectInstructions } from '../services/prompt-context';
-import type { OpenHorseUiRuntime, TranscriptEntry, UiEventSink, UiRendererCapabilities } from './ui-events';
+import { captureWorkspaceSnapshot, diffWorkspaceSnapshots, type WorkspaceSnapshot } from '../services/workspace-state';
+import {
+  collectVerificationCommandResult,
+  formatVerificationGateNotice,
+  selectVerificationProfile,
+  shouldGateCompletion,
+  summarizeVerificationState,
+  type VerificationCommandResult,
+  type VerificationProfile,
+  type VerificationSummary,
+} from '../services/verification-profile';
+import type {
+  OpenHorseUiRuntime,
+  RuntimeHarnessDiagnostics,
+  TranscriptEntry,
+  UiEventSink,
+  UiRendererCapabilities,
+} from './ui-events';
 import { resolveUiRendererCapabilities } from './ui-events';
 import { agentStepStatus, runningToolsStatus } from './agent-status';
+import { resolveRuntimeLoopBudget } from './loop-budget';
 
 const ANSI_PATTERN = /\x1b\[[0-9;?]*[A-Za-z]/g;
+const LOCAL_FAST_PATH_INLINE_OUTPUT_BYTES = 2048;
+const TRACE_ARGS_ARTIFACT_THRESHOLD_BYTES = 160;
 
 function stripAnsi(text: string): string {
   return text.replace(ANSI_PATTERN, '');
@@ -75,6 +102,423 @@ function compactToolArgs(args: Record<string, unknown>, maxLength = 160): string
     return compactMiddle(firstString, maxLength);
   }
   return '';
+}
+
+interface TraceArgsDetails {
+  argsSummary: string;
+  argsArtifactId?: string;
+  argsBytes?: number;
+}
+
+function fullToolArgsForTrace(name: string, args: Record<string, unknown>): string {
+  if (name === 'exec_command' && typeof args.command === 'string') {
+    return `$ ${args.command}`;
+  }
+
+  try {
+    return JSON.stringify(args, null, 2);
+  } catch {
+    return compactToolArgs(args, 2048);
+  }
+}
+
+function buildTraceArgsDetails(
+  projectPath: string | undefined,
+  name: string,
+  args: Record<string, unknown>,
+): TraceArgsDetails {
+  const argsSummary = compactToolArgs(args);
+  const fullArgs = redactTraceText(fullToolArgsForTrace(name, args)).trim();
+  const argsBytes = byteLength(fullArgs);
+
+  if (
+    !projectPath
+    || !fullArgs
+    || fullArgs === redactTraceText(argsSummary)
+    || argsBytes <= TRACE_ARGS_ARTIFACT_THRESHOLD_BYTES
+  ) {
+    return { argsSummary };
+  }
+
+  const artifact = storeArtifact(projectPath, `${name}-args`, fullArgs, argsBytes);
+  return artifact
+    ? { argsSummary, argsArtifactId: artifact.id, argsBytes }
+    : { argsSummary };
+}
+
+function parseToolCallArgsForRuntime(
+  toolCall: NonNullable<Message['tool_calls']>[number],
+): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(toolCall.function.arguments || '{}');
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveProjectScopedPath(cwd: string, filePath: string): string | null {
+  const absolute = path.resolve(cwd, filePath);
+  const relative = path.relative(cwd, absolute);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  return absolute;
+}
+
+function checkpointTargetsFromToolCalls(
+  cwd: string,
+  toolCalls: NonNullable<Message['tool_calls']>,
+): string[] {
+  const targets = new Set<string>();
+  for (const toolCall of toolCalls) {
+    const name = toolCall.function.name;
+    if (name !== 'write_file' && name !== 'edit_file') continue;
+
+    const args = parseToolCallArgsForRuntime(toolCall);
+    if (!args || typeof args.path !== 'string') continue;
+    if (name === 'edit_file' && args.preview === true) continue;
+
+    const target = resolveProjectScopedPath(cwd, args.path);
+    if (target) targets.add(target);
+  }
+  return Array.from(targets);
+}
+
+function createPreToolCheckpoint(
+  events: UiEventSink,
+  sessionId: string | undefined,
+  turnId: string,
+  checkpointId: string,
+  cwd: string,
+  toolCalls: NonNullable<Message['tool_calls']>,
+): boolean {
+  const targets = checkpointTargetsFromToolCalls(cwd, toolCalls);
+  if (targets.length === 0) return false;
+
+  const checkpoint = createCheckpoint(cwd, checkpointId, targets);
+  if (!sessionId) return true;
+
+  const relativeTargets = targets.map(target => path.relative(cwd, target));
+  recordTraceEvent(events, sessionId, {
+    turnId,
+    type: 'checkpoint',
+    checkpointId,
+    checkpointFileCount: checkpoint?.files.length ?? 0,
+    checkpointFiles: checkpoint?.files.map(file => file.path) ?? [],
+    workspaceFiles: relativeTargets,
+    note: checkpoint
+      ? 'pre_edit_checkpoint'
+      : 'pre_edit_checkpoint_skipped',
+  });
+  return true;
+}
+
+function byteLength(text: string): number {
+  return Buffer.byteLength(text, 'utf8');
+}
+
+function traceTurnId(turnId: number | string | undefined): string {
+  return turnId == null ? `turn-${Date.now()}` : String(turnId);
+}
+
+function compactTraceError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return compactMiddle(message, 240);
+}
+
+function getLastRequestDiagnostics(llm: OpenHorseUiRuntime['llm']): LLMRequestDiagnostics | undefined {
+  if (!llm) return undefined;
+  const reader = (llm as unknown as {
+    getLastRequestDiagnostics?: () => LLMRequestDiagnostics;
+  }).getLastRequestDiagnostics;
+  return typeof reader === 'function' ? reader.call(llm) : undefined;
+}
+
+function compactPathList(paths: string[], maxItems = 40): string[] {
+  return paths.slice(0, maxItems);
+}
+
+function formatWorkspaceFileForTrace(file: WorkspaceSnapshot['files'][number]): string {
+  const metadata = [
+    typeof file.sizeBytes === 'number' ? `${file.sizeBytes}B` : '',
+    typeof file.mtimeMs === 'number' ? `mtime=${file.mtimeMs}` : '',
+  ].filter(Boolean).join(' ');
+  return `${file.status} ${file.path}${metadata ? ` (${metadata})` : ''}`;
+}
+
+function appendWorkspaceSnapshotTrace(
+  events: UiEventSink,
+  sessionId: string | undefined,
+  turnId: string,
+  phase: 'pre_turn' | 'post_turn',
+  snapshot: WorkspaceSnapshot,
+): void {
+  if (!sessionId) return;
+  recordTraceEvent(events, sessionId, {
+    turnId,
+    type: 'workspace_snapshot',
+    workspacePhase: phase,
+    workspaceGitAvailable: snapshot.gitAvailable,
+    workspaceDirty: snapshot.dirty,
+    workspaceBranch: snapshot.branch,
+    workspaceFileCount: snapshot.fileCount,
+    workspaceFiles: compactPathList(snapshot.files.map(formatWorkspaceFileForTrace)),
+    error: snapshot.error ? compactMiddle(snapshot.error, 240) : undefined,
+  });
+}
+
+function appendWorkspaceDeltaTrace(
+  events: UiEventSink,
+  sessionId: string | undefined,
+  turnId: string,
+  before: WorkspaceSnapshot,
+  after: WorkspaceSnapshot,
+): ReturnType<typeof diffWorkspaceSnapshots> {
+  const delta = diffWorkspaceSnapshots(before, after);
+  if (sessionId) {
+    recordTraceEvent(events, sessionId, {
+      turnId,
+      type: 'workspace_delta',
+      workspaceFileCount: delta.filesAfterTurn.length,
+      workspaceFiles: compactPathList(delta.filesAfterTurn),
+      workspaceNewByTurn: compactPathList(delta.newFilesByTurn),
+      workspaceChangedByTurn: compactPathList(delta.changedByTurn),
+      workspaceModifiedPreExistingByTurn: compactPathList(delta.modifiedPreExistingByTurn),
+      workspaceResolvedByTurn: compactPathList(delta.resolvedByTurn),
+      note: `pre_existing=${delta.preExistingFiles.length}`,
+    });
+  }
+  return delta;
+}
+
+function workspaceDeltaHasTurnChanges(delta: ReturnType<typeof diffWorkspaceSnapshots>): boolean {
+  return delta.newFilesByTurn.length > 0
+    || delta.changedByTurn.length > 0
+    || delta.resolvedByTurn.length > 0;
+}
+
+function formatFailureRecoveryNotice(
+  turnId: string,
+  delta: ReturnType<typeof diffWorkspaceSnapshots>,
+  checkpointIds: string[],
+): string {
+  const files = compactPathList([
+    ...delta.newFilesByTurn,
+    ...delta.changedByTurn,
+    ...delta.resolvedByTurn,
+  ], 8);
+  const fileText = files.length > 0
+    ? files.join(', ')
+    : 'workspace changes recorded';
+  const checkpointText = checkpointIds.length > 0
+    ? ` Checkpoints: ${checkpointIds.join(', ')}. Preview rollback with /checkpoint restore <id>; restore each listed checkpoint if multiple.`
+    : '';
+  return `Turn failed after modifying files: ${fileText}. Inspect /trace ${turnId}.${checkpointText}`;
+}
+
+function appendVerificationProfileTrace(
+  events: UiEventSink,
+  sessionId: string | undefined,
+  turnId: string,
+  profile: VerificationProfile,
+): void {
+  if (!sessionId || profile.changedFiles.length === 0) return;
+  recordTraceEvent(events, sessionId, {
+    turnId,
+    type: 'verification_profile',
+    verificationProfile: profile.profile,
+    verificationRequired: profile.required,
+    verificationCommands: compactPathList(profile.commands, 8),
+    verificationChangedFiles: compactPathList(profile.changedFiles),
+    note: profile.reason,
+  });
+}
+
+function appendVerificationResultTrace(
+  events: UiEventSink,
+  sessionId: string | undefined,
+  turnId: string,
+  result: VerificationCommandResult,
+): void {
+  if (!sessionId) return;
+  recordTraceEvent(events, sessionId, {
+    turnId,
+    type: 'verification_result',
+    verificationCommand: result.command,
+    verificationPassed: result.success,
+    outputBytes: result.outputBytes,
+    error: result.error ? compactMiddle(result.error, 240) : undefined,
+  });
+}
+
+function appendVerificationSummaryTrace(
+  events: UiEventSink,
+  sessionId: string | undefined,
+  turnId: string,
+  summary: VerificationSummary,
+  changedFiles: string[],
+): void {
+  if (!sessionId || changedFiles.length === 0) return;
+  recordTraceEvent(events, sessionId, {
+    turnId,
+    type: 'verification_summary',
+    verificationProfile: summary.profile,
+    verificationRequired: summary.required,
+    verificationCommands: compactPathList(summary.commandsRun, 12),
+    verificationPassedCommands: compactPathList(summary.passedCommands, 12),
+    verificationFailedCommands: compactPathList(summary.failedCommands, 12),
+    verificationMissingCommands: compactPathList(summary.missingCommands, 12),
+    verificationChangedFiles: compactPathList(changedFiles),
+    verificationClaimAllowed: summary.claimAllowed,
+    note: summary.skippedReason,
+  });
+}
+
+function compactVerificationCommands(commands: string[], maxItems = 12): string[] {
+  return commands.slice(0, maxItems).map(redactTraceText);
+}
+
+function withVerificationLoopStats(stats: LoopStats, summary: VerificationSummary): LoopStats {
+  return {
+    ...stats,
+    verificationProfile: summary.profile,
+    verificationRequired: summary.required,
+    verificationClaimAllowed: summary.claimAllowed,
+    verificationPassedCommands: compactVerificationCommands(summary.passedCommands),
+    verificationFailedCommands: compactVerificationCommands(summary.failedCommands),
+    verificationMissingCommands: compactVerificationCommands(summary.missingCommands),
+    verificationSkippedReason: summary.skippedReason ? redactTraceText(summary.skippedReason) : undefined,
+  };
+}
+
+function shouldRecordVerificationLoopStats(profile: VerificationProfile, summary: VerificationSummary): boolean {
+  return profile.changedFiles.length > 0
+    || summary.commandsRun.length > 0
+    || summary.passedCommands.length > 0
+    || summary.failedCommands.length > 0
+    || summary.missingCommands.length > 0;
+}
+
+function appendPostWorkspaceTrace(
+  events: UiEventSink,
+  sessionId: string | undefined,
+  turnId: string,
+  cwd: string,
+  before: WorkspaceSnapshot,
+  verificationResults: VerificationCommandResult[] = [],
+): {
+  delta: ReturnType<typeof diffWorkspaceSnapshots>;
+  profile: VerificationProfile;
+  summary: VerificationSummary;
+} {
+  const postWorkspace = captureWorkspaceSnapshot(cwd);
+  appendWorkspaceSnapshotTrace(events, sessionId, turnId, 'post_turn', postWorkspace);
+  const delta = appendWorkspaceDeltaTrace(events, sessionId, turnId, before, postWorkspace);
+  const profile = selectVerificationProfile(cwd, delta.changedByTurn);
+  const summary = summarizeVerificationState(profile, verificationResults);
+  appendVerificationProfileTrace(events, sessionId, turnId, profile);
+  appendVerificationSummaryTrace(
+    events,
+    sessionId,
+    turnId,
+    summary,
+    profile.changedFiles,
+  );
+  return { delta, profile, summary };
+}
+
+function appendAssistantNotice(messages: SessionMessage[], notice: string): void {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role === 'assistant' && !message.tool_calls) {
+      message.content = message.content ? `${message.content}\n\n${notice}` : notice;
+      return;
+    }
+  }
+  messages.push({
+    role: 'assistant',
+    content: notice,
+    timestamp: Date.now(),
+  });
+}
+
+function recordTraceEvent(
+  events: UiEventSink,
+  sessionId: string | undefined,
+  event: Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number },
+): SessionTraceEvent | null {
+  if (!sessionId) return null;
+  const traceEvent = appendSessionTraceEvent(sessionId, event);
+  if (traceEvent) {
+    events.traceEventRecorded?.(traceEvent);
+  }
+  return traceEvent;
+}
+
+function recordProviderTraceEvents(
+  events: UiEventSink,
+  sessionId: string | undefined,
+  turnId: string,
+  stats: LoopStats,
+): void {
+  if ((stats.providerRetryCount ?? 0) > 0) {
+    recordTraceEvent(events, sessionId, {
+      turnId,
+      type: 'provider_retry',
+      providerRetryCount: stats.providerRetryCount,
+      providerRetryDelayMs: stats.providerRetryDelayMs,
+      providerRetryErrorTypes: stats.providerRetryErrorTypes,
+      providerLastRetryErrorType: stats.providerLastRetryErrorType,
+      providerLastRetryStatus: stats.providerLastRetryStatus,
+      providerFinalModel: stats.providerFinalModel,
+      providerUsingFallback: stats.providerUsingFallback,
+    });
+  }
+
+  if ((stats.providerFallbackCount ?? 0) > 0 || stats.providerUsingFallback) {
+    recordTraceEvent(events, sessionId, {
+      turnId,
+      type: 'provider_fallback',
+      providerFallbackCount: stats.providerFallbackCount,
+      providerFallbackFromModel: stats.providerFallbackFromModel,
+      providerFallbackToModel: stats.providerFallbackToModel,
+      providerFinalModel: stats.providerFinalModel,
+      providerUsingFallback: stats.providerUsingFallback,
+    });
+  }
+}
+
+function toHarnessDiagnostics(state: HarnessState): RuntimeHarnessDiagnostics {
+  const stats = state.promptAssemblyStats;
+  const redactOptional = (value: string | undefined): string | undefined =>
+    typeof value === 'string' ? redactTraceText(value) : undefined;
+  const redactList = (values: string[] | undefined): string[] | undefined =>
+    values?.slice(0, 6).map(redactTraceText);
+  return {
+    taskEpoch: state.taskEpoch,
+    rootObjective: redactOptional(state.rootObjective ?? state.contract?.objective),
+    activeInstruction: redactOptional(state.activeInstruction ?? state.contract?.userIntent),
+    openQuestions: redactList(state.openQuestions),
+    diagnostics: redactList(state.diagnostics?.slice(-6)),
+    ledgerSize: state.ledger?.length ?? 0,
+    evidenceSize: state.evidenceIndex?.length ?? 0,
+    turnSummaryCount: state.turnSummaries?.length ?? 0,
+    promptAssembly: stats
+      ? {
+          modelId: stats.modelId,
+          estimatedTokens: stats.estimatedTokens,
+          budgetTokens: stats.budgetTokens,
+          sections: stats.sections.slice(0, 12),
+          includedEvidence: stats.includedEvidence.length,
+          omittedEvidence: stats.omittedEvidence.length,
+        }
+      : undefined,
+  };
+}
+
+function emitHarnessDiagnostics(events: UiEventSink, state: HarnessState): void {
+  events.harnessDiagnosticsUpdated?.(toHarnessDiagnostics(state));
 }
 
 function toolStartContent(name: string, args: Record<string, unknown>): string {
@@ -240,6 +684,7 @@ export interface AssistantStreamPresenter {
   closeSegment(): void;
   discardSegment(): void;
   ensureMessage(content: string): void;
+  replaceMessage(content: string): void;
 }
 
 export function createAssistantStreamPresenter(events: UiEventSink, abortSignal?: AbortSignal): AssistantStreamPresenter {
@@ -298,11 +743,99 @@ export function createAssistantStreamPresenter(events: UiEventSink, abortSignal?
       activeSegmentText = content;
       ensureLiveEntry();
     },
+
+    replaceMessage(content: string): void {
+      if (abortSignal?.aborted || !content) return;
+      activeSegmentText = content;
+      ensureLiveEntry();
+    },
   };
 }
 
 type ToolCallEvent = Extract<QueryEvent, { type: 'tool_call' }>;
 type ToolResultEvent = Extract<QueryEvent, { type: 'tool_result' }>;
+
+interface LocalFastPathAction {
+  tool: string;
+  args: Record<string, unknown>;
+  label: string;
+}
+
+class LocalFastPathBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LocalFastPathBlockedError';
+  }
+}
+
+function parseLocalFastPath(input: string): LocalFastPathAction | null {
+  const text = input.trim();
+  if (/^git\s+status$/i.test(text)) {
+    return { tool: 'git_status', args: {}, label: 'git status' };
+  }
+
+  const readMatch = /^(?:read|读取)\s+(.+)$/i.exec(text);
+  const readTarget = readMatch?.[1]?.trim();
+  const looksLikePath = Boolean(readTarget)
+    && !/\s/.test(readTarget!)
+    && (/[/\\.]/.test(readTarget!) || readTarget!.startsWith('~'));
+  if (readTarget && looksLikePath) {
+    return { tool: 'read_file', args: { path: readTarget }, label: `read ${readTarget}` };
+  }
+
+  const grepMatch = /^(?:grep|搜索)\s+(.+)$/i.exec(text);
+  if (grepMatch?.[1]?.trim()) {
+    return { tool: 'grep', args: { pattern: grepMatch[1].trim() }, label: `grep ${grepMatch[1].trim()}` };
+  }
+
+  const runTestMatch = /^(?:run\s+test|运行测试)\s*[:：]\s*(.+)$/i.exec(text);
+  if (runTestMatch?.[1]?.trim()) {
+    return { tool: 'exec_command', args: { command: runTestMatch[1].trim() }, label: `run test: ${runTestMatch[1].trim()}` };
+  }
+
+  return null;
+}
+
+function formatLocalFastPathAssistantContent(
+  action: LocalFastPathAction,
+  rawResult: string,
+  projectPath: string,
+): string {
+  const envelope = parseToolResultEnvelope(rawResult);
+  const output = typeof envelope.output === 'string' ? envelope.output.trim() : '';
+  const summary = envelope.summary || `${action.tool} ${envelope.success ? 'completed' : 'failed'}`;
+  const lines = [
+    envelope.success
+      ? `Local fast path completed ${action.label}.`
+      : `Local fast path failed ${action.label}.`,
+    '',
+    summary,
+  ];
+  if (!envelope.success && envelope.error) {
+    lines.push(`Error: ${envelope.error}`);
+  }
+
+  if (!output) {
+    return lines.join('\n');
+  }
+
+  let artifactRef = envelope.artifactRef;
+  let preview = output;
+  const outputBytes = envelope.outputBytes ?? byteLength(output);
+  if (byteLength(output) > LOCAL_FAST_PATH_INLINE_OUTPUT_BYTES) {
+    if (!artifactRef) {
+      const artifact = storeArtifact(projectPath, action.tool, output, outputBytes);
+      artifactRef = artifact ? { id: artifact.id, outputBytes: artifact.outputBytes } : undefined;
+    }
+    preview = truncateForContext(output, LOCAL_FAST_PATH_INLINE_OUTPUT_BYTES);
+  }
+
+  if (artifactRef) {
+    lines.push('', `Full output: /artifacts show ${artifactRef.id} --full (${artifactRef.outputBytes}B)`);
+  }
+  lines.push('', 'Preview:', preview);
+  return lines.join('\n');
+}
 
 export interface ToolEventPresenter {
   start(event: ToolCallEvent): void;
@@ -404,12 +937,22 @@ export class AgentChatController {
     private readonly controllerOptions: AgentChatControllerOptions = {},
   ) {}
 
+  private setLoopStats(stats: LoopStats): void {
+    this.runtime.store.setLastLoopStats(stats);
+    this.events.loopStatsUpdated?.(stats);
+  }
+
   async runInput(input: string, options: RunInputOptions = {}): Promise<void> {
     const text = input.trim();
     if (!text) return;
 
     const parsed = parseInput(text);
     if (!parsed.isCommand) {
+      const localFastPath = parseLocalFastPath(text);
+      if (localFastPath) {
+        await this.runLocalFastPath(text, localFastPath, options);
+        return;
+      }
       await this.runChat(text, options);
       return;
     }
@@ -485,6 +1028,190 @@ export class AgentChatController {
     }
   }
 
+  private async runLocalFastPath(
+    input: string,
+    action: LocalFastPathAction,
+    options: RunInputOptions = {},
+  ): Promise<void> {
+    const activeSession = this.runtime.getSession() ?? this.runtime.ensureSession() ?? loadSessionMeta(this.runtime.getSession()?.id ?? '');
+    const sessionId = activeSession?.id;
+    const turnId = traceTurnId(options.turnId);
+    const localCallId = `local-${turnId}`;
+    const start = Date.now();
+    const preWorkspace = captureWorkspaceSnapshot(this.runtime.cwd);
+    const traceArgs = buildTraceArgsDetails(this.runtime.cwd, action.tool, action.args);
+
+    if (sessionId) {
+      appendSessionMessage(sessionId, {
+        role: 'user',
+        content: input,
+        timestamp: Date.now(),
+      });
+      recordTraceEvent(this.events, sessionId, {
+        turnId,
+        type: 'turn_start',
+        inputBytes: byteLength(input),
+        localFastPathUsed: true,
+      });
+      appendWorkspaceSnapshotTrace(this.events, sessionId, turnId, 'pre_turn', preWorkspace);
+      recordTraceEvent(this.events, sessionId, {
+        turnId,
+        type: 'local_fast_path',
+        name: action.tool,
+        ...traceArgs,
+        note: compactMiddle(action.label, 160),
+      });
+    }
+    this.runtime.store.addMessage({ role: 'user', content: input });
+    this.events.setStatus(`Running local ${action.label}...`);
+
+    try {
+      const tool = getRuntimeTools().find(candidate => candidate.name === action.tool);
+      const toolContext = {
+        cwd: this.runtime.cwd,
+        config: {
+          name: this.runtime.config.name,
+          mode: this.runtime.config.mode,
+        },
+        sessionId,
+        turnId,
+      };
+      const permission = tool?.checkPermissions?.(action.args, toolContext);
+      if (permission?.behavior === 'deny' || tool?.isDestructive?.(action.args) === true) {
+        const reason = permission?.reason || 'Local fast path blocked a destructive tool request.';
+        throw new LocalFastPathBlockedError(reason);
+      }
+      if (permission?.behavior === 'ask') {
+        throw new LocalFastPathBlockedError(permission.reason || 'Local fast path requires an allow-safe command.');
+      }
+
+      if (sessionId) {
+        recordTraceEvent(this.events, sessionId, {
+          turnId,
+          type: 'tool_call',
+          name: action.tool,
+          callId: localCallId,
+          ...traceArgs,
+        });
+      }
+      const result = await executeTool(action.tool, action.args, options.abortSignal, {
+        ...toolContext,
+        sessionId,
+        turnId,
+      });
+      const duration = Date.now() - start;
+      const envelope = parseToolResultEnvelope(result);
+      const outputBytes = typeof envelope.outputBytes === 'number'
+        ? envelope.outputBytes
+        : Buffer.byteLength(result, 'utf8');
+      const assistantContent = formatLocalFastPathAssistantContent(action, result, this.runtime.cwd);
+      const stats = createLocalFastPathLoopStats({
+        finishReason: envelope.success ? 'completed' : 'failed',
+        toolCalls: 1,
+        readOnlyToolCalls: action.tool === 'exec_command' ? 0 : 1,
+        unsafeToolCalls: action.tool === 'exec_command' ? 1 : 0,
+        toolResultBytes: outputBytes,
+        modelVisibleToolBytes: 0,
+        summarizedBytes: outputBytes,
+      });
+
+      this.events.append({
+        role: envelope.success ? 'tool' : 'error',
+        title: 'local',
+        content: toolFinishContent({
+          type: 'tool_result',
+          name: action.tool,
+          args: action.args,
+          callId: localCallId,
+          result,
+          modelVisibleResult: result,
+          duration,
+          success: envelope.success,
+          error: envelope.error,
+          summary: envelope.summary,
+          outputBytes,
+        }),
+      });
+
+      this.runtime.store.addMessage({ role: 'assistant', content: assistantContent });
+      this.setLoopStats(stats);
+
+      if (sessionId) {
+        recordTraceEvent(this.events, sessionId, {
+          turnId,
+          type: 'tool_result',
+          name: action.tool,
+          callId: localCallId,
+          argsSummary: traceArgs.argsSummary,
+          argsArtifactId: traceArgs.argsArtifactId,
+          argsBytes: traceArgs.argsBytes,
+          success: envelope.success,
+          duration,
+          outputBytes,
+          modelVisibleBytes: 0,
+          error: envelope.error ? compactMiddle(envelope.error, 240) : undefined,
+        });
+        appendPostWorkspaceTrace(this.events, sessionId, turnId, this.runtime.cwd, preWorkspace);
+        recordTraceEvent(this.events, sessionId, {
+          turnId,
+          type: 'complete',
+          finishReason: stats.finishReason,
+          llmRequests: stats.llmRequests,
+          toolCalls: stats.toolCalls,
+          readOnlyToolCalls: stats.readOnlyToolCalls,
+          unsafeToolCalls: stats.unsafeToolCalls,
+          localFastPathUsed: true,
+        });
+        appendSessionMessage(sessionId, {
+          role: 'assistant',
+          content: assistantContent,
+          timestamp: Date.now(),
+        });
+        const recordedMessages = readSessionMessages(sessionId);
+        if (recordedMessages.length > 0) {
+          updateSessionSummary(sessionId, recordedMessages);
+        }
+      }
+
+      this.events.setStatus(envelope.success ? `Completed local ${action.label}` : `Failed local ${action.label}`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.events.append({ role: 'error', title: 'local', content: message });
+      this.events.setStatus('Local command failed. Ready for the next input.');
+      const assistantContent = `Local fast path failed for ${action.label}.\n\n${message}`;
+      this.runtime.store.addMessage({ role: 'assistant', content: assistantContent });
+      const finishReason: LoopFinishReason = error instanceof LocalFastPathBlockedError ? 'blocked' : 'failed';
+      const stats = createLocalFastPathLoopStats({
+        finishReason,
+        toolCalls: 0,
+      });
+      this.setLoopStats(stats);
+      if (sessionId) {
+        recordTraceEvent(this.events, sessionId, {
+          turnId,
+          type: 'error',
+          name: action.tool,
+          error: compactTraceError(error),
+        });
+        appendPostWorkspaceTrace(this.events, sessionId, turnId, this.runtime.cwd, preWorkspace);
+        recordTraceEvent(this.events, sessionId, {
+          turnId,
+          type: 'complete',
+          finishReason: stats.finishReason,
+          llmRequests: stats.llmRequests,
+          toolCalls: stats.toolCalls,
+          localFastPathUsed: true,
+          note: 'local_fast_path_failed',
+        });
+        appendSessionMessage(sessionId, {
+          role: 'assistant',
+          content: assistantContent,
+          timestamp: Date.now(),
+        });
+      }
+    }
+  }
+
   private createCommandContext(abortSignal?: AbortSignal, turnId?: number | string): CommandContext {
     return {
       cwd: this.runtime.cwd,
@@ -498,6 +1225,9 @@ export class AgentChatController {
       setSession: session => {
         this.runtime.setSession(session);
         this.events.replaceTranscript(sessionMessagesToTranscriptEntries(session.id));
+      },
+      sessionRestored: event => {
+        this.events.sessionRestored?.(event);
       },
       getSession: this.runtime.getSession,
       abortSignal,
@@ -533,9 +1263,10 @@ export class AgentChatController {
     }
 
     const abortSignal = options.abortSignal;
-    const turnId = options.turnId;
+    const turnId = traceTurnId(options.turnId);
     const activeSession = this.runtime.getSession() ?? this.runtime.ensureSession() ?? loadSessionMeta(this.runtime.getSession()?.id ?? '');
     const sessionId = activeSession?.id;
+    const preWorkspace = captureWorkspaceSnapshot(this.runtime.cwd);
     const runtimeTools = getRuntimeTools();
     const skillResolution = resolveSkillsForTurn({
       cwd: this.runtime.cwd,
@@ -553,6 +1284,13 @@ export class AgentChatController {
         timestamp: Date.now(),
         appliedSkills: appliedSkillNames.length > 0 ? appliedSkillNames : undefined,
       });
+      recordTraceEvent(this.events, sessionId, {
+        turnId,
+        type: 'turn_start',
+        inputBytes: byteLength(input),
+        note: appliedSkillNames.length > 0 ? `skills=${appliedSkillNames.join(',')}` : undefined,
+      });
+      appendWorkspaceSnapshotTrace(this.events, sessionId, turnId, 'pre_turn', preWorkspace);
     }
 
     this.runtime.store.addMessage({ role: 'user', content: input });
@@ -592,9 +1330,14 @@ export class AgentChatController {
     let finalContent = '';
     let finalUsage: { promptTokens: number; completionTokens: number } | undefined;
     let finalModel = '';
+    let pendingCompleteTrace: Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> | null = null;
+    let pendingCompleteStats: LoopStats | undefined;
+    const verificationResults: VerificationCommandResult[] = [];
     const sessionMessagesToRecord: SessionMessage[] = [];
     const assistantStream = createAssistantStreamPresenter(this.events, abortSignal);
     const toolEvents = createToolEventPresenter(this.events);
+    let checkpointSequence = 0;
+    const checkpointIds: string[] = [];
 
     const streamCallbacks: StreamCallbacks = {
       onChunk: chunk => {
@@ -622,6 +1365,15 @@ export class AgentChatController {
       });
     };
 
+    const loopBudget = resolveRuntimeLoopBudget(input, this.runtime.config, harness.toJSON());
+    let observedTurnsStarted = 0;
+    let observedLlmRequests = 0;
+    let observedToolCalls = 0;
+    let observedReadOnlyToolCalls = 0;
+    let observedUnsafeToolCalls = 0;
+    let observedToolResultBytes = 0;
+    let observedModelVisibleToolBytes = 0;
+
     try {
       for await (const event of query({
         messages,
@@ -645,17 +1397,69 @@ export class AgentChatController {
         abortSignal,
         harness,
         input,
+        loopBudget,
       })) {
         switch (event.type) {
           case 'request_start':
+            observedTurnsStarted = Math.max(observedTurnsStarted, event.turn);
+            observedLlmRequests++;
             assistantStream.discardSegment();
             this.events.setStatus(agentStepStatus(event.turn));
+            if (sessionId) {
+              recordTraceEvent(this.events, sessionId, {
+                turnId,
+                type: 'request_start',
+                model: event.model,
+                turn: event.turn,
+              });
+            }
+            break;
+          case 'prompt_assembly':
+            if (sessionId) {
+              recordTraceEvent(this.events, sessionId, {
+                turnId,
+                type: 'prompt_assembly',
+                promptModelId: event.modelId,
+                promptEstimatedTokens: event.estimatedTokens,
+                promptBudgetTokens: event.budgetTokens,
+                promptCoreTokens: event.coreTokens,
+                promptEvidenceBudgetTokens: event.evidenceBudgetTokens,
+                promptRecentTurnBudgetTokens: event.recentTurnBudgetTokens,
+                promptSections: event.sections,
+                promptIncludedEvidence: event.includedEvidence,
+                promptOmittedEvidence: event.omittedEvidence,
+                promptIncludedEvidenceCount: event.includedEvidenceCount,
+                promptOmittedEvidenceCount: event.omittedEvidenceCount,
+              });
+            }
             break;
           case 'assistant_tool_calls':
             assistantStream.ensureMessage(event.content || '');
             assistantStream.closeSegment();
             if (event.toolCalls.length > 1) {
               this.events.setStatus(runningToolsStatus(event.toolCalls.length));
+            }
+            const checkpointId = checkpointSequence === 0
+              ? turnId
+              : `${turnId}-checkpoint-${checkpointSequence + 1}`;
+            if (createPreToolCheckpoint(
+              this.events,
+              sessionId,
+              turnId,
+              checkpointId,
+              this.runtime.cwd,
+              event.toolCalls,
+            )) {
+              checkpointIds.push(checkpointId);
+              checkpointSequence++;
+            }
+            if (sessionId) {
+              recordTraceEvent(this.events, sessionId, {
+                turnId,
+                type: 'assistant_tool_calls',
+                toolCallCount: event.toolCalls.length,
+                contentBytes: byteLength(event.content || ''),
+              });
             }
             sessionMessagesToRecord.push({
               role: 'assistant',
@@ -665,11 +1469,82 @@ export class AgentChatController {
             });
             break;
           case 'tool_call':
+            observedToolCalls++;
+            {
+              const toolDefinition = skillResolution.tools.find(tool => tool.name === event.name);
+              if (toolDefinition?.isReadOnly?.(event.args) === true) {
+                observedReadOnlyToolCalls++;
+              } else {
+                observedUnsafeToolCalls++;
+              }
+            }
             assistantStream.closeSegment();
             toolEvents.start(event);
+            if (sessionId) {
+              const traceArgs = buildTraceArgsDetails(this.runtime.cwd, event.name, event.args);
+              recordTraceEvent(this.events, sessionId, {
+                turnId,
+                type: 'tool_call',
+                name: event.name,
+                callId: event.callId,
+                ...traceArgs,
+                batchCount: event.batchCount,
+                batchIndex: event.batchIndex,
+              });
+            }
+            break;
+          case 'permission_decision':
+            if (sessionId) {
+              recordTraceEvent(this.events, sessionId, {
+                turnId,
+                type: 'permission_decision',
+                name: event.name,
+                callId: event.callId,
+                argsSummary: compactToolArgs(event.args),
+                permissionBehavior: event.decision.behavior,
+                permissionApproved: event.decision.approved,
+                permissionSource: event.decision.source,
+                permissionReason: event.decision.reason
+                  ? compactMiddle(event.decision.reason, 240)
+                  : undefined,
+                permissionDuration: event.decision.duration,
+                batchCount: event.batchCount,
+                batchIndex: event.batchIndex,
+              });
+            }
             break;
           case 'tool_result': {
+            observedToolResultBytes += event.outputBytes ?? byteLength(event.result);
+            observedModelVisibleToolBytes += byteLength(event.modelVisibleResult);
             toolEvents.finish(event);
+            if (sessionId) {
+              recordTraceEvent(this.events, sessionId, {
+                turnId,
+                type: 'tool_result',
+                name: event.name,
+                callId: event.callId,
+                argsSummary: compactToolArgs(event.args),
+                success: event.success,
+                duration: event.duration,
+                outputBytes: event.outputBytes,
+                modelVisibleBytes: byteLength(event.modelVisibleResult),
+                artifactId: event.artifactRef?.id,
+                error: event.error ? compactMiddle(event.error, 240) : undefined,
+                batchCount: event.batchCount,
+                batchIndex: event.batchIndex,
+              });
+            }
+            const verificationResult = collectVerificationCommandResult({
+              toolName: event.name,
+              args: event.args,
+              success: event.success,
+              outputBytes: event.outputBytes,
+              error: event.error,
+            });
+            if (verificationResult) {
+              verificationResults.push(verificationResult);
+              appendVerificationResultTrace(this.events, sessionId, turnId, verificationResult);
+            }
             sessionMessagesToRecord.push({
               role: 'tool',
               content: event.result,
@@ -681,10 +1556,24 @@ export class AgentChatController {
           }
           case 'strategy_exhausted':
             this.events.append({ role: 'status', content: event.suggestion });
+            if (sessionId) {
+              recordTraceEvent(this.events, sessionId, {
+                turnId,
+                type: 'strategy_exhausted',
+                note: compactMiddle(event.suggestion, 240),
+              });
+            }
             break;
           case 'message':
             finalContent = event.content;
             assistantStream.ensureMessage(event.content);
+            if (sessionId) {
+              recordTraceEvent(this.events, sessionId, {
+                turnId,
+                type: 'message',
+                contentBytes: byteLength(event.content),
+              });
+            }
             if (event.content) {
               sessionMessagesToRecord.push({
                 role: 'assistant',
@@ -694,11 +1583,53 @@ export class AgentChatController {
             }
             break;
           case 'complete':
+            if (event.content && !finalContent) {
+              if (event.stats?.finishReason === 'budget_exceeded') {
+                assistantStream.replaceMessage(event.content);
+              } else {
+                assistantStream.ensureMessage(event.content);
+              }
+              sessionMessagesToRecord.push({
+                role: 'assistant',
+                content: event.content,
+                timestamp: Date.now(),
+              });
+            }
             finalContent = event.content;
             finalUsage = event.usage;
             finalModel = event.model;
             if (event.stats) {
-              this.runtime.store.setLastLoopStats(event.stats);
+              pendingCompleteStats = event.stats;
+              recordProviderTraceEvents(this.events, sessionId, turnId, event.stats);
+              pendingCompleteTrace = {
+                turnId,
+                type: 'complete',
+                model: event.model,
+                contentBytes: byteLength(event.content || ''),
+                finishReason: event.stats.finishReason,
+                llmRequests: event.stats.llmRequests,
+                toolCalls: event.stats.toolCalls,
+                readOnlyToolCalls: event.stats.readOnlyToolCalls,
+                unsafeToolCalls: event.stats.unsafeToolCalls,
+                loopBudgetSource: event.stats.loopBudgetSource,
+                loopBudgetBaseProfile: event.stats.loopBudgetBaseProfile,
+                loopBudgetMaxLlmRequests: event.stats.loopBudgetMaxLlmRequests,
+                loopBudgetMaxToolCalls: event.stats.loopBudgetMaxToolCalls,
+                loopBudgetMaxReadOnlyFragmentation: event.stats.loopBudgetMaxReadOnlyFragmentation,
+                loopBudgetMaxModelVisibleBytes: event.stats.loopBudgetMaxModelVisibleBytes,
+                loopBudgetConfigOverride: event.stats.loopBudgetConfigOverride,
+                budgetExceededReason: event.stats.budgetExceededReason,
+                continuationActions: event.stats.continuationActions,
+                continuationHint: event.stats.continuationHint,
+                localFastPathUsed: event.stats.localFastPathUsed,
+              };
+            } else {
+              pendingCompleteTrace = {
+                turnId,
+                type: 'complete',
+                model: event.model,
+                contentBytes: byteLength(event.content || ''),
+              };
             }
             break;
         }
@@ -710,12 +1641,61 @@ export class AgentChatController {
         this.events.setStatus('Interrupted.');
         removeTrailingUserMessage(this.runtime);
         if (sessionId) {
+          appendPostWorkspaceTrace(this.events, sessionId, turnId, this.runtime.cwd, preWorkspace, verificationResults);
+          recordTraceEvent(this.events, sessionId, {
+            turnId,
+            type: 'aborted',
+            note: 'aborted_after_query',
+          });
           removeLastIncompleteAssistantMessage(sessionId);
         }
         return;
       }
 
       assistantStream.closeSegment();
+
+      if (sessionId) {
+        const { profile, summary } = appendPostWorkspaceTrace(
+          this.events,
+          sessionId,
+          turnId,
+          this.runtime.cwd,
+          preWorkspace,
+          verificationResults,
+        );
+        if (shouldRecordVerificationLoopStats(profile, summary)) {
+          const stats = pendingCompleteStats ?? this.runtime.store.getSnapshot().lastLoopStats;
+          if (stats) {
+            pendingCompleteStats = withVerificationLoopStats(stats, summary);
+          }
+        }
+        if (shouldGateCompletion(summary)) {
+          const notice = formatVerificationGateNotice(summary);
+          this.events.append({
+            role: 'status',
+            title: 'verification',
+            content: notice,
+          });
+          finalContent = finalContent ? `${finalContent}\n\n${notice}` : notice;
+          appendAssistantNotice(sessionMessagesToRecord, notice);
+          if (pendingCompleteTrace) {
+            pendingCompleteTrace.finishReason = 'completion_gate';
+            pendingCompleteTrace.contentBytes = byteLength(finalContent);
+            pendingCompleteTrace.note = 'verification_incomplete';
+          }
+          const stats = pendingCompleteStats ?? this.runtime.store.getSnapshot().lastLoopStats;
+          if (stats) {
+            pendingCompleteStats = {
+              ...withVerificationLoopStats(stats, summary),
+              finishReason: 'completion_gate',
+            };
+          }
+        }
+      }
+
+      if (pendingCompleteStats) {
+        this.setLoopStats(pendingCompleteStats);
+      }
 
       if (finalContent) {
         this.runtime.store.addMessage({ role: 'assistant', content: finalContent });
@@ -737,7 +1717,11 @@ export class AgentChatController {
       });
       const harnessState = harness.toJSON();
       this.runtime.store.setState({ harnessState });
+      emitHarnessDiagnostics(this.events, harnessState);
       if (sessionId) {
+        if (pendingCompleteTrace) {
+          recordTraceEvent(this.events, sessionId, pendingCompleteTrace);
+        }
         updateSessionSkills(sessionId, appliedSkillNames);
         updateSessionHarnessState(sessionId, harnessState);
         const recordedMessages = readSessionMessages(sessionId);
@@ -752,6 +1736,12 @@ export class AgentChatController {
         this.events.setStatus('Interrupted.');
         removeTrailingUserMessage(this.runtime);
         if (sessionId) {
+          appendPostWorkspaceTrace(this.events, sessionId, turnId, this.runtime.cwd, preWorkspace, verificationResults);
+          recordTraceEvent(this.events, sessionId, {
+            turnId,
+            type: 'aborted',
+            note: 'abort_error',
+          });
           removeLastIncompleteAssistantMessage(sessionId);
         }
         return;
@@ -760,6 +1750,67 @@ export class AgentChatController {
       assistantStream.discardSegment();
       this.events.append({ role: 'error', content: formatChatError(error) });
       this.events.setStatus('Turn failed. Ready for the next input.');
+      const failedStats = error instanceof QueryLoopError
+        ? error.stats
+        : createFailedLoopStats({
+            loopBudget,
+            diagnostics: observedLlmRequests > 0 ? getLastRequestDiagnostics(this.runtime.llm) : undefined,
+            turnsStarted: observedTurnsStarted,
+            llmRequests: observedLlmRequests,
+            toolCalls: observedToolCalls,
+            readOnlyToolCalls: observedReadOnlyToolCalls,
+            unsafeToolCalls: observedUnsafeToolCalls,
+            toolResultBytes: observedToolResultBytes,
+            modelVisibleToolBytes: observedModelVisibleToolBytes,
+          });
+      this.setLoopStats(failedStats);
+      if (sessionId) {
+        recordProviderTraceEvents(this.events, sessionId, turnId, failedStats);
+        const { delta } = appendPostWorkspaceTrace(
+          this.events,
+          sessionId,
+          turnId,
+          this.runtime.cwd,
+          preWorkspace,
+          verificationResults,
+        );
+        const recoveryNotice = workspaceDeltaHasTurnChanges(delta)
+          ? formatFailureRecoveryNotice(turnId, delta, checkpointIds)
+          : undefined;
+        if (recoveryNotice) {
+          this.events.append({
+            role: 'status',
+            title: 'recovery',
+            content: recoveryNotice,
+          });
+        }
+        recordTraceEvent(this.events, sessionId, {
+          turnId,
+          type: 'error',
+          error: compactTraceError(error),
+          note: recoveryNotice,
+        });
+        recordTraceEvent(this.events, sessionId, {
+          turnId,
+          type: 'complete',
+          model: failedStats.providerFinalModel ?? this.runtime.llm.getModel(),
+          contentBytes: 0,
+          finishReason: failedStats.finishReason,
+          llmRequests: failedStats.llmRequests,
+          toolCalls: failedStats.toolCalls,
+          readOnlyToolCalls: failedStats.readOnlyToolCalls,
+          unsafeToolCalls: failedStats.unsafeToolCalls,
+          loopBudgetSource: failedStats.loopBudgetSource,
+          loopBudgetBaseProfile: failedStats.loopBudgetBaseProfile,
+          loopBudgetMaxLlmRequests: failedStats.loopBudgetMaxLlmRequests,
+          loopBudgetMaxToolCalls: failedStats.loopBudgetMaxToolCalls,
+          loopBudgetMaxReadOnlyFragmentation: failedStats.loopBudgetMaxReadOnlyFragmentation,
+          loopBudgetMaxModelVisibleBytes: failedStats.loopBudgetMaxModelVisibleBytes,
+          loopBudgetConfigOverride: failedStats.loopBudgetConfigOverride,
+          localFastPathUsed: failedStats.localFastPathUsed,
+        });
+        removeLastIncompleteAssistantMessage(sessionId);
+      }
       const history = this.runtime.store.getSnapshot().conversationHistory;
       if (history.length > 0) {
         this.runtime.store.setState({ conversationHistory: history.slice(0, -1) });

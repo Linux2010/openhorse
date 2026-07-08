@@ -232,6 +232,11 @@ export function getProjectSessionHarnessPath(projectPath: string, sessionId: str
   return join(getProjectSessionsDir(projectPath), `${sessionId}.harness.json`);
 }
 
+/** 项目内单个会话 trace sidecar 路径 */
+export function getProjectSessionTracePath(projectPath: string, sessionId: string): string {
+  return join(getProjectSessionsDir(projectPath), `${sessionId}.trace.jsonl`);
+}
+
 /** 项目 Memory 目录路径 */
 export function getProjectMemoryDir(projectPath: string): string {
   return join(getProjectDir(projectPath), 'memory');
