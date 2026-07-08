@@ -8,11 +8,14 @@ import { runningHorseLabel } from './RunningHorseIndicator';
 
 const RUNNING_HORSE_MARK = '╭◔╮▰╱╲ ·';
 
+export type ErrorLayer = 'renderer' | 'runtime' | 'provider' | 'tool' | 'session' | 'memory' | 'MCP' | 'skills';
+
 export interface StatusLineProps {
   runtime: OpenHorseUiRuntime;
   running: boolean;
   statusMessage?: string;
   width?: number;
+  errorLayer?: ErrorLayer;
 }
 
 function truncateVisual(text: string, maxWidth: number): string {
@@ -25,7 +28,7 @@ function truncateVisual(text: string, maxWidth: number): string {
   return `${result}...`;
 }
 
-export function StatusLine({ runtime, running, statusMessage, width = 80 }: StatusLineProps): JSX.Element {
+export function StatusLine({ runtime, running, statusMessage, width = 80, errorLayer }: StatusLineProps): JSX.Element {
   const snapshot = runtime.store.getSnapshot();
   const usage = snapshot.tokenUsage;
   const totalTokens = usage ? usage.promptTokens + usage.completionTokens : 0;
@@ -34,6 +37,8 @@ export function StatusLine({ runtime, running, statusMessage, width = 80 }: Stat
   const mcpStatus = mcpManager.getStatus();
   const connectedMcp = mcpStatus.filter(item => item.connected).length;
   const ctxPercent = calculateCtxPercent(totalTokens, snapshot.currentModel || snapshot.config.model);
+  const errorTag = errorLayer ? `[${errorLayer}] ` : '';
+  const baseLeft = errorLayer ? `${errorLayer} error` : (statusMessage || 'ready');
   const fullRightText = [
     `model=${snapshot.currentModel}`,
     `session=${session?.id.slice(0, 8) ?? 'none'}`,
@@ -76,11 +81,11 @@ export function StatusLine({ runtime, running, statusMessage, width = 80 }: Stat
   const rightMaxWidth = Math.max(10, Math.min(stringWidth(rightText), rightBudget));
   const rightDisplay = truncateVisual(rightText, rightMaxWidth);
   const leftMaxWidth = Math.max(8, usableWidth - stringWidth(rightDisplay) - 2);
-  const leftText = truncateVisual(statusMessage || 'ready', leftMaxWidth);
+  const leftText = truncateVisual(errorTag + baseLeft, leftMaxWidth);
 
   return (
     <Box width={usableWidth} justifyContent="space-between">
-      <Text color="gray" wrap="truncate">
+      <Text color={errorLayer ? 'red' : 'gray'} wrap="truncate">
         {leftText}
       </Text>
       <Text color="gray" wrap="truncate">

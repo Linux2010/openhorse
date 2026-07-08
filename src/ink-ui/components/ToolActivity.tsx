@@ -3,7 +3,7 @@ import { Box, Text } from 'ink';
 import stringWidth from 'string-width';
 import type { TranscriptEntry } from '../types';
 
-export type ToolActivityState = 'running' | 'success' | 'error' | 'requested';
+export type ToolActivityState = 'queued' | 'running' | 'success' | 'error' | 'skipped' | 'requested';
 
 export interface ParsedToolActivity {
   state: ToolActivityState;
@@ -11,6 +11,8 @@ export interface ParsedToolActivity {
   detail: string;
   duration?: string;
   error?: string;
+  seq?: number;
+  artifactHint?: string;
 }
 
 function takeVisualWidth(text: string, maxWidth: number): string {
@@ -55,12 +57,30 @@ export function parseToolActivity(content: string): ParsedToolActivity | null {
   const firstLine = lines[0]?.trim() ?? '';
   if (!firstLine) return null;
 
+  const queued = firstLine.match(/^Queued\s+(\S+)(?:\s+(.*))?$/u);
+  if (queued) {
+    return {
+      state: 'queued',
+      name: queued[1],
+      detail: (queued[2] ?? '').trim(),
+    };
+  }
+
   const running = firstLine.match(/^Running\s+(\S+)(?:\s+(.*))?$/u);
   if (running) {
     return {
       state: 'running',
       name: running[1],
       detail: (running[2] ?? '').trim(),
+    };
+  }
+
+  const skipped = firstLine.match(/^Skipped\s+(\S+)(?:\s+(.*))?$/u);
+  if (skipped) {
+    return {
+      state: 'skipped',
+      name: skipped[1],
+      detail: (skipped[2] ?? '').trim(),
     };
   }
 
@@ -77,27 +97,37 @@ export function parseToolActivity(content: string): ParsedToolActivity | null {
 }
 
 export function formatToolActivityLine(activity: ParsedToolActivity, width: number): string {
-  const symbol = activity.state === 'running'
-    ? '›'
-    : activity.state === 'success'
-      ? '✓'
-      : activity.state === 'error'
-        ? '✗'
-        : '•';
+  const symbol = activity.state === 'queued'
+    ? '○'
+    : activity.state === 'running'
+      ? '›'
+      : activity.state === 'success'
+        ? '✓'
+        : activity.state === 'error'
+          ? '✗'
+          : activity.state === 'skipped'
+            ? '⊘'
+            : '•';
+  const seq = activity.seq ? `#${activity.seq} ` : '';
   const duration = activity.duration ? ` (${activity.duration})` : '';
-  const prefix = `${symbol} ${activity.name}`;
+  const prefix = `${symbol} ${seq}${activity.name}`;
   const detail = activity.detail ? ` ${activity.detail}` : '';
-  return truncateVisual(`${prefix}${detail}${duration}`, width);
+  const hint = activity.artifactHint ? ` ${activity.artifactHint}` : '';
+  return truncateVisual(`${prefix}${detail}${duration}${hint}`, width);
 }
 
 function stateColor(state: ToolActivityState): string {
   switch (state) {
+    case 'queued':
+      return 'gray';
     case 'running':
       return 'cyan';
     case 'success':
       return 'green';
     case 'error':
       return 'red';
+    case 'skipped':
+      return 'yellow';
     case 'requested':
       return 'gray';
   }

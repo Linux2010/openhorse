@@ -73,7 +73,11 @@ export function SelectList({
       )}
       {items.length > maxVisibleItems ? (
         <Text color="gray" wrap="truncate">
-          {start + 1}-{Math.min(start + maxVisibleItems, items.length)} / {items.length}
+          {safeSelected + 1}/{items.length}  {start + 1}–{Math.min(Math.max(1, start + maxVisibleItems), items.length)}
+        </Text>
+      ) : items.length > 0 ? (
+        <Text color="gray" wrap="truncate">
+          {safeSelected + 1}/{items.length}  ↑↓ to navigate  type to filter
         </Text>
       ) : null}
       <Text color="gray" wrap="truncate">{truncateVisual(footer, contentWidth)}</Text>
