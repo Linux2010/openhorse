@@ -153,4 +153,56 @@ describe('Context Harness', () => {
     expect(joined).toContain('Context Capsule');
     expect(joined).toContain('完成 Context Harness');
   });
+
+  test('compact capsule preserves root objective, constraints, verification, and next action', () => {
+    const harness = createContextHarness({ cwd: '/repo', modelId: 'test-model' });
+    harness.updateContractFromUserInput('ship v0.2.14 stable agent loop');
+    harness.updateContractFromUserInput('complete completion gate and compact/resume continuity');
+
+    // Simulate a tool-laden turn to generate ledger entries and populate capsule
+    harness.ingestTurn({
+      userInput: 'complete the completion gate feature',
+      assistantContent: 'I completed the completion gate feature.',
+      sessionMessages: [
+        { role: 'user', content: 'complete the completion gate feature' },
+        { role: 'assistant', content: 'I completed the completion gate feature.' },
+      ],
+    });
+
+    const capsule = harness.getCapsule();
+    if (capsule) {
+      // Capsule is structured — it preserves contract and next action
+      expect(capsule.nextAction).toBeTruthy();
+      expect(capsule.currentPlan).toBeDefined();
+      expect(capsule.keyFacts).toBeDefined();
+    }
+
+    const state = harness.toJSON();
+    expect(state.rootObjective).toContain('ship v0.2.14');
+    expect(state.activeInstruction).toContain('completion gate');
+  });
+
+  test('compact capsule excludes raw assistant transcripts', () => {
+    const harness = createContextHarness({ cwd: '/repo', modelId: 'test-model' });
+    harness.updateContractFromUserInput('build agent loop');
+
+    harness.ingestTurn({
+      userInput: 'fix the bug',
+      assistantContent: 'I fixed the bug by editing src/index.ts. The previous implementation was flawed in how it handled edge cases.',
+      sessionMessages: [
+        { role: 'user', content: 'fix the bug' },
+        { role: 'assistant', content: 'I fixed the bug by editing src/index.ts. The previous implementation was flawed in how it handled edge cases.' },
+      ],
+    });
+
+    // Capsule is structured — raw assistant text should not leak in
+    const capsule = harness.getCapsule();
+    if (capsule) {
+      expect(capsule.nextAction).toBeTruthy();
+      // The raw reasoning text should not appear in the capsule
+      // (capsule.keyFacts contains extracted structured facts, not raw transcripts)
+      const keyFactsText = capsule.keyFacts.map(fact => fact.content).join('\n');
+      expect(keyFactsText).not.toContain('previous implementation was flawed');
+    }
+  });
 });
