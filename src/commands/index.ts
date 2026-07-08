@@ -610,6 +610,9 @@ function formatTraceEventLine(event: SessionTraceEvent): string {
         `commands=${commands.length}`,
         `files=${files.length}`,
       ];
+      if (event.verificationRisky) {
+        details.push(`risk=${WARN('high')}(${files.length} files)`);
+      }
       const commandPreview = commands.length
         ? ` cmds: ${commands.slice(0, 4).join(' && ')}${commands.length > 4 ? ' && ...' : ''}`
         : '';

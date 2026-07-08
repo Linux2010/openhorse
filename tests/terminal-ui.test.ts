@@ -1012,7 +1012,7 @@ describe('terminal UI renderer adapter', () => {
     expect(rendered).toContain('cmd=$ echo');
     expect(rendered).toContain('Authorization: [REDACTED_SECRET]');
     expect(rendered).toContain('cwd=/tmp/openhorse-terminal-renderer');
-    expect(rendered).toContain('risk=high: Command execution needs approval');
+    expect(rendered).toContain('risk=low: Command execution needs approval');
     expect(rendered).toContain('[y=yes n=no]');
     expect(rendered).not.toContain('secret-token-123456');
   });
@@ -1027,7 +1027,7 @@ describe('terminal UI renderer adapter', () => {
     expect(prompt).toContain('Allow tool edit_file?');
     expect(prompt).toContain('path=src/terminal-ui/launch.ts');
     expect(prompt).toContain('cwd=/repo');
-    expect(prompt).toContain('risk=high: approval required');
+    expect(prompt).toContain('risk=HIGH: approval required');
     expect(prompt).toContain('[y=yes n=no]');
   });
 

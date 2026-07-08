@@ -270,10 +270,10 @@ function safeFileName(filePath: string): string {
 }
 
 /**
- * TODO: Wire into createPreToolCheckpoint in chat-controller.ts to trigger
- * an automatic checkpoint when a single turn would modify ≥ threshold files.
- * This provides an extra safety net for large-scale refactoring with
- * automated rollback guidance.
+ * Returns true when a single turn modifies enough files to warrant an explicit
+ * risky-edit checkpoint with rollback guidance. Wired into createPreToolCheckpoint
+ * in chat-controller.ts, which marks the trace note 'risky_multi_file_checkpoint'
+ * and emits a user-visible rollback hint.
  */
 export function shouldCreateMultiFileCheckpoint(changedFileCount: number, threshold = 5): boolean {
   return changedFileCount >= threshold;

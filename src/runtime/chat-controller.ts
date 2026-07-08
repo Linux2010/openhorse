@@ -26,7 +26,7 @@ import type { HarnessState } from '../harness/types';
 import { executeTool, getRuntimeTools } from '../tools';
 import { parseToolResultEnvelope } from '../framework/tool-serializer';
 import { storeArtifact, truncateForContext } from '../core/tool-artifacts';
-import { createCheckpoint } from '../core/checkpoint';
+import { createCheckpoint, shouldCreateMultiFileCheckpoint } from '../core/checkpoint';
 import { resolveSkillsForTurn, hasMatchingSkill } from '../skills';
 import { buildReferencedFilesPrompt } from '../services/file-context';
 import { refreshProjectInstructions } from '../services/prompt-context';
@@ -35,6 +35,7 @@ import { captureWorkspaceSnapshot, diffWorkspaceSnapshots, type WorkspaceSnapsho
 import {
   collectVerificationCommandResult,
   formatVerificationGateNotice,
+  isRiskyEdit,
   selectVerificationProfile,
   shouldGateCompletion,
   summarizeVerificationState,
@@ -217,12 +218,13 @@ function createPreToolCheckpoint(
   checkpointId: string,
   cwd: string,
   toolCalls: NonNullable<Message['tool_calls']>,
-): boolean {
+): { created: boolean; targetCount: number; risky: boolean } {
   const targets = checkpointTargetsFromToolCalls(cwd, toolCalls);
-  if (targets.length === 0) return false;
+  if (targets.length === 0) return { created: false, targetCount: 0, risky: false };
 
+  const risky = shouldCreateMultiFileCheckpoint(targets.length);
   const checkpoint = createCheckpoint(cwd, checkpointId, targets);
-  if (!sessionId) return true;
+  if (!sessionId) return { created: true, targetCount: targets.length, risky };
 
   const relativeTargets = targets.map(target => path.relative(cwd, target));
   recordTraceEvent(events, sessionId, {
@@ -233,10 +235,10 @@ function createPreToolCheckpoint(
     checkpointFiles: checkpoint?.files.map(file => file.path) ?? [],
     workspaceFiles: relativeTargets,
     note: checkpoint
-      ? 'pre_edit_checkpoint'
+      ? (risky ? 'risky_multi_file_checkpoint' : 'pre_edit_checkpoint')
       : 'pre_edit_checkpoint_skipped',
   });
-  return true;
+  return { created: true, targetCount: targets.length, risky };
 }
 
 function byteLength(text: string): number {
@@ -354,6 +356,7 @@ function appendVerificationProfileTrace(
     type: 'verification_profile',
     verificationProfile: profile.profile,
     verificationRequired: profile.required,
+    verificationRisky: isRiskyEdit(profile.changedFiles),
     verificationCommands: compactPathList(profile.commands, 8),
     verificationChangedFiles: compactPathList(profile.changedFiles),
     note: profile.reason,
@@ -842,10 +845,11 @@ function formatLocalFastPathAssistantContent(
 export interface ToolEventPresenter {
   start(event: ToolCallEvent): void;
   finish(event: ToolResultEvent): void;
+  finalizePendingAsSkipped(reason?: string): void;
 }
 
 export function createToolEventPresenter(events: UiEventSink): ToolEventPresenter {
-  const runningToolEntries = new Map<string, string>();
+  const runningToolEntries = new Map<string, { entryId: string; name: string; args: Record<string, unknown>; batchCount?: number; batchIndex?: number }>();
 
   return {
     start(event: ToolCallEvent): void {
@@ -854,7 +858,13 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
         title: 'tool',
         content: toolStartContent(event),
       });
-      runningToolEntries.set(event.callId, entryId);
+      runningToolEntries.set(event.callId, {
+        entryId,
+        name: event.name,
+        args: event.args,
+        batchCount: event.batchCount,
+        batchIndex: event.batchIndex,
+      });
       events.toolStarted?.({
         callId: event.callId,
         name: event.name,
@@ -866,10 +876,10 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
 
     finish(event: ToolResultEvent): void {
       const content = toolFinishContent(event);
-      const existingEntryId = runningToolEntries.get(event.callId);
+      const stored = runningToolEntries.get(event.callId);
 
-      if (existingEntryId) {
-        events.finalize(existingEntryId, {
+      if (stored) {
+        events.finalize(stored.entryId, {
           role: event.success ? 'tool' : 'error',
           title: 'tool',
           content,
@@ -897,6 +907,28 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
         batchCount: event.batchCount,
         batchIndex: event.batchIndex,
       });
+    },
+
+    finalizePendingAsSkipped(reason = 'permission denied'): void {
+      for (const [callId, entry] of runningToolEntries) {
+        events.finalize(entry.entryId, {
+          role: 'tool',
+          title: 'tool',
+          content: `Skipped · ${reason}`,
+        });
+        events.toolFinished?.({
+          callId,
+          name: entry.name,
+          args: entry.args,
+          success: false,
+          skipped: true,
+          duration: 0,
+          error: reason,
+          batchCount: entry.batchCount,
+          batchIndex: entry.batchIndex,
+        });
+      }
+      runningToolEntries.clear();
     },
   };
 }
@@ -1476,16 +1508,30 @@ export class AgentChatController {
             const checkpointId = checkpointSequence === 0
               ? turnId
               : `${turnId}-checkpoint-${checkpointSequence + 1}`;
-            if (createPreToolCheckpoint(
+            const checkpointResult = createPreToolCheckpoint(
               this.events,
               sessionId,
               turnId,
               checkpointId,
               this.runtime.cwd,
               event.toolCalls,
-            )) {
+            );
+            if (checkpointResult.created) {
               checkpointIds.push(checkpointId);
               checkpointSequence++;
+            }
+            if (checkpointResult.created && checkpointResult.risky) {
+              this.events.append({
+                role: 'status',
+                title: 'checkpoint',
+                content: `Risky edit: ${checkpointResult.targetCount} files in one turn. Checkpoint ${checkpointId} created for rollback (/checkpoints restore ${checkpointId}).`,
+              });
+            } else if (checkpointResult.risky) {
+              this.events.append({
+                role: 'status',
+                title: 'checkpoint',
+                content: `Risky edit: ${checkpointResult.targetCount} files in one turn, but checkpoint creation failed. Restore any pre-existing checkpoint manually or revert via git.`,
+              });
             }
             if (sessionId) {
               recordTraceEvent(this.events, sessionId, {
@@ -1617,6 +1663,9 @@ export class AgentChatController {
             }
             break;
           case 'complete':
+            if (event.stats?.finishReason === 'blocked') {
+              toolEvents.finalizePendingAsSkipped('permission denied');
+            }
             if (event.content && !finalContent) {
               if (event.stats?.finishReason === 'budget_exceeded') {
                 assistantStream.replaceMessage(event.content);

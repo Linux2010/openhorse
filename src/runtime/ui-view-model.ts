@@ -14,6 +14,7 @@ import {
 } from './ui-events';
 import type { CommandCategory, SlashCommand } from '../commands/types';
 import { formatBytes } from '../services/format';
+import { classifyCommandSafety } from '../services/verification-profile';
 
 export type TranscriptBlockKind =
   | 'user'
@@ -252,7 +253,7 @@ export interface PermissionScopeState {
   count?: number;
 }
 
-export type PermissionRiskLevel = 'high' | 'review';
+export type PermissionRiskLevel = 'high' | 'medium' | 'low' | 'unknown';
 
 export interface PermissionRiskState {
   level: PermissionRiskLevel;
@@ -754,15 +755,19 @@ export function permissionScopeDisplayValue(scope: PermissionScopeState): string
   return 'scope=unknown';
 }
 
-function permissionRiskLevel(toolName: string): PermissionRiskLevel {
+function permissionRiskLevel(toolName: string, args: Record<string, unknown> = {}): PermissionRiskLevel {
+  if (toolName === 'exec_command' && typeof args.command === 'string') {
+    return classifyCommandSafety(args.command).risk;
+  }
   const normalized = toolName.toLowerCase();
-  if (normalized === 'exec_command') return 'high';
-  if (/(?:write|edit|delete|remove|patch|git_push)/.test(normalized)) return 'high';
-  return 'review';
+  if (/(?:write|edit|delete|remove|patch|git_push|publish)/.test(normalized)) return 'high';
+  if (/(?:read|search|list|grep|find|stat|ls|cat)/.test(normalized)) return 'low';
+  return 'medium';
 }
 
 export function permissionRiskDisplayValue(risk: PermissionRiskState): string {
-  return `${risk.level}: ${risk.reason}`;
+  const label = risk.level === 'high' ? 'HIGH' : risk.level === 'medium' ? 'med' : risk.level;
+  return `${label}: ${risk.reason}`;
 }
 
 export function createPermissionPromptState(
@@ -775,7 +780,7 @@ export function createPermissionPromptState(
     scope: permissionScopeFromArgs(request.args),
     cwd,
     risk: {
-      level: permissionRiskLevel(request.name),
+      level: permissionRiskLevel(request.name, request.args),
       reason: request.reason?.trim() || 'approval required',
     },
     options: {
@@ -925,7 +930,7 @@ export function toolActivityFromFinished(
   return {
     callId: event.callId,
     name: event.name,
-    state: event.success ? 'success' : 'error',
+    state: event.skipped ? 'skipped' : event.success ? 'success' : 'error',
     detail: detail || undefined,
     command: event.name === 'exec_command' && typeof event.args.command === 'string'
       ? event.args.command

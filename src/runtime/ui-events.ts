@@ -120,6 +120,7 @@ export interface RuntimeToolFinishedEvent {
   name: string;
   args: Record<string, unknown>;
   success: boolean;
+  skipped?: boolean;
   duration: number;
   summary?: string;
   error?: string;

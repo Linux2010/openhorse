@@ -382,7 +382,7 @@ describe('runtime UI view model', () => {
       },
       cwd: '/repo',
       risk: {
-        level: 'high',
+        level: 'low',
         reason: 'Command execution needs approval',
       },
       options: {
@@ -391,7 +391,7 @@ describe('runtime UI view model', () => {
       },
     });
     expect(permissionScopeDisplayValue(state.scope)).toBe('cmd=$ npm test -- --runInBand tests/status-command.test.ts');
-    expect(permissionRiskDisplayValue(state.risk)).toBe('high: Command execution needs approval');
+    expect(permissionRiskDisplayValue(state.risk)).toBe('low: Command execution needs approval');
   });
 
   it('creates permission prompt state for file-oriented and path-list approvals', () => {
@@ -410,7 +410,7 @@ describe('runtime UI view model', () => {
       args: { paths: ['a.ts', 'b.ts'] },
     }, '/repo');
     expect(readMany.scope).toEqual({ kind: 'paths', count: 2 });
-    expect(readMany.risk).toEqual({ level: 'review', reason: 'approval required' });
+    expect(readMany.risk).toEqual({ level: 'low', reason: 'approval required' });
     expect(permissionScopeDisplayValue(readMany.scope)).toBe('paths=2');
   });
 
@@ -870,6 +870,26 @@ describe('runtime UI view model', () => {
       '✗ read_file src/index.ts (12ms)',
       '  Full output: /artifacts show read_file-abc123 --full (1.2 KB)',
       'Error: failed to read',
+      '  Details: /last-tool or /trace latest',
+    ].join('\n'));
+  });
+
+  it('formats skipped tool activity for permission-denied tools', () => {
+    const event: RuntimeToolFinishedEvent = {
+      callId: 'call-3',
+      name: 'write_file',
+      args: {},
+      success: false,
+      skipped: true,
+      duration: 0,
+      error: 'permission denied',
+    };
+
+    const activity = toolActivityFromFinished(event);
+    expect(activity.state).toBe('skipped');
+    expect(formatToolActivityTranscript(activity)).toBe([
+      'Skipped write_file',
+      'Error: permission denied',
       '  Details: /last-tool or /trace latest',
     ].join('\n'));
   });

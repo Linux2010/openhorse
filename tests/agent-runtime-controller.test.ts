@@ -804,7 +804,7 @@ describe('AgentRuntimeController', () => {
           session = nextSession;
         }),
       });
-      const { events, loopStats, traceEvents } = createEvents();
+      const { events, appended, loopStats, traceEvents } = createEvents();
       const controller = new AgentChatController(runtime, events);
 
       await expect(controller.runInput('read repeatedly', { turnId: 'turn-budget' }))
@@ -878,6 +878,11 @@ describe('AgentRuntimeController', () => {
           ],
         }),
       ]));
+      const budgetNotice = appended.find(entry => entry.role === 'status' && entry.title === 'budget');
+      expect(budgetNotice).toBeDefined();
+      expect(budgetNotice?.content).toContain('Loop budget reached');
+      expect(budgetNotice?.content).toContain('Progress:');
+      expect(budgetNotice?.content).toContain('Next:');
     });
   });
 
@@ -2593,6 +2598,80 @@ describe('AgentRuntimeController', () => {
     });
   });
 
+  it('flags risky multi-file checkpoint when a turn modifies 5+ files', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      mkdirSync(join(projectDir, 'src'), { recursive: true });
+      execFileSync('git', ['-C', projectDir, 'init'], { stdio: 'ignore' });
+      writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+        scripts: { build: 'node -e "process.exit(0)"' },
+      }), 'utf-8');
+      const files = ['a', 'b', 'c', 'd', 'e'];
+      for (const name of files) {
+        writeFileSync(join(projectDir, 'src', `${name}.ts`), `export const ${name} = 1;\n`, 'utf-8');
+      }
+
+      const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+      const store = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
+      const toolCalls = files.map(name => ({
+        id: `call-write-${name}`,
+        type: 'function' as const,
+        function: {
+          name: 'write_file',
+          arguments: JSON.stringify({ path: `src/${name}.ts`, content: `export const ${name} = 2;\n` }),
+        },
+      }));
+      const llm = {
+        getModel: jest.fn(() => 'test-model'),
+        chatStream: jest.fn()
+          .mockResolvedValueOnce({
+            content: '',
+            model: 'test-model',
+            toolCalls,
+            usage: { promptTokens: 10, completionTokens: 1 },
+          })
+          .mockResolvedValueOnce({
+            content: 'updated all files',
+            model: 'test-model',
+            usage: { promptTokens: 12, completionTokens: 2 },
+          }),
+      };
+      let session: SessionMeta | null = null;
+      const runtime = createRuntime({
+        cwd: projectDir,
+        config,
+        store,
+        llm: llm as any,
+        isConfigured: true,
+        ensureSession: jest.fn(() => {
+          session ??= createSession(projectDir, 'test-model');
+          return session;
+        }),
+        getSession: jest.fn(() => session),
+        setSession: jest.fn(nextSession => {
+          session = nextSession;
+        }),
+      });
+      const { events, appended } = createEvents();
+      const controller = new AgentChatController(runtime, events);
+
+      await expect(controller.runInput('update five files', { turnId: 'turn-risky' }))
+        .resolves.toBeUndefined();
+
+      expect(session).not.toBeNull();
+      const traceEvents = readSessionTraceEvents(session!.id);
+      const checkpointEvent = traceEvents.find(event => event.type === 'checkpoint');
+      expect(checkpointEvent).toMatchObject({
+        note: 'risky_multi_file_checkpoint',
+        checkpointFileCount: 5,
+      });
+      const verificationProfileEvent = traceEvents.find(event => event.type === 'verification_profile');
+      expect(verificationProfileEvent?.verificationRisky).toBe(true);
+      const riskyNotice = appended.find(entry => entry.role === 'status' && entry.title === 'checkpoint');
+      expect(riskyNotice?.content).toContain('Risky edit');
+      expect(riskyNotice?.content).toContain('5 files');
+    });
+  });
+
   it('records verification profile trace after changed-file turns', async () => {
     await withTempConfig(async ({ projectDir }) => {
       mkdirSync(join(projectDir, 'src'), { recursive: true });
@@ -3279,7 +3358,10 @@ describe('AgentRuntimeController', () => {
         }),
       });
       const { events, traceEvents } = createEvents();
-      const controller = new AgentChatController(runtime, events);
+      const verificationStates: Array<'pending' | 'running' | 'passed' | 'failed' | 'gated'> = [];
+      const controller = new AgentChatController(runtime, events, {
+        onVerificationStateChange: state => verificationStates.push(state),
+      });
 
       await expect(controller.runInput('modify src/index.ts', { turnId: 'turn-gate-no-verify' })).resolves.toBeUndefined();
 
@@ -3321,6 +3403,11 @@ describe('AgentRuntimeController', () => {
 
       const assistantMessage = readSessionMessages(session!.id).at(-1);
       expect(assistantMessage?.content).toContain('Verification Gate');
+
+      // verificationState is wired through the chat flow: 'running' when verification
+      // is required, then 'gated' when completion is blocked.
+      expect(verificationStates).toContain('running');
+      expect(verificationStates).toContain('gated');
     });
   });
 

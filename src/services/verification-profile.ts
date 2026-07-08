@@ -97,10 +97,10 @@ export function classifyCommandSafety(command: string): CommandSafetyClassificat
 }
 
 /**
- * TODO: Wire into AgentChatController.runChat to gate multi-file edits
- * before execution. When a tool-call batch would modify ≥ threshold files,
- * the controller should emit a risk-level event and optionally require
- * additional permission confirmation.
+ * Returns true when a turn modifies enough files to be flagged as a risky edit.
+ * Wired into appendVerificationProfileTrace in chat-controller.ts, which records
+ * `verificationRisky` on the verification_profile trace event so auditors can
+ * spot large-scale refactors that deserve stricter review.
  */
 export function isRiskyEdit(changedFiles: string[], threshold = 5): boolean {
   return changedFiles.length >= threshold;

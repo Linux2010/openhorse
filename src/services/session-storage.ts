@@ -229,6 +229,7 @@ export interface SessionTraceEvent {
   workspaceResolvedByTurn?: string[];
   verificationProfile?: string;
   verificationRequired?: boolean;
+  verificationRisky?: boolean;
   verificationCommands?: string[];
   verificationChangedFiles?: string[];
   verificationCommand?: string;
