@@ -43,6 +43,25 @@ describe('CostTracker', () => {
       // cost = (1000 * 1 + 1000 * 5) / 1M = 6000 / 1M = $0.006
       expect(record.estimatedCost).toBeCloseTo(0.006, 5);
     });
+
+    test('prices canonical catalog models without falling back to unknown defaults', () => {
+      const opus = tracker.record(
+        { promptTokens: 1000, completionTokens: 1000 },
+        { model: 'claude-opus-4-8' },
+      );
+      const qwen = tracker.record(
+        { promptTokens: 1000, completionTokens: 1000 },
+        { model: 'qwen3.7-plus' },
+      );
+      const minimax = tracker.record(
+        { promptTokens: 1000, completionTokens: 1000 },
+        { model: 'MiniMax-M2.5' },
+      );
+
+      expect(opus.estimatedCost).toBeCloseTo(0.09, 5);
+      expect(qwen.estimatedCost).toBeCloseTo(0.0025, 5);
+      expect(minimax.estimatedCost).toBeCloseTo(0.0025, 5);
+    });
   });
 
   describe('getStats', () => {

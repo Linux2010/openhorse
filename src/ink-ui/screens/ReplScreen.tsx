@@ -1,14 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Box, Static, Text, useApp, useInput, useStdout } from 'ink';
 import type { DOMElement } from 'ink/build/dom';
-import { existsSync, readdirSync, statSync } from 'fs';
-import { dirname, join, relative, resolve } from 'path';
 import { getCommandCategoryLabel, getCommands, getVisibleCommands } from '../../commands';
 import { getModeDisplayText } from '../../commands/types';
 import { AgentRuntimeController } from '../../runtime/agent-runtime-controller';
 import { resolveUiRendererCapabilities } from '../../runtime/ui-events';
+import {
+  createCommandPickerState,
+  createEditPreviewPickerState,
+  createFilePickerState,
+  createPermissionDecisionPickerState,
+  getFileMentionQuery,
+} from '../../runtime/ui-view-model';
 import { addToInputHistory, getInputHistory } from '../../services/global-config';
 import { formatBytes } from '../../services/format';
+import { matchFiles } from '../../services/file-glob';
 import type { SessionMeta } from '../../services/session-storage';
 import { NativeCursor } from '../components/NativeCursor';
 import { PromptInput } from '../components/PromptInput';
@@ -50,70 +56,34 @@ type StaticTranscriptItem =
   | (TranscriptEntry & { type: 'entry' });
 
 export function visibleCommandItems(input: string): SelectListItem[] {
-  const query = input.startsWith('/') ? input.slice(1).toLowerCase() : '';
-  return getVisibleCommands()
-    .filter(command => {
-      if (!query) return true;
-      return command.name.startsWith(query) || command.aliases?.some(alias => alias.startsWith(query));
-    })
-    .sort((a, b) => commandMatchRank(a, query) - commandMatchRank(b, query))
-    .map(command => ({
-      value: command.name,
-      label: `/${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ''}${command.aliases?.length ? ` (${command.aliases.join(', ')})` : ''}`,
-      description: `${getCommandCategoryLabel(command.category)}  ${command.description}`,
-    }));
-}
-
-function commandMatchRank(command: { name: string; aliases?: string[] }, query: string): number {
-  if (!query) return 0;
-  const name = command.name.toLowerCase();
-  const aliases = command.aliases?.map(alias => alias.toLowerCase()) ?? [];
-  if (name === query) return 0;
-  if (aliases.some(alias => alias === query)) return 1;
-  if (name.startsWith(query)) return 2;
-  if (aliases.some(alias => alias.startsWith(query))) return 3;
-  return 4;
+  return createCommandPickerState({
+    input,
+    commands: getVisibleCommands(),
+    categoryLabel: getCommandCategoryLabel,
+  }).visibleItems.map(item => ({
+    value: item.value,
+    label: item.label,
+    description: item.description,
+  }));
 }
 
 export function getFileQuery(input: string): { base: string; query: string } | null {
-  const match = input.match(/(^|\s)@([^\s]*)$/);
-  if (!match || match.index === undefined) return null;
-  const atIndex = match.index + match[1].length;
-  return {
-    base: input.slice(0, atIndex),
-    query: match[2] ?? '',
-  };
+  return getFileMentionQuery(input);
 }
 
 export function visibleFileItems(cwd: string, input: string): SelectListItem[] {
   const fileQuery = getFileQuery(input);
   if (!fileQuery) return [];
-
-  const rawQuery = fileQuery.query;
-  const queryDir = rawQuery.endsWith('/') ? rawQuery : dirname(rawQuery);
-  const prefix = rawQuery.endsWith('/') ? '' : rawQuery.split('/').pop() ?? '';
-  const displayDir = queryDir === '.' ? '' : queryDir;
-  const absoluteDir = resolve(cwd, displayDir || '.');
-
-  if (!existsSync(absoluteDir)) return [];
-
-  try {
-    return readdirSync(absoluteDir)
-      .filter(name => !prefix || name.toLowerCase().startsWith(prefix.toLowerCase()))
-      .slice(0, 80)
-      .map(name => {
-        const absolute = join(absoluteDir, name);
-        const isDir = statSync(absolute).isDirectory();
-        const rel = relative(cwd, absolute) || name;
-        return {
-          value: isDir ? `${rel}/` : rel,
-          label: `${isDir ? 'dir ' : 'file'} ${rel}${isDir ? '/' : ''}`,
-          description: isDir ? 'directory' : 'file',
-        };
-      });
-  } catch {
-    return [];
-  }
+  const state = createFilePickerState({
+    input,
+    files: matchFiles(fileQuery.query, cwd, { limit: 80 }),
+    maxVisibleItems: 80,
+  });
+  return state?.visibleItems.map(item => ({
+    value: item.value,
+    label: item.label,
+    description: item.description,
+  })) ?? [];
 }
 
 function sessionTitle(session: SessionMeta): string {
@@ -133,34 +103,24 @@ export function sessionItems(request: SessionPickerRequest): SelectListItem[] {
   }));
 }
 
-function compactPermissionArgs(args: Record<string, unknown>): string {
-  for (const key of ['path', 'file_path', 'file', 'cwd', 'command', 'pattern', 'query', 'url', 'target', 'sessionId']) {
-    const value = args[key];
-    if (typeof value === 'string') {
-      return value.length > 72 ? `${value.slice(0, 69)}...` : value;
-    }
-  }
-  const firstString = Object.values(args).find(value => typeof value === 'string');
-  if (typeof firstString === 'string') {
-    return firstString.length > 72 ? `${firstString.slice(0, 69)}...` : firstString;
-  }
-  return '';
+export function permissionItems(request: ToolPermissionRequest): SelectListItem[] {
+  return createPermissionDecisionPickerState(request).visibleItems.map(item => ({
+    value: item.value,
+    label: item.label,
+    description: item.description,
+  }));
 }
 
-export function permissionItems(request: ToolPermissionRequest): SelectListItem[] {
-  const detail = compactPermissionArgs(request.args);
-  return [
-    {
-      value: 'allow',
-      label: `Allow ${request.name}`,
-      description: [detail, request.reason].filter(Boolean).join('  '),
-    },
-    {
-      value: 'deny',
-      label: `Deny ${request.name}`,
-      description: 'Do not run this tool call',
-    },
-  ];
+export function editPreviewTitle(request: EditPreviewRequest): string {
+  return createEditPreviewPickerState({ request }).title;
+}
+
+export function editPreviewItems(request: EditPreviewRequest): SelectListItem[] {
+  return createEditPreviewPickerState({ request }).visibleItems.map(item => ({
+    value: item.value,
+    label: item.label,
+    description: item.description,
+  }));
 }
 
 export function normalizePastedInput(value: string): string {
@@ -257,6 +217,7 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
     runtime,
     events,
     uiCapabilities: resolveUiRendererCapabilities(undefined, 'ink'),
+    uiRenderer: 'ink',
     exitConfirmWindowMs: 5000,
     useRuntimeToolPermissions: true,
     beforeTurn: () => setStatusMessage(''),
@@ -683,12 +644,8 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
 
       {overlay?.type === 'edit' ? (
         <SelectList
-          title={`Edit Preview: ${overlay.request.path}`}
-          items={overlay.request.candidates.map(c => ({
-            label: `line ${c.line}: ${c.match.slice(0, 50)}${c.match.length > 50 ? '...' : ''}`,
-            value: `${c.line}`,
-            description: `→ ${overlay.request.newString.slice(0, 40)}${overlay.request.newString.length > 40 ? '...' : ''}`,
-          }))}
+          title={editPreviewTitle(overlay.request)}
+          items={editPreviewItems(overlay.request)}
           selectedIndex={overlay.selectedIndex}
           maxVisibleItems={maxOverlayItems}
           footer="↑↓ scroll  PgUp/PgDn  Enter/Esc close"

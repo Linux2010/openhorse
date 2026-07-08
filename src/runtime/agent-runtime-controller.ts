@@ -10,9 +10,11 @@ import {
   createAgentRuntimeEventSinkFromUiEvents,
   createUiEventSinkFromAgentRuntimeEvents,
 } from './agent-runtime-protocol';
+import { permissionPendingStatus } from './agent-status';
 import { AgentChatController, type AgentChatControllerOptions, type RunInputOptions } from './chat-controller';
 import { resolveUiRendererCapabilities } from './ui-events';
 import type { OpenHorseUiRuntime, ToolPermissionRequest, TranscriptAppendEntry, UiEventSink, UiRendererCapabilities } from './ui-events';
+import type { CommandUiRenderer } from '../commands/types';
 import { TurnController, type TurnControllerOptions } from './turn-controller';
 
 export type {
@@ -40,6 +42,8 @@ export interface AgentRuntimeControllerOptions extends TurnControllerOptions {
   runner?: AgentRuntimeRunner;
   /** Renderer presentation capabilities passed into command execution. */
   uiCapabilities?: UiRendererCapabilities;
+  /** Active renderer adapter identity for renderer-layer diagnostics. */
+  uiRenderer?: CommandUiRenderer;
   chatOptions?: AgentChatControllerOptions;
   echoSubmittedInput?: boolean;
   runningStatus?: string | ((input: string) => string);
@@ -78,8 +82,6 @@ function resumeSessionInput(sessionId: string, allProjects?: boolean): string {
   return `/resume ${sessionId}${allProjects ? ' --all' : ''}`;
 }
 
-const EVENT_RENDERER_CAPABILITIES = resolveUiRendererCapabilities(undefined, 'terminal');
-
 /**
  * UI-independent turn runner for interactive OpenHorse surfaces.
  *
@@ -111,6 +113,14 @@ export class AgentRuntimeController {
 
   hasActiveTurn(): boolean {
     return this.turnController.hasActiveTurn();
+  }
+
+  setVerificationState(state: 'pending' | 'running' | 'passed' | 'failed' | 'gated'): void {
+    this.turnController.setVerificationState(state);
+  }
+
+  getVerificationState(): 'pending' | 'running' | 'passed' | 'failed' | 'gated' | undefined {
+    return this.turnController.getVerificationState();
   }
 
   clearExitIntent(): void {
@@ -244,7 +254,7 @@ export class AgentRuntimeController {
       this.options.onTurnError(error);
     } else {
       const message = error instanceof Error ? error.message : String(error);
-      this.emitAppend({ role: 'error', content: `Error: ${message}` });
+      this.emitAppend({ role: 'error', content: `[RUNTIME] Error: ${message}`, errorLayer: 'runtime' });
     }
 
     this.options.runtime.store.setProcessing(false);
@@ -290,6 +300,7 @@ export class AgentRuntimeController {
 
       this.pendingPermissions.set(id, finish);
       request.abortSignal?.addEventListener('abort', onAbort, { once: true });
+      this.emitStatus(permissionPendingStatus(request.name));
       this.eventSink.emit({ type: 'permission_requested', request: runtimeRequest });
     });
   }
@@ -310,16 +321,21 @@ export class AgentRuntimeController {
   }
 
   private createChatOptions(): AgentChatControllerOptions | undefined {
+    const resolvedRenderer = this.options.chatOptions?.uiRenderer ?? this.options.uiRenderer;
     const uiCapabilities = {
-      ...EVENT_RENDERER_CAPABILITIES,
+      ...resolveUiRendererCapabilities(undefined, resolvedRenderer),
       ...(this.options.uiCapabilities ?? {}),
       ...(this.options.chatOptions?.uiCapabilities ?? {}),
     };
     const chatOptions: AgentChatControllerOptions = {
       uiCapabilities,
+      uiRenderer: resolvedRenderer,
+      onVerificationStateChange: state => this.turnController.setVerificationState(state),
       ...(this.options.chatOptions ?? {}),
     };
     chatOptions.uiCapabilities = uiCapabilities;
+    chatOptions.uiRenderer = chatOptions.uiRenderer ?? resolvedRenderer;
+    chatOptions.onVerificationStateChange = chatOptions.onVerificationStateChange ?? (state => this.turnController.setVerificationState(state));
     if (this.options.useRuntimeToolPermissions && !chatOptions.confirmToolUse) {
       chatOptions.confirmToolUse = request => this.requestToolPermission(request);
     }

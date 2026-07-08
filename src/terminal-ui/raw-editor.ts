@@ -47,6 +47,7 @@ export class RawTerminalEditor {
   private historyDraft = '';
   private running = false;
   private wasRaw = false;
+  private resizeListenerAttached = false;
 
   constructor(private readonly options: RawTerminalEditorOptions) {
     this.input = options.input ?? process.stdin;
@@ -66,12 +67,14 @@ export class RawTerminalEditor {
       this.output.write(BRACKETED_PASTE_ENABLE);
     }
     this.input.on('data', this.handleData);
+    this.attachResizeListener();
   }
 
   stop(): void {
     if (!this.running) return;
     this.running = false;
     this.input.off('data', this.handleData);
+    this.detachResizeListener();
     if (this.output.isTTY !== false) {
       this.output.write(BRACKETED_PASTE_DISABLE);
     }
@@ -155,6 +158,35 @@ export class RawTerminalEditor {
   private readonly handleData = (chunk: Buffer | string): void => {
     this.feed(chunk);
   };
+
+  private readonly handleResize = (): void => {
+    if (!this.running) return;
+    this.render();
+  };
+
+  private attachResizeListener(): void {
+    if (this.resizeListenerAttached) return;
+    const output = this.output as RawOutputStream & {
+      on?: (event: string, listener: () => void) => unknown;
+    };
+    if (typeof output.on !== 'function') return;
+    output.on('resize', this.handleResize);
+    this.resizeListenerAttached = true;
+  }
+
+  private detachResizeListener(): void {
+    if (!this.resizeListenerAttached) return;
+    const output = this.output as RawOutputStream & {
+      off?: (event: string, listener: () => void) => unknown;
+      removeListener?: (event: string, listener: () => void) => unknown;
+    };
+    if (typeof output.off === 'function') {
+      output.off('resize', this.handleResize);
+    } else if (typeof output.removeListener === 'function') {
+      output.removeListener('resize', this.handleResize);
+    }
+    this.resizeListenerAttached = false;
+  }
 
   private applyEvent(event: TuiInputEvent): void {
     if (event.type === 'text' || event.type === 'paste') {

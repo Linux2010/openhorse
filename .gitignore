@@ -12,6 +12,7 @@ docs/codex/*
 !docs/codex/v0.2.12-runtime-reliability-plan.md
 !docs/codex/v0.2.13-agent-loop-frequency-optimization-plan.md
 !docs/codex/agent-loop-efficiency-optimization-plan.md
+!docs/codex/v0.2.14-targets-remaining-work.md
 !docs/targets/
 !docs/targets/**
 coverage/

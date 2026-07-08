@@ -8,7 +8,7 @@
 import type { OpenHorseRuntime } from '../init';
 import type { Store } from '../framework/store';
 import type { LLMService } from '../services/llm';
-import type { OpenHorseCLIConfig } from '../services/config';
+import type { OpenHorseCLIConfig, UIRenderer } from '../services/config';
 import type { SessionMeta } from '../services/session-storage';
 import type {
   EditPreviewRequest,
@@ -20,6 +20,8 @@ import type {
 // ============================================================================
 // 类型定义 (continued)
 // ============================================================================
+
+export type CommandUiRenderer = UIRenderer | 'print';
 
 /** 命令执行上下文 */
 export interface CommandContext {
@@ -46,6 +48,8 @@ export interface CommandContext {
   writeOutput?: (text: string) => void;
   /** Write one line while preserving the live input frame, when supported by the UI. */
   writeLine?: (text?: string) => void;
+  /** Active renderer adapter identity, including non-config renderers such as print mode. */
+  uiRenderer?: CommandUiRenderer;
   /** Renderer adapter capabilities. Business commands should prefer these over renderer-name checks. */
   uiCapabilities?: UiRendererCapabilities;
 }

@@ -15,11 +15,14 @@ import {
   type CommandResult,
   type PermissionMode,
 } from './types';
-import { resolveUiRendererCapabilities } from '../runtime/ui-events';
+import {
+  createModelPickerState,
+  createStatusSnapshot,
+} from '../runtime/ui-view-model';
 import type { Task } from '../core/agent';
 import { TaskManager, CreateTaskOptions } from '../services/task-manager';
 import { AgentRunner } from '../services/agent-runner';
-import { isConfigured } from '../services/config';
+import { isBetaUIRenderer, isConfigured } from '../services/config';
 import { createSpinner, toolLine } from '../ui/box';
 import { createStreamRenderer, type StreamMarkdownRenderer } from '../ui/stream-markdown';
 import { showProgress, hideProgress, showToolProgress } from '../ui/progress';
@@ -66,6 +69,12 @@ import { loadProjectInstructionFiles } from '../services/project-instructions';
 import { refreshProjectInstructions } from '../services/prompt-context';
 import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from '../services/doctor';
 import { resolveModelContext } from '../services/model-context';
+import {
+  getModelCatalogAliases,
+  getModelCatalogEntry,
+  listModelCatalogEntries,
+  resolveModelAlias,
+} from '../services/model-catalog';
 import { collectWorkspaceDiff, formatWorkspaceDiff } from '../services/workspace-diff';
 import { createCommitPlan, formatCommitPlan } from '../services/commit-plan';
 import { findArtifact, listArtifacts, retrieveArtifact } from '../core/tool-artifacts';
@@ -77,7 +86,7 @@ import {
   formatStorageReport,
   repairProjectMetadata,
 } from '../services/storage-maintenance';
-import { agentStepStatus, runningToolsStatus } from '../runtime/agent-status';
+import { agentStepStatus, compactStatus, runningToolsStatus } from '../runtime/agent-status';
 import { resolveRuntimeLoopBudget } from '../runtime/loop-budget';
 
 // ============================================================================
@@ -104,7 +113,10 @@ const CATEGORY_ORDER: CommandCategory[] = [
 ];
 
 function commandUICapabilities(ctx: CommandContext) {
-  return resolveUiRendererCapabilities(ctx.uiCapabilities);
+  return createStatusSnapshot({
+    renderer: ctx.uiRenderer ?? ctx.config.ui?.renderer ?? 'terminal',
+    capabilities: ctx.uiCapabilities,
+  }).renderer.capabilities;
 }
 
 function formatTokenCount(tokens: number): string {
@@ -120,6 +132,26 @@ function formatThreshold(value: number): string {
 function formatDurationMs(ms: number): string {
   if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
   return `${Math.round(ms)}ms`;
+}
+
+function formatRendererStatus(ctx: CommandContext): string {
+  const snapshot = createStatusSnapshot({
+    renderer: ctx.uiRenderer ?? ctx.config.ui?.renderer ?? 'terminal',
+    capabilities: ctx.uiCapabilities,
+  });
+  const status = snapshot.renderer.status === 'beta' || isBetaUIRenderer(snapshot.renderer.name)
+    ? WARN('beta')
+    : snapshot.renderer.status === 'stable'
+      ? SUCCESS('stable')
+      : snapshot.renderer.status === 'non-interactive'
+        ? DIM('non-interactive')
+      : DIM('custom');
+
+  return `${BRAND(snapshot.renderer.name)} ${status} ${DIM(snapshot.renderer.capabilityLabels.join(', '))}`;
+}
+
+function formatModelAliasHelp(): string {
+  return Object.keys(getModelCatalogAliases()).sort().join(', ');
 }
 
 function formatLoopBudgetSource(stats: LoopStats): string {
@@ -337,6 +369,7 @@ function showStatus(ctx: CommandContext): CommandResult {
   console.log(`  Model      ${BRAND(modelId)}`);
   console.log(`  Context    ${DIM(`${formatTokenCount(modelContext.contextWindow)} tokens (${modelContext.source}${modelContext.source === 'fuzzy' ? `:${modelContext.matchedId}` : ''})`)}`);
   console.log(`  Compact    ${compactStats.enabled ? SUCCESS('auto') : WARN('off')} ${DIM(`predict ${formatThreshold(compactStats.predictiveCompactThreshold)}, hard ${formatThreshold(compactStats.threshold)}, used ${compactStats.ctxPercent}%`)}`);
+  console.log(`  Renderer   ${formatRendererStatus(ctx)}`);
   console.log();
   console.log(`  Agents     ${SUCCESS(brainStatus.agents.length)} registered`);
   console.log(`  Tasks      ${brainStatus.pendingTasks} pending (${brainStatus.strategy} strategy)`);
@@ -577,6 +610,9 @@ function formatTraceEventLine(event: SessionTraceEvent): string {
         `commands=${commands.length}`,
         `files=${files.length}`,
       ];
+      if (event.verificationRisky) {
+        details.push(`risk=${WARN('high')}(${files.length} files)`);
+      }
       const commandPreview = commands.length
         ? ` cmds: ${commands.slice(0, 4).join(' && ')}${commands.length > 4 ? ' && ...' : ''}`
         : '';
@@ -646,6 +682,149 @@ function handleTrace(ctx: CommandContext, args: string = ''): CommandResult {
   }
   console.log();
   console.log(DIM('Trace stores metadata only; full transcript and tool output stay in session/artifacts.'));
+  return { success: true };
+}
+
+function latestToolTrace(events: SessionTraceEvent[]): {
+  call?: SessionTraceEvent;
+  result?: SessionTraceEvent;
+} | null {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index];
+    if (event.type !== 'tool_result' && event.type !== 'tool_call') continue;
+
+    const callId = event.callId;
+    const result = event.type === 'tool_result' ? event : undefined;
+    const call = event.type === 'tool_call'
+      ? event
+      : callId
+        ? events.slice(0, index).reverse().find(candidate =>
+          candidate.type === 'tool_call' && candidate.callId === callId
+        )
+        : undefined;
+
+    return { call, result };
+  }
+  return null;
+}
+
+function parseLastToolArgs(args: string = ''): { full: boolean; preview: boolean } {
+  const parts = args.trim().split(/\s+/).filter(Boolean);
+  return {
+    full: parts.includes('--full'),
+    preview: !parts.includes('--no-preview'),
+  };
+}
+
+function printLastToolArtifactPreview(
+  projectPath: string,
+  label: string,
+  artifactId: string | undefined,
+  full: boolean,
+): void {
+  if (!artifactId) return;
+
+  const artifact = findArtifact(projectPath, artifactId);
+  if (!artifact) {
+    console.log(`  ${label} preview ${DIM(`artifact not found or ambiguous: ${artifactId}`)}`);
+    return;
+  }
+
+  const content = retrieveArtifact(artifact.path);
+  if (content == null) {
+    console.log(`  ${label} preview ${DIM(`artifact cannot be read: ${artifact.id}`)}`);
+    return;
+  }
+
+  const redacted = redactTraceText(content);
+  const maxPreviewBytes = 4 * 1024;
+  const shouldTruncate = !full && Buffer.byteLength(redacted, 'utf8') > maxPreviewBytes;
+  const preview = shouldTruncate
+    ? Buffer.from(redacted, 'utf8').subarray(0, maxPreviewBytes).toString('utf8')
+    : redacted;
+
+  console.log(`  ${label} preview`);
+  console.log(`  ${DIM('─'.repeat(40))}`);
+  for (const line of preview.split('\n')) {
+    console.log(`  ${line}`);
+  }
+  if (shouldTruncate) {
+    console.log(`  ${DIM(`... preview truncated at ${formatBytes(maxPreviewBytes)}. Use /last-tool --full or /artifacts show ${artifact.id} --full.`)}`);
+  }
+}
+
+function lastToolInputLabel(toolName: string): string {
+  return toolName === 'exec_command' ? 'Command' : 'Args';
+}
+
+function lastToolField(label: string): string {
+  return label.padEnd(13, ' ');
+}
+
+function handleLastTool(ctx: CommandContext, args: string = ''): CommandResult {
+  const options = parseLastToolArgs(args);
+  const session = ctx.getSession?.() ?? (ctx.sessionId ? loadSessionMeta(ctx.sessionId) : null);
+  if (!session) {
+    console.log(ERROR('No active session.'));
+    console.log(DIM('Use /resume <session-id> first, or start a chat turn to create a session.'));
+    return { success: false };
+  }
+
+  const events = readSessionTraceEvents(session.id);
+  const latest = latestToolTrace(events);
+  if (!latest) {
+    console.log(DIM(`No tool trace events recorded for session ${session.id.slice(0, 8)} yet.`));
+    return { success: true };
+  }
+
+  const call = latest.call;
+  const result = latest.result;
+  const source = result ?? call;
+  const argsSource = call ?? result;
+  const name = source?.name ?? 'tool';
+  const inputLabel = lastToolInputLabel(name);
+  const callId = source?.callId ?? call?.callId;
+  const status = result ? (result.success === false ? ERROR('error') : SUCCESS('ok')) : WARN('running');
+
+  console.log(HEADER('Last Tool'));
+  console.log(DIM('─'.repeat(40)));
+  console.log(`  Tool        ${ACCENT(name)}`);
+  console.log(`  Turn        ${DIM(source?.turnId ?? 'unknown')}`);
+  if (callId) console.log(`  Call        ${DIM(callId)}`);
+  console.log(`  Status      ${status}`);
+  if (typeof result?.duration === 'number') {
+    console.log(`  Time        ${DIM(formatDurationMs(result.duration))}`);
+  }
+
+  if (argsSource?.argsSummary) {
+    console.log(`  ${lastToolField(inputLabel)}${DIM(redactTraceText(argsSource.argsSummary))}`);
+  }
+  if (argsSource?.argsArtifactId) {
+    const size = typeof argsSource.argsBytes === 'number' ? ` (${formatBytes(argsSource.argsBytes)})` : '';
+    console.log(`  ${lastToolField(`${inputLabel} full`)}${DIM(`/artifacts show ${argsSource.argsArtifactId} --full${size}`)}`);
+  }
+
+  if (typeof result?.outputBytes === 'number') {
+    const modelVisible = typeof result.modelVisibleBytes === 'number'
+      ? `, model-visible ${formatBytes(result.modelVisibleBytes)}`
+      : '';
+    console.log(`  Output      ${DIM(`${formatBytes(result.outputBytes)}${modelVisible}`)}`);
+  }
+  if (result?.artifactId) {
+    console.log(`  Output full ${DIM(`/artifacts show ${result.artifactId} --full`)}`);
+  }
+  if (result?.error) {
+    console.log(`  Error       ${ERROR(redactTraceText(result.error))}`);
+  }
+
+  if (options.preview) {
+    const projectPath = session.projectPath || ctx.cwd;
+    printLastToolArtifactPreview(projectPath, inputLabel, argsSource?.argsArtifactId, options.full);
+    printLastToolArtifactPreview(projectPath, 'Output', result?.artifactId, options.full);
+  }
+
+  console.log();
+  console.log(DIM('Use /last-tool --full for redacted full previews, --no-preview for metadata only, or /trace latest for the ordered turn timeline.'));
   return { success: true };
 }
 
@@ -986,6 +1165,48 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
     }
     console.log();
 
+    // Context source
+    console.log(HEADER('  Context Source'));
+    const session = ctx.getSession?.() ?? (ctx.sessionId ? loadSessionMeta(ctx.sessionId) : null);
+    const isRestored = session?.transcriptDisplayStartTime != null;
+    const isCompactActive = Boolean(state.promptAssemblyStats);
+    console.log(`    Root       ${ACCENT(state.rootObjective || contract?.objective || '(none)')}`);
+    console.log(`    Active     ${DIM(state.activeInstruction || contract?.userIntent || '(none)')}`);
+    console.log(`    Source     ${isRestored ? WARN('restored session') : DIM('live turn')}`);
+    if (isRestored && session) {
+      const restoredTime = session.transcriptDisplayStartTime
+        ? new Date(session.transcriptDisplayStartTime).toLocaleString()
+        : 'unknown';
+      console.log(`    Restored   ${DIM(restoredTime)}`);
+    }
+    if (isCompactActive) {
+      console.log(`    Compact    ${SUCCESS('active')}`);
+    }
+    console.log();
+
+    // Evidence index summary
+    console.log(HEADER('  Evidence Index'));
+    const evidenceItems = state.evidenceIndex?.length ?? 0;
+    const evidenceKinds = new Map<string, number>();
+    if (state.evidenceIndex) {
+      for (const item of state.evidenceIndex) {
+        const kind = item.kind || 'unknown';
+        evidenceKinds.set(kind, (evidenceKinds.get(kind) || 0) + 1);
+      }
+    }
+    console.log(`    Total      ${ACCENT(String(evidenceItems))} items`);
+    if (evidenceKinds.size > 0) {
+      const kinds = Array.from(evidenceKinds.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10);
+      for (const [kind, count] of kinds) {
+        console.log(`      ${DIM(kind.padEnd(16))} ${count}`);
+      }
+    } else {
+      console.log(DIM('      (no evidence records yet)'));
+    }
+    console.log();
+
     // Intent history
     console.log(HEADER('  Recent Intents'));
     const intents = state.intentHistory?.slice(-5) ?? [];
@@ -1122,46 +1343,6 @@ function showConfig(ctx: CommandContext): CommandResult {
 }
 
 function handleModel(ctx: CommandContext, args: string): CommandResult {
-  // 模型别名映射
-  const MODEL_ALIASES: Record<string, string> = {
-    'opus': 'claude-opus-4-7',
-    'sonnet': 'claude-sonnet-4-6',
-    'haiku': 'claude-haiku-4-5-20251001',
-    'claude': 'claude-sonnet-4-6',
-    'gpt4': 'gpt-4o',
-    'gpt4o': 'gpt-4o',
-    'gpt35': 'gpt-3.5-turbo',
-    // Bailian (coding.dashscope.aliyuncs.com) — OpenAI-compatible
-    'qwen': 'qwen3.5-plus',
-    'qwenplus': 'qwen3.5-plus',
-    'qwen36': 'qwen3.6-plus',
-    'qwenmax': 'qwen3-max-2026-01-23',
-    'coder': 'qwen3-coder-plus',
-    'codernext': 'qwen3-coder-next',
-    'glm': 'glm-5',
-    'glm47': 'glm-4.7',
-    'kimi': 'kimi-k2.5',
-    'minimax': 'MiniMax-M2.5',
-  };
-
-  // 可用模型列表
-  const AVAILABLE_MODELS = [
-    { name: 'claude-opus-4-7', alias: 'opus', provider: 'Anthropic' },
-    { name: 'claude-sonnet-4-6', alias: 'sonnet', provider: 'Anthropic' },
-    { name: 'claude-haiku-4-5-20251001', alias: 'haiku', provider: 'Anthropic' },
-    { name: 'gpt-4o', alias: 'gpt4o', provider: 'OpenAI' },
-    { name: 'gpt-3.5-turbo', alias: 'gpt35', provider: 'OpenAI' },
-    { name: 'glm-5', alias: 'glm', provider: 'Bailian (Zhipu)' },
-    { name: 'glm-4.7', alias: 'glm47', provider: 'Bailian (Zhipu)' },
-    { name: 'qwen3.5-plus', alias: 'qwen', provider: 'Bailian (Alibaba)' },
-    { name: 'qwen3.6-plus', alias: 'qwen36', provider: 'Bailian (Alibaba)' },
-    { name: 'qwen3-max-2026-01-23', alias: 'qwenmax', provider: 'Bailian (Alibaba)' },
-    { name: 'qwen3-coder-plus', alias: 'coder', provider: 'Bailian (Alibaba)' },
-    { name: 'qwen3-coder-next', alias: 'codernext', provider: 'Bailian (Alibaba)' },
-    { name: 'kimi-k2.5', alias: 'kimi', provider: 'Bailian (Moonshot)' },
-    { name: 'MiniMax-M2.5', alias: 'minimax', provider: 'Bailian (MiniMax)' },
-  ];
-
   const trimmedArgs = args.trim().toLowerCase();
 
   // 显示当前模型
@@ -1169,7 +1350,7 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
     console.log();
     if (ctx.llm) {
       const currentModel = ctx.llm.getModel();
-      const aliasEntry = AVAILABLE_MODELS.find(m => m.name === currentModel || m.alias === currentModel);
+      const aliasEntry = getModelCatalogEntry(currentModel);
       const contextInfo = resolveModelContext(currentModel);
       const compactStats = getAutoCompact({ modelId: currentModel }).getStats();
       console.log(HEADER('Current Model'));
@@ -1198,12 +1379,25 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
     console.log(HEADER('Available Models'));
     console.log(DIM('─'.repeat(40)));
     const currentModel = ctx.llm?.getModel() || '';
-    for (const m of AVAILABLE_MODELS) {
-      const isCurrent = m.name === currentModel || m.alias === currentModel;
-      const marker = isCurrent ? SUCCESS('●') : DIM('○');
-      const contextInfo = resolveModelContext(m.name);
-      console.log(`  ${marker} ${ACCENT(m.name)} ${DIM(`(${m.alias})`)} ${DIM(`${formatTokenCount(contextInfo.contextWindow)} ctx`)} ${isCurrent ? BRAND('(current)') : ''}`);
-      console.log(`      ${DIM(m.provider)}`);
+    const modelPicker = createModelPickerState({
+      currentModel,
+      models: listModelCatalogEntries().map(model => {
+        const contextInfo = resolveModelContext(model.name);
+        return {
+          ...model,
+          contextWindow: contextInfo.contextWindow,
+          maxOutputTokens: contextInfo.maxOutputTokens,
+          source: contextInfo.source,
+        };
+      }),
+    });
+    for (const item of modelPicker.visibleItems) {
+      const marker = item.isCurrent ? SUCCESS('●') : DIM('○');
+      const alias = item.alias ? `(${item.alias})` : '';
+      const context = `${formatTokenCount(item.contextWindow ?? 0)} ctx`;
+      const current = item.isCurrent ? BRAND('(current)') : '';
+      console.log(`  ${marker} ${ACCENT(item.name)} ${DIM(alias)} ${DIM(context)} ${current}`);
+      console.log(`      ${DIM(item.provider ?? 'unknown')}`);
     }
     console.log();
     console.log(DIM('Use /model <name|alias> to switch, e.g. /model sonnet'));
@@ -1222,7 +1416,7 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
     console.log(`  ${ACCENT('/model <name>')}    Switch to specific model`);
     console.log(`  ${ACCENT('/model <alias>')}   Switch using alias (opus, sonnet, haiku)`);
     console.log();
-    console.log(DIM('Aliases: opus, sonnet, haiku, gpt4o, qwen, glm'));
+    console.log(DIM(`Aliases: ${formatModelAliasHelp()}`));
     console.log();
     return { success: true };
   }
@@ -1235,7 +1429,7 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
   }
 
   // 解析别名
-  const resolvedModel = MODEL_ALIASES[trimmedArgs] || args.trim();
+  const resolvedModel = resolveModelAlias(args);
 
   ctx.llm.setModel(resolvedModel);
   getAutoCompact({ modelId: resolvedModel });
@@ -2105,6 +2299,7 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
     return { success: true };
   }
 
+  console.log(DIM(compactStatus()));
   try {
     const autoCompact = getAutoCompact();
     autoCompact.configure({
@@ -2974,6 +3169,15 @@ const COMMANDS: SlashCommand[] = [
     priority: 14,
     type: 'builtin',
     execute: (ctx, args) => handleTrace(ctx, args),
+  },
+  {
+    name: 'last-tool',
+    aliases: ['tool-last'],
+    description: 'Show the latest tool call/result with full inspection hints',
+    category: 'diagnostics',
+    priority: 15,
+    type: 'builtin',
+    execute: (ctx, args) => handleLastTool(ctx, args),
   },
   {
     name: 'artifacts',

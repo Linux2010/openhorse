@@ -258,6 +258,7 @@ export async function launchPrintMode(
     echoSubmittedInput: false,
     useRuntimeToolPermissions: true,
     uiCapabilities: resolveUiRendererCapabilities(undefined, 'print'),
+    uiRenderer: 'print',
   });
 
   try {

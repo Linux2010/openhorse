@@ -43,6 +43,7 @@ export const BUILTIN_MODELS: Record<string, ModelContextInfo> = {
   'qwen-max': { id: 'qwen-max', label: 'Qwen Max', contextWindow: 32768, maxOutputTokens: 8192, provider: 'qwen' },
   'qwen-long': { id: 'qwen-long', label: 'Qwen Long', contextWindow: 1000000, maxOutputTokens: 8192, provider: 'qwen' },
   'kimi-k2.5': { id: 'kimi-k2.5', label: 'Kimi K2.5', contextWindow: 131072, maxOutputTokens: 8192, provider: 'moonshot' },
+  'MiniMax-M2.5': { id: 'MiniMax-M2.5', label: 'MiniMax M2.5', contextWindow: 131072, maxOutputTokens: 8192, provider: 'minimax' },
   'minimax-m2.5': { id: 'minimax-m2.5', label: 'MiniMax M2.5', contextWindow: 131072, maxOutputTokens: 8192, provider: 'minimax' },
   'xopglm51': { id: 'xopglm51', label: 'XOP GLM 5.1', contextWindow: 204800, maxOutputTokens: 16384, provider: 'astroncodingplan' },
   'astron-code-latest': { id: 'astron-code-latest', label: 'Astron Code Latest', contextWindow: 92160, maxOutputTokens: 32768, provider: 'astroncodingplan' },
@@ -51,10 +52,12 @@ export const BUILTIN_MODELS: Record<string, ModelContextInfo> = {
   'gpt-4o': { id: 'gpt-4o', label: 'GPT-4o', contextWindow: 128000, maxOutputTokens: 16384, provider: 'openai' },
   'gpt-4o-mini': { id: 'gpt-4o-mini', label: 'GPT-4o Mini', contextWindow: 128000, maxOutputTokens: 16384, provider: 'openai' },
   'gpt-4': { id: 'gpt-4', label: 'GPT-4', contextWindow: 8192, maxOutputTokens: 8192, provider: 'openai' },
+  'gpt-3.5-turbo': { id: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo', contextWindow: 16385, maxOutputTokens: 4096, provider: 'openai' },
 
   // Claude
   'claude-sonnet-4-6': { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', contextWindow: 200000, maxOutputTokens: 16000, provider: 'anthropic' },
   'claude-opus-4-8': { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', contextWindow: 200000, maxOutputTokens: 32000, provider: 'anthropic' },
+  'claude-haiku-4-5-20251001': { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', contextWindow: 200000, maxOutputTokens: 8192, provider: 'anthropic' },
 
   // DeepSeek
   'deepseek-chat': { id: 'deepseek-chat', label: 'DeepSeek Chat', contextWindow: 64000, maxOutputTokens: 8192, provider: 'deepseek' },

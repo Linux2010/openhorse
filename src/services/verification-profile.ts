@@ -27,6 +27,85 @@ export interface VerificationSummary {
   skippedReason?: string;
 }
 
+export interface CommandSafetyClassification {
+  risk: 'high' | 'medium' | 'low' | 'unknown';
+  reason: string;
+}
+
+/**
+ * Classify the safety risk of a shell command.
+ */
+export function classifyCommandSafety(command: string): CommandSafetyClassification {
+  const normalized = command.trim();
+
+  // High risk patterns
+  const highRiskPatterns: Array<{ pattern: RegExp; reason: string }> = [
+    { pattern: /\brm\b/, reason: 'removes files or directories' },
+    { pattern: /\bsudo\b/, reason: 'escalates privileges' },
+    { pattern: /\bchmod\b/, reason: 'changes file permissions' },
+    { pattern: /\bchown\b/, reason: 'changes file ownership' },
+    { pattern: /\bgit\s+push\s+.*--force\b/, reason: 'force-pushes to remote repository' },
+    { pattern: /\bnpm\s+publish\b/, reason: 'publishes package to registry' },
+    { pattern: /\bdocker\b/, reason: 'runs container operations' },
+    { pattern: /\bkubectl\b/, reason: 'manages Kubernetes resources' },
+    { pattern: /\bcurl\s+.*\|\s*sh\b/, reason: 'pipes remote content to shell' },
+    { pattern: /\beval\b/, reason: 'evaluates arbitrary shell expressions' },
+  ];
+
+  for (const { pattern, reason } of highRiskPatterns) {
+    if (pattern.test(normalized)) {
+      return { risk: 'high', reason };
+    }
+  }
+
+  // Medium risk patterns
+  const mediumRiskPatterns: Array<{ pattern: RegExp; reason: string }> = [
+    { pattern: /\bnpm\s+(install|i)\b/, reason: 'installs npm packages' },
+    { pattern: /\bpip\s+install\b/, reason: 'installs Python packages' },
+    { pattern: /\bgit\s+commit\b/, reason: 'commits changes to repository' },
+    { pattern: /\bgit\s+push\b/, reason: 'pushes to remote repository' },
+    { pattern: /\bmake\b/, reason: 'runs build automation' },
+    { pattern: /(^|\s)gcc\s/, reason: 'compiles C code' },
+    { pattern: /(^|\s)g\+\+\s/, reason: 'compiles C++ code' },
+  ];
+
+  for (const { pattern, reason } of mediumRiskPatterns) {
+    if (pattern.test(normalized)) {
+      return { risk: 'medium', reason };
+    }
+  }
+
+  // Low risk patterns
+  const lowRiskPatterns: Array<{ pattern: RegExp; reason: string }> = [
+    { pattern: /\bnpm\s+run\s+build(\b|:)/, reason: 'runs build script' },
+    { pattern: /\bnpm\s+(run\s+)?test(\b|:)/, reason: 'runs test suite' },
+    { pattern: /\bls\b/, reason: 'lists directory contents' },
+    { pattern: /\bcat\b/, reason: 'reads file contents' },
+    { pattern: /\becho\b/, reason: 'prints text to output' },
+    { pattern: /\bgit\s+status\b/, reason: 'shows repository status' },
+    { pattern: /\bgit\s+diff\b/, reason: 'shows file differences' },
+    { pattern: /\bnode\s+-e\b/, reason: 'evaluates a Node.js expression' },
+  ];
+
+  for (const { pattern, reason } of lowRiskPatterns) {
+    if (pattern.test(normalized)) {
+      return { risk: 'low', reason };
+    }
+  }
+
+  return { risk: 'unknown', reason: 'command does not match known safety patterns' };
+}
+
+/**
+ * Returns true when a turn modifies enough files to be flagged as a risky edit.
+ * Wired into appendVerificationProfileTrace in chat-controller.ts, which records
+ * `verificationRisky` on the verification_profile trace event so auditors can
+ * spot large-scale refactors that deserve stricter review.
+ */
+export function isRiskyEdit(changedFiles: string[], threshold = 5): boolean {
+  return changedFiles.length >= threshold;
+}
+
 export function shouldGateCompletion(summary: VerificationSummary): boolean {
   return summary.required && !summary.claimAllowed;
 }

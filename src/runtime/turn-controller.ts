@@ -11,6 +11,7 @@ export interface TurnSnapshot {
   status: TurnStatus;
   activeTurnId?: number;
   pendingRevision?: string;
+  verificationState?: 'pending' | 'running' | 'passed' | 'failed' | 'gated';
 }
 
 export interface TurnControllerOptions {
@@ -28,6 +29,7 @@ export class TurnController {
   private activeTurn: TurnHandle | null = null;
   private status: TurnStatus = 'idle';
   private pendingRevision: string | undefined;
+  private verificationState: 'pending' | 'running' | 'passed' | 'failed' | 'gated' | undefined;
   private lastExitIntentAt = 0;
   private readonly exitConfirmWindowMs: number;
 
@@ -51,6 +53,7 @@ export class TurnController {
     this.activeTurn = turn;
     this.status = 'running';
     this.pendingRevision = undefined;
+    this.verificationState = undefined;
     this.clearExitIntent();
     return turn;
   }
@@ -88,6 +91,14 @@ export class TurnController {
     return revision;
   }
 
+  setVerificationState(state: 'pending' | 'running' | 'passed' | 'failed' | 'gated'): void {
+    this.verificationState = state;
+  }
+
+  getVerificationState(): 'pending' | 'running' | 'passed' | 'failed' | 'gated' | undefined {
+    return this.verificationState;
+  }
+
   hasActiveTurn(): boolean {
     return this.activeTurn !== null;
   }
@@ -97,6 +108,7 @@ export class TurnController {
       status: this.status,
       activeTurnId: this.activeTurn?.id,
       pendingRevision: this.pendingRevision,
+      verificationState: this.verificationState,
     };
   }
 

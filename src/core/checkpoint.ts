@@ -268,3 +268,13 @@ function safeFileName(filePath: string): string {
   // Replace problematic characters in file names for safe storage
   return filePath.replace(/[<>:"|?*]/g, '_');
 }
+
+/**
+ * Returns true when a single turn modifies enough files to warrant an explicit
+ * risky-edit checkpoint with rollback guidance. Wired into createPreToolCheckpoint
+ * in chat-controller.ts, which marks the trace note 'risky_multi_file_checkpoint'
+ * and emits a user-visible rollback hint.
+ */
+export function shouldCreateMultiFileCheckpoint(changedFileCount: number, threshold = 5): boolean {
+  return changedFileCount >= threshold;
+}

@@ -9,6 +9,7 @@ import {
   restoreCheckpoint,
   listCheckpoints,
   cleanupCheckpoints,
+  shouldCreateMultiFileCheckpoint,
   CHECKPOINT_TTL_MS,
 } from '../src/core/checkpoint';
 import { getProjectCheckpointsDir } from '../src/services/config-dir';
@@ -192,5 +193,17 @@ describe('checkpoint', () => {
     cleanupCheckpoints(TEST_PROJECT);
     const remaining = listCheckpoints(TEST_PROJECT);
     expect(remaining).toHaveLength(1);
+  });
+
+  test('shouldCreateMultiFileCheckpoint returns true when changed file count meets threshold', () => {
+    expect(shouldCreateMultiFileCheckpoint(5)).toBe(true);
+    expect(shouldCreateMultiFileCheckpoint(10)).toBe(true);
+    expect(shouldCreateMultiFileCheckpoint(7, 3)).toBe(true);
+  });
+
+  test('shouldCreateMultiFileCheckpoint returns false when changed file count is below threshold', () => {
+    expect(shouldCreateMultiFileCheckpoint(4)).toBe(false);
+    expect(shouldCreateMultiFileCheckpoint(1, 5)).toBe(false);
+    expect(shouldCreateMultiFileCheckpoint(0)).toBe(false);
   });
 });

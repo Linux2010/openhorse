@@ -7,11 +7,14 @@ import type { SessionMeta, SessionTraceEvent } from '../services/session-storage
 
 export type TranscriptRole = 'user' | 'assistant' | 'tool' | 'system' | 'command' | 'error' | 'status';
 
+export type ErrorLayer = 'renderer' | 'runtime' | 'provider' | 'tool' | 'session' | 'memory' | 'mcp' | 'skills' | 'unknown';
+
 export interface TranscriptEntry {
   id: string;
   role: TranscriptRole;
   content: string;
   title?: string;
+  errorLayer?: ErrorLayer;
 }
 
 export interface TranscriptAppendEntry extends Omit<TranscriptEntry, 'id'> {
@@ -108,6 +111,8 @@ export interface RuntimeToolStartedEvent {
   callId: string;
   name: string;
   args: Record<string, unknown>;
+  batchCount?: number;
+  batchIndex?: number;
 }
 
 export interface RuntimeToolFinishedEvent {
@@ -115,11 +120,14 @@ export interface RuntimeToolFinishedEvent {
   name: string;
   args: Record<string, unknown>;
   success: boolean;
+  skipped?: boolean;
   duration: number;
   summary?: string;
   error?: string;
   outputBytes?: number;
   artifactRef?: { id: string; outputBytes: number };
+  batchCount?: number;
+  batchIndex?: number;
 }
 
 export interface RuntimeSessionRestoredEvent {

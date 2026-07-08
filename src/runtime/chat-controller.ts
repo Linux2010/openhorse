@@ -1,7 +1,7 @@
 import { findCommand } from '../commands';
 import { parseInput, buildCommandSuggestions } from '../commands/parser';
 import * as path from 'path';
-import type { CommandContext, CommandResult } from '../commands/types';
+import type { CommandContext, CommandResult, CommandUiRenderer } from '../commands/types';
 import type { LLMRequestDiagnostics, Message, StreamCallbacks } from '../services/llm';
 import type { SessionMessage, SessionTraceEvent } from '../services/session-storage';
 import {
@@ -26,14 +26,16 @@ import type { HarnessState } from '../harness/types';
 import { executeTool, getRuntimeTools } from '../tools';
 import { parseToolResultEnvelope } from '../framework/tool-serializer';
 import { storeArtifact, truncateForContext } from '../core/tool-artifacts';
-import { createCheckpoint } from '../core/checkpoint';
+import { createCheckpoint, shouldCreateMultiFileCheckpoint } from '../core/checkpoint';
 import { resolveSkillsForTurn, hasMatchingSkill } from '../skills';
 import { buildReferencedFilesPrompt } from '../services/file-context';
 import { refreshProjectInstructions } from '../services/prompt-context';
+import { formatBytes } from '../services/format';
 import { captureWorkspaceSnapshot, diffWorkspaceSnapshots, type WorkspaceSnapshot } from '../services/workspace-state';
 import {
   collectVerificationCommandResult,
   formatVerificationGateNotice,
+  isRiskyEdit,
   selectVerificationProfile,
   shouldGateCompletion,
   summarizeVerificationState,
@@ -49,12 +51,18 @@ import type {
   UiRendererCapabilities,
 } from './ui-events';
 import { resolveUiRendererCapabilities } from './ui-events';
-import { agentStepStatus, runningToolsStatus } from './agent-status';
+import {
+  formatToolActivityTranscript,
+  toolActivityFromFinished,
+  toolActivityFromStarted,
+} from './ui-view-model';
+import { agentStepStatus, batchingSuggestion, runningToolsStatus, verifyingStatus, verificationGateStatus } from './agent-status';
 import { resolveRuntimeLoopBudget } from './loop-budget';
 
 const ANSI_PATTERN = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const LOCAL_FAST_PATH_INLINE_OUTPUT_BYTES = 2048;
 const TRACE_ARGS_ARTIFACT_THRESHOLD_BYTES = 160;
+const TOOL_TRANSCRIPT_ARG_BUDGET = 512;
 
 function stripAnsi(text: string): string {
   return text.replace(ANSI_PATTERN, '');
@@ -66,6 +74,24 @@ function isAbortError(error: unknown, abortSignal?: AbortSignal): boolean {
     return error.name === 'AbortError' || error.message.toLowerCase().includes('aborted');
   }
   return false;
+}
+
+function errorLayerForChatError(error: unknown): import('./ui-events').ErrorLayer {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+  if (/NotEnoughCvError|code:\s*11210|provider|quota|rate.?limit|timeout|connection/i.test(message)) {
+    return 'provider';
+  }
+  if (/tool|command|exec_command|write_file|edit_file/i.test(message)) {
+    return 'tool';
+  }
+  if (/\bmcp\b/i.test(message)) return 'mcp';
+  if (/\b(session|resume|compact|harness)\b/i.test(message)) return 'session';
+  if (/\b(skill|skills)\b/i.test(message)) return 'skills';
+  if (/\b(memory|vector store|recall|forget)\b/i.test(message)) return 'memory';
+  if (/\b(renderer|terminal|tty|prompt|resize|scrollback)\b/i.test(message)) return 'renderer';
+  if (lower.includes('abort') || lower.includes('interrupted')) return 'runtime';
+  return 'unknown';
 }
 
 function formatChatError(error: unknown): string {
@@ -192,12 +218,13 @@ function createPreToolCheckpoint(
   checkpointId: string,
   cwd: string,
   toolCalls: NonNullable<Message['tool_calls']>,
-): boolean {
+): { created: boolean; targetCount: number; risky: boolean } {
   const targets = checkpointTargetsFromToolCalls(cwd, toolCalls);
-  if (targets.length === 0) return false;
+  if (targets.length === 0) return { created: false, targetCount: 0, risky: false };
 
+  const risky = shouldCreateMultiFileCheckpoint(targets.length);
   const checkpoint = createCheckpoint(cwd, checkpointId, targets);
-  if (!sessionId) return true;
+  if (!sessionId) return { created: true, targetCount: targets.length, risky };
 
   const relativeTargets = targets.map(target => path.relative(cwd, target));
   recordTraceEvent(events, sessionId, {
@@ -208,10 +235,10 @@ function createPreToolCheckpoint(
     checkpointFiles: checkpoint?.files.map(file => file.path) ?? [],
     workspaceFiles: relativeTargets,
     note: checkpoint
-      ? 'pre_edit_checkpoint'
+      ? (risky ? 'risky_multi_file_checkpoint' : 'pre_edit_checkpoint')
       : 'pre_edit_checkpoint_skipped',
   });
-  return true;
+  return { created: true, targetCount: targets.length, risky };
 }
 
 function byteLength(text: string): number {
@@ -329,6 +356,7 @@ function appendVerificationProfileTrace(
     type: 'verification_profile',
     verificationProfile: profile.profile,
     verificationRequired: profile.required,
+    verificationRisky: isRiskyEdit(profile.changedFiles),
     verificationCommands: compactPathList(profile.commands, 8),
     verificationChangedFiles: compactPathList(profile.changedFiles),
     note: profile.reason,
@@ -521,40 +549,16 @@ function emitHarnessDiagnostics(events: UiEventSink, state: HarnessState): void 
   events.harnessDiagnosticsUpdated?.(toHarnessDiagnostics(state));
 }
 
-function toolStartContent(name: string, args: Record<string, unknown>): string {
-  if (name === 'exec_command' && typeof args.command === 'string') {
-    return `Running ${name}\n  $ ${args.command}`;
-  }
-
-  const detail = compactToolArgs(args);
-  return `Running ${name}${detail ? ` ${detail}` : ''}`;
-}
-
-function toolSummary(name: string, args: Record<string, unknown>, success: boolean, duration: number): string {
-  const details = compactToolArgs(args);
-  const suffix = details ? ` ${details}` : '';
-  return `${success ? '✓' : '✗'} ${name}${suffix} (${duration}ms)`;
+function toolStartContent(event: ToolCallEvent): string {
+  return formatToolActivityTranscript(
+    toolActivityFromStarted(event, compactToolArgs(event.args, TOOL_TRANSCRIPT_ARG_BUDGET))
+  );
 }
 
 function toolFinishContent(event: ToolResultEvent): string {
-  const summary = event.summary || toolSummary(event.name, event.args, event.success, event.duration);
-  const lines = [summary];
-
-  if (event.name === 'exec_command' && typeof event.args.command === 'string') {
-    lines.push(`  $ ${event.args.command}`);
-  }
-
-  if (event.artifactRef) {
-    lines.push(`  artifact ${event.artifactRef.id} (${event.artifactRef.outputBytes}B full output)`);
-  } else if (typeof event.outputBytes === 'number') {
-    lines.push(`  output ${event.outputBytes}B`);
-  }
-
-  if (event.error) {
-    lines.push(`Error: ${event.error}`);
-  }
-
-  return lines.filter(Boolean).join('\n');
+  return formatToolActivityTranscript(
+    toolActivityFromFinished(event, compactToolArgs(event.args, TOOL_TRANSCRIPT_ARG_BUDGET))
+  );
 }
 
 function isSyntheticCompactContext(content: string): boolean {
@@ -800,9 +804,10 @@ function formatLocalFastPathAssistantContent(
   action: LocalFastPathAction,
   rawResult: string,
   projectPath: string,
-): string {
+): { content: string; artifactRef?: { id: string; outputBytes: number } } {
   const envelope = parseToolResultEnvelope(rawResult);
-  const output = typeof envelope.output === 'string' ? envelope.output.trim() : '';
+  const rawOutput = typeof envelope.output === 'string' ? envelope.output : '';
+  const output = rawOutput.trim();
   const summary = envelope.summary || `${action.tool} ${envelope.success ? 'completed' : 'failed'}`;
   const lines = [
     envelope.success
@@ -816,51 +821,79 @@ function formatLocalFastPathAssistantContent(
   }
 
   if (!output) {
-    return lines.join('\n');
+    return { content: lines.join('\n'), artifactRef: envelope.artifactRef };
   }
 
   let artifactRef = envelope.artifactRef;
   let preview = output;
-  const outputBytes = envelope.outputBytes ?? byteLength(output);
-  if (byteLength(output) > LOCAL_FAST_PATH_INLINE_OUTPUT_BYTES) {
+  const outputBytes = envelope.outputBytes ?? byteLength(rawOutput);
+  if (byteLength(rawOutput) > LOCAL_FAST_PATH_INLINE_OUTPUT_BYTES) {
     if (!artifactRef) {
-      const artifact = storeArtifact(projectPath, action.tool, output, outputBytes);
+      const artifact = storeArtifact(projectPath, action.tool, rawOutput, outputBytes);
       artifactRef = artifact ? { id: artifact.id, outputBytes: artifact.outputBytes } : undefined;
     }
     preview = truncateForContext(output, LOCAL_FAST_PATH_INLINE_OUTPUT_BYTES);
   }
 
   if (artifactRef) {
-    lines.push('', `Full output: /artifacts show ${artifactRef.id} --full (${artifactRef.outputBytes}B)`);
+    lines.push('', `Full output: /artifacts show ${artifactRef.id} --full (${formatBytes(artifactRef.outputBytes)})`);
   }
   lines.push('', 'Preview:', preview);
-  return lines.join('\n');
+  return { content: lines.join('\n'), artifactRef };
 }
 
 export interface ToolEventPresenter {
   start(event: ToolCallEvent): void;
   finish(event: ToolResultEvent): void;
+  finalizePendingAsSkipped(reason?: string): void;
 }
 
 export function createToolEventPresenter(events: UiEventSink): ToolEventPresenter {
-  const runningToolEntries = new Map<string, string>();
+  const runningToolEntries = new Map<string, { entryId: string; name: string; args: Record<string, unknown>; batchCount?: number; batchIndex?: number }>();
 
   return {
     start(event: ToolCallEvent): void {
+      const entryId = events.append({
+        role: 'tool',
+        title: 'tool',
+        content: toolStartContent(event),
+      });
+      runningToolEntries.set(event.callId, {
+        entryId,
+        name: event.name,
+        args: event.args,
+        batchCount: event.batchCount,
+        batchIndex: event.batchIndex,
+      });
       events.toolStarted?.({
         callId: event.callId,
         name: event.name,
         args: event.args,
+        batchCount: event.batchCount,
+        batchIndex: event.batchIndex,
       });
-      const entryId = events.append({
-        role: 'tool',
-        title: 'tool',
-        content: toolStartContent(event.name, event.args),
-      });
-      runningToolEntries.set(event.callId, entryId);
     },
 
     finish(event: ToolResultEvent): void {
+      const content = toolFinishContent(event);
+      const stored = runningToolEntries.get(event.callId);
+
+      if (stored) {
+        events.finalize(stored.entryId, {
+          role: event.success ? 'tool' : 'error',
+          title: 'tool',
+          content,
+        });
+        runningToolEntries.delete(event.callId);
+      } else {
+        const entryId = events.append({
+          role: event.success ? 'tool' : 'error',
+          title: 'tool',
+          content,
+        });
+        events.finalize(entryId);
+      }
+
       events.toolFinished?.({
         callId: event.callId,
         name: event.name,
@@ -871,26 +904,31 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
         error: event.error,
         outputBytes: event.outputBytes,
         artifactRef: event.artifactRef,
+        batchCount: event.batchCount,
+        batchIndex: event.batchIndex,
       });
-      const content = toolFinishContent(event);
-      const existingEntryId = runningToolEntries.get(event.callId);
+    },
 
-      if (existingEntryId) {
-        events.finalize(existingEntryId, {
-          role: event.success ? 'tool' : 'error',
+    finalizePendingAsSkipped(reason = 'permission denied'): void {
+      for (const [callId, entry] of runningToolEntries) {
+        events.finalize(entry.entryId, {
+          role: 'tool',
           title: 'tool',
-          content,
+          content: `Skipped · ${reason}`,
         });
-        runningToolEntries.delete(event.callId);
-        return;
+        events.toolFinished?.({
+          callId,
+          name: entry.name,
+          args: entry.args,
+          success: false,
+          skipped: true,
+          duration: 0,
+          error: reason,
+          batchCount: entry.batchCount,
+          batchIndex: entry.batchIndex,
+        });
       }
-
-      const entryId = events.append({
-        role: event.success ? 'tool' : 'error',
-        title: 'tool',
-        content,
-      });
-      events.finalize(entryId);
+      runningToolEntries.clear();
     },
   };
 }
@@ -925,6 +963,8 @@ export interface RunInputOptions {
 export interface AgentChatControllerOptions {
   confirmToolUse?: Parameters<typeof query>[0]['confirmToolUse'];
   uiCapabilities?: UiRendererCapabilities;
+  uiRenderer?: CommandUiRenderer;
+  onVerificationStateChange?: (state: 'pending' | 'running' | 'passed' | 'failed' | 'gated') => void;
 }
 
 /** @deprecated Use AgentChatControllerOptions. Chat execution is renderer-independent. */
@@ -982,6 +1022,7 @@ export class AgentChatController {
         content: suggestions.length > 0
           ? `Unknown command: /${parsed.name}\nDid you mean: ${suggestions.map(item => `/${item}`).join(', ')}?`
           : `Unknown command: /${parsed.name}`,
+        errorLayer: 'runtime',
       });
       return;
     }
@@ -1010,6 +1051,7 @@ export class AgentChatController {
         role: 'error',
         title: `/${command.name}`,
         content: result.error,
+        errorLayer: 'runtime',
       });
     }
 
@@ -1104,7 +1146,8 @@ export class AgentChatController {
       const outputBytes = typeof envelope.outputBytes === 'number'
         ? envelope.outputBytes
         : Buffer.byteLength(result, 'utf8');
-      const assistantContent = formatLocalFastPathAssistantContent(action, result, this.runtime.cwd);
+      const formattedLocalResult = formatLocalFastPathAssistantContent(action, result, this.runtime.cwd);
+      const assistantContent = formattedLocalResult.content;
       const stats = createLocalFastPathLoopStats({
         finishReason: envelope.success ? 'completed' : 'failed',
         toolCalls: 1,
@@ -1130,6 +1173,7 @@ export class AgentChatController {
           error: envelope.error,
           summary: envelope.summary,
           outputBytes,
+          artifactRef: formattedLocalResult.artifactRef,
         }),
       });
 
@@ -1149,6 +1193,7 @@ export class AgentChatController {
           duration,
           outputBytes,
           modelVisibleBytes: 0,
+          artifactId: formattedLocalResult.artifactRef?.id,
           error: envelope.error ? compactMiddle(envelope.error, 240) : undefined,
         });
         appendPostWorkspaceTrace(this.events, sessionId, turnId, this.runtime.cwd, preWorkspace);
@@ -1176,7 +1221,7 @@ export class AgentChatController {
       this.events.setStatus(envelope.success ? `Completed local ${action.label}` : `Failed local ${action.label}`);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      this.events.append({ role: 'error', title: 'local', content: message });
+      this.events.append({ role: 'error', title: 'local', content: message, errorLayer: 'tool' });
       this.events.setStatus('Local command failed. Ready for the next input.');
       const assistantContent = `Local fast path failed for ${action.label}.\n\n${message}`;
       this.runtime.store.addMessage({ role: 'assistant', content: assistantContent });
@@ -1241,7 +1286,11 @@ export class AgentChatController {
           this.events.append({ role: 'system', content: text });
         }
       },
-      uiCapabilities: resolveUiRendererCapabilities(this.controllerOptions.uiCapabilities),
+      uiRenderer: this.controllerOptions.uiRenderer ?? this.runtime.config.ui?.renderer ?? 'terminal',
+      uiCapabilities: resolveUiRendererCapabilities(
+        this.controllerOptions.uiCapabilities,
+        this.controllerOptions.uiRenderer ?? this.runtime.config.ui?.renderer
+      ),
     };
   }
 
@@ -1250,7 +1299,7 @@ export class AgentChatController {
     options: { abortSignal?: AbortSignal; turnId?: number | string } = {}
   ): Promise<void> {
     if (!input) {
-      this.events.append({ role: 'error', content: 'Usage: /chat <message>' });
+      this.events.append({ role: 'error', content: 'Usage: /chat <message>', errorLayer: 'runtime' });
       return;
     }
 
@@ -1258,6 +1307,7 @@ export class AgentChatController {
       this.events.append({
         role: 'error',
         content: 'LLM is not configured. Set OPENHORSE_API_KEY in ~/.openhorse/openhorse.json or environment.',
+        errorLayer: 'provider',
       });
       return;
     }
@@ -1308,6 +1358,13 @@ export class AgentChatController {
     });
     const intent = harness.updateContractFromUserInput(input);
     harness.recordAppliedSkills(skillResolution.skills);
+
+    // Reconcile diagnostic: when harness state is present but objective may be incomplete
+    if (snapshot.harnessState && !snapshot.harnessState.rootObjective && !snapshot.harnessState.contract?.objective) {
+      this.events.setStatus(
+        'Resume diagnostic: harness state restored but objective may be incomplete. Run /harness explain to review.'
+      );
+    }
 
     const promptCtx: PromptContext = {
       cwd: this.runtime.cwd,
@@ -1436,22 +1493,45 @@ export class AgentChatController {
           case 'assistant_tool_calls':
             assistantStream.ensureMessage(event.content || '');
             assistantStream.closeSegment();
-            if (event.toolCalls.length > 1) {
-              this.events.setStatus(runningToolsStatus(event.toolCalls.length));
+            this.events.setStatus(runningToolsStatus(event.toolCalls.length));
+            {
+              const batchReadOnlyCount = event.toolCalls.filter(tc => {
+                const def = skillResolution.tools.find(t => t.name === tc.function.name);
+                const args = parseToolCallArgsForRuntime(tc);
+                return args && def?.isReadOnly?.(args) === true;
+              }).length;
+              const suggestion = batchingSuggestion(batchReadOnlyCount);
+              if (suggestion) {
+                this.events.append({ role: 'status', content: suggestion });
+              }
             }
             const checkpointId = checkpointSequence === 0
               ? turnId
               : `${turnId}-checkpoint-${checkpointSequence + 1}`;
-            if (createPreToolCheckpoint(
+            const checkpointResult = createPreToolCheckpoint(
               this.events,
               sessionId,
               turnId,
               checkpointId,
               this.runtime.cwd,
               event.toolCalls,
-            )) {
+            );
+            if (checkpointResult.created) {
               checkpointIds.push(checkpointId);
               checkpointSequence++;
+            }
+            if (checkpointResult.created && checkpointResult.risky) {
+              this.events.append({
+                role: 'status',
+                title: 'checkpoint',
+                content: `Risky edit: ${checkpointResult.targetCount} files in one turn. Checkpoint ${checkpointId} created for rollback (/checkpoints restore ${checkpointId}).`,
+              });
+            } else if (checkpointResult.risky) {
+              this.events.append({
+                role: 'status',
+                title: 'checkpoint',
+                content: `Risky edit: ${checkpointResult.targetCount} files in one turn, but checkpoint creation failed. Restore any pre-existing checkpoint manually or revert via git.`,
+              });
             }
             if (sessionId) {
               recordTraceEvent(this.events, sessionId, {
@@ -1583,6 +1663,9 @@ export class AgentChatController {
             }
             break;
           case 'complete':
+            if (event.stats?.finishReason === 'blocked') {
+              toolEvents.finalizePendingAsSkipped('permission denied');
+            }
             if (event.content && !finalContent) {
               if (event.stats?.finishReason === 'budget_exceeded') {
                 assistantStream.replaceMessage(event.content);
@@ -1641,12 +1724,22 @@ export class AgentChatController {
         this.events.setStatus('Interrupted.');
         removeTrailingUserMessage(this.runtime);
         if (sessionId) {
-          appendPostWorkspaceTrace(this.events, sessionId, turnId, this.runtime.cwd, preWorkspace, verificationResults);
+          const { delta } = appendPostWorkspaceTrace(this.events, sessionId, turnId, this.runtime.cwd, preWorkspace, verificationResults);
           recordTraceEvent(this.events, sessionId, {
             turnId,
             type: 'aborted',
             note: 'aborted_after_query',
           });
+          const recoveryNotice = workspaceDeltaHasTurnChanges(delta)
+            ? formatFailureRecoveryNotice(turnId, delta, checkpointIds)
+            : undefined;
+          if (recoveryNotice) {
+            this.events.append({
+              role: 'status',
+              title: 'recovery',
+              content: recoveryNotice,
+            });
+          }
           removeLastIncompleteAssistantMessage(sessionId);
         }
         return;
@@ -1663,6 +1756,10 @@ export class AgentChatController {
           preWorkspace,
           verificationResults,
         );
+        if (profile.changedFiles.length > 0 && profile.required) {
+          this.events.setStatus(verifyingStatus(profile.profile));
+          this.controllerOptions.onVerificationStateChange?.('running');
+        }
         if (shouldRecordVerificationLoopStats(profile, summary)) {
           const stats = pendingCompleteStats ?? this.runtime.store.getSnapshot().lastLoopStats;
           if (stats) {
@@ -1670,6 +1767,8 @@ export class AgentChatController {
           }
         }
         if (shouldGateCompletion(summary)) {
+          this.events.setStatus(verificationGateStatus(summary.skippedReason ?? 'verification checks not run'));
+          this.controllerOptions.onVerificationStateChange?.('gated');
           const notice = formatVerificationGateNotice(summary);
           this.events.append({
             role: 'status',
@@ -1690,7 +1789,36 @@ export class AgentChatController {
               finishReason: 'completion_gate',
             };
           }
+        } else if (profile.changedFiles.length > 0 && profile.required) {
+          this.controllerOptions.onVerificationStateChange?.('passed');
         }
+      }
+
+      if (pendingCompleteStats?.finishReason === 'budget_exceeded') {
+        const stats = pendingCompleteStats;
+        const lines: string[] = ['Loop budget reached — stopping this turn.'];
+        if (stats.budgetExceededReason) {
+          lines.push(`Reason: ${stats.budgetExceededReason}`);
+        }
+        const progressParts: string[] = [];
+        if (typeof stats.loopBudgetMaxLlmRequests === 'number') {
+          progressParts.push(`${stats.llmRequests ?? 0}/${stats.loopBudgetMaxLlmRequests} LLM requests`);
+        }
+        if (typeof stats.loopBudgetMaxToolCalls === 'number') {
+          progressParts.push(`${stats.toolCalls ?? 0}/${stats.loopBudgetMaxToolCalls} tool calls`);
+        }
+        if (progressParts.length) {
+          lines.push(`Progress: ${progressParts.join(', ')}`);
+        }
+        if (stats.continuationActions?.length) {
+          lines.push(`Next: ${stats.continuationActions.join('; ')}`);
+        } else if (stats.continuationHint) {
+          lines.push(`Next: ${stats.continuationHint}`);
+        }
+        const notice = lines.join('\n');
+        this.events.append({ role: 'status', title: 'budget', content: notice });
+        finalContent = finalContent ? `${finalContent}\n\n${notice}` : notice;
+        appendAssistantNotice(sessionMessagesToRecord, notice);
       }
 
       if (pendingCompleteStats) {
@@ -1736,19 +1864,29 @@ export class AgentChatController {
         this.events.setStatus('Interrupted.');
         removeTrailingUserMessage(this.runtime);
         if (sessionId) {
-          appendPostWorkspaceTrace(this.events, sessionId, turnId, this.runtime.cwd, preWorkspace, verificationResults);
+          const { delta } = appendPostWorkspaceTrace(this.events, sessionId, turnId, this.runtime.cwd, preWorkspace, verificationResults);
           recordTraceEvent(this.events, sessionId, {
             turnId,
             type: 'aborted',
             note: 'abort_error',
           });
+          const recoveryNotice = workspaceDeltaHasTurnChanges(delta)
+            ? formatFailureRecoveryNotice(turnId, delta, checkpointIds)
+            : undefined;
+          if (recoveryNotice) {
+            this.events.append({
+              role: 'status',
+              title: 'recovery',
+              content: recoveryNotice,
+            });
+          }
           removeLastIncompleteAssistantMessage(sessionId);
         }
         return;
       }
 
       assistantStream.discardSegment();
-      this.events.append({ role: 'error', content: formatChatError(error) });
+      this.events.append({ role: 'error', content: formatChatError(error), errorLayer: errorLayerForChatError(error) });
       this.events.setStatus('Turn failed. Ready for the next input.');
       const failedStats = error instanceof QueryLoopError
         ? error.stats

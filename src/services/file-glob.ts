@@ -17,6 +17,11 @@ export interface FileMatch {
   isDirectory: boolean;
 }
 
+export interface FileMatchOptions {
+  limit?: number;
+  caseSensitive?: boolean;
+}
+
 // ============================================================================
 // Gitignore 解析
 // ============================================================================
@@ -75,17 +80,22 @@ function isIgnored(path: string, ignorePatterns: string[]): boolean {
  * 匹配文件路径
  * @param query 用户输入的路径查询（@ 后的部分）
  * @param cwd 当前工作目录
- * @returns 匹配的文件列表（最多 20 个）
+ * @returns 匹配的文件列表（默认最多 20 个）
  */
-export function matchFiles(query: string, cwd: string): FileMatch[] {
+export function matchFiles(query: string, cwd: string, options: FileMatchOptions = {}): FileMatch[] {
   const ignorePatterns = parseGitignore(cwd);
   const results: FileMatch[] = [];
+  const limit = typeof options.limit === 'number' && Number.isFinite(options.limit) && options.limit > 0
+    ? Math.floor(options.limit)
+    : 20;
+  const caseSensitive = options.caseSensitive ?? false;
 
   try {
     // 解析查询路径
     const parts = query.split('/');
     const dirPath = parts.length > 1 ? join(cwd, parts.slice(0, -1).join('/')) : cwd;
     const filterPrefix = parts.length > 1 ? parts[parts.length - 1] : query;
+    const normalizedFilter = caseSensitive ? filterPrefix : filterPrefix.toLowerCase();
 
     if (!existsSync(dirPath)) {
       return [];
@@ -99,7 +109,8 @@ export function matchFiles(query: string, cwd: string): FileMatch[] {
         : entry;
 
       // 过滤
-      if (filterPrefix && !entry.startsWith(filterPrefix)) {
+      const comparableEntry = caseSensitive ? entry : entry.toLowerCase();
+      if (normalizedFilter && !comparableEntry.startsWith(normalizedFilter)) {
         continue;
       }
 
@@ -121,7 +132,7 @@ export function matchFiles(query: string, cwd: string): FileMatch[] {
         isDirectory,
       });
 
-      if (results.length >= 20) {
+      if (results.length >= limit) {
         break;
       }
     }
