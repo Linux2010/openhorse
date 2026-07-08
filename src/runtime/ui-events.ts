@@ -7,11 +7,14 @@ import type { SessionMeta, SessionTraceEvent } from '../services/session-storage
 
 export type TranscriptRole = 'user' | 'assistant' | 'tool' | 'system' | 'command' | 'error' | 'status';
 
+export type ErrorLayer = 'renderer' | 'runtime' | 'provider' | 'tool' | 'session' | 'memory' | 'mcp' | 'skills' | 'unknown';
+
 export interface TranscriptEntry {
   id: string;
   role: TranscriptRole;
   content: string;
   title?: string;
+  errorLayer?: ErrorLayer;
 }
 
 export interface TranscriptAppendEntry extends Omit<TranscriptEntry, 'id'> {

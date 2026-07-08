@@ -10,6 +10,7 @@ import {
   createAgentRuntimeEventSinkFromUiEvents,
   createUiEventSinkFromAgentRuntimeEvents,
 } from './agent-runtime-protocol';
+import { permissionPendingStatus } from './agent-status';
 import { AgentChatController, type AgentChatControllerOptions, type RunInputOptions } from './chat-controller';
 import { resolveUiRendererCapabilities } from './ui-events';
 import type { OpenHorseUiRuntime, ToolPermissionRequest, TranscriptAppendEntry, UiEventSink, UiRendererCapabilities } from './ui-events';
@@ -112,6 +113,14 @@ export class AgentRuntimeController {
 
   hasActiveTurn(): boolean {
     return this.turnController.hasActiveTurn();
+  }
+
+  setVerificationState(state: 'pending' | 'running' | 'passed' | 'failed' | 'gated'): void {
+    this.turnController.setVerificationState(state);
+  }
+
+  getVerificationState(): 'pending' | 'running' | 'passed' | 'failed' | 'gated' | undefined {
+    return this.turnController.getVerificationState();
   }
 
   clearExitIntent(): void {
@@ -245,7 +254,7 @@ export class AgentRuntimeController {
       this.options.onTurnError(error);
     } else {
       const message = error instanceof Error ? error.message : String(error);
-      this.emitAppend({ role: 'error', content: `Error: ${message}` });
+      this.emitAppend({ role: 'error', content: `[RUNTIME] Error: ${message}`, errorLayer: 'runtime' });
     }
 
     this.options.runtime.store.setProcessing(false);
@@ -291,6 +300,7 @@ export class AgentRuntimeController {
 
       this.pendingPermissions.set(id, finish);
       request.abortSignal?.addEventListener('abort', onAbort, { once: true });
+      this.emitStatus(permissionPendingStatus(request.name));
       this.eventSink.emit({ type: 'permission_requested', request: runtimeRequest });
     });
   }
@@ -320,10 +330,12 @@ export class AgentRuntimeController {
     const chatOptions: AgentChatControllerOptions = {
       uiCapabilities,
       uiRenderer: resolvedRenderer,
+      onVerificationStateChange: state => this.turnController.setVerificationState(state),
       ...(this.options.chatOptions ?? {}),
     };
     chatOptions.uiCapabilities = uiCapabilities;
     chatOptions.uiRenderer = chatOptions.uiRenderer ?? resolvedRenderer;
+    chatOptions.onVerificationStateChange = chatOptions.onVerificationStateChange ?? (state => this.turnController.setVerificationState(state));
     if (this.options.useRuntimeToolPermissions && !chatOptions.confirmToolUse) {
       chatOptions.confirmToolUse = request => this.requestToolPermission(request);
     }

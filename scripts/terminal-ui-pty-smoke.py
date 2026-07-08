@@ -249,6 +249,8 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
             if "check referenced context" in last_user:
                 has_context = CONTEXT_FILE_MARKER in all_text and CONTEXT_RULE_MARKER in all_text
                 self.write_text_stream(["context-fixture-seen " if has_context else "context-fixture-missing "], delay=0.05)
+            elif "multi tool batch" in last_user and has_tool_result:
+                self.write_text_stream(["multi-tool-batch-complete "], delay=0.05)
             elif CONFIRM_DENY_TARGET in all_text and has_tool_result:
                 self.write_text_stream(["confirmation-denied-final "], delay=0.05)
             elif CONFIRM_APPROVE_TARGET in all_text and has_tool_result:
@@ -259,6 +261,14 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
                 self.write_tool_call_stream(CONFIRM_DENY_TARGET, "denied")
             elif "revision target" in last_user:
                 self.write_text_stream(["revision-final-response "], delay=0.05)
+            elif "long output while typing" in last_user:
+                self.write_text_stream([f"long-output-chunk-{index} " for index in range(1, 41)], delay=0.06)
+            elif "multi tool batch" in last_user:
+                self.write_tool_calls_stream([
+                    ("read_file", {"path": "src/a.ts"}),
+                    ("read_file", {"path": "src/b.ts"}),
+                    ("read_file", {"path": "src/c.ts"}),
+                ])
             elif "stream revise" in last_user:
                 self.write_text_stream([
                     "mock-stream-chunk-1 ",
@@ -320,6 +330,29 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
             {},
             finish_reason="tool_calls",
             usage={"prompt_tokens": 20, "completion_tokens": 6},
+        )
+
+    def write_tool_calls_stream(self, tool_calls: list[tuple[str, dict]]) -> None:
+        """Write multiple simultaneous tool calls for batch testing."""
+        tool_call_chunks = [
+            {
+                "index": idx,
+                "id": f"call-batch-{idx}",
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args)},
+            }
+            for idx, (name, args) in enumerate(tool_calls)
+        ]
+        self.write_chunk({
+            "content": "requesting batch of tools ",
+        })
+        time.sleep(0.05)
+        self.write_chunk({"tool_calls": tool_call_chunks})
+        time.sleep(0.05)
+        self.write_chunk(
+            {},
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 30, "completion_tokens": 10},
         )
 
 
@@ -423,6 +456,24 @@ def stop_process(process: subprocess.Popen[bytes], master: int | None) -> None:
 
 
 def main() -> int:
+    # === Manual Validation Steps for Long Session with Chinese IME ===
+    # 1. Launch the terminal UI in a real terminal (not PTY smoke):
+    #      npm run start
+    # 2. Type a long CJK sentence via IME (e.g. "这是一个需要长时间编辑的复杂中文句子")
+    #    and verify the raw editor correctly renders combining characters.
+    # 3. Mid-edit, submit the prompt. While the assistant streams output, type
+    #    another CJK sentence via IME and verify the readline buffer is restored
+    #    after each stream chunk without losing partial IME composition state.
+    # 4. Resize the terminal window (e.g. from 80x24 to 120x40) during active
+    #    assistant output streaming. Verify CJK characters remain visible and
+    #    the prompt is redrawn correctly.
+    # 5. Run /resume and navigate session pages. Verify CJK session names render
+    #    correctly and can be selected.
+    # 6. Type Ctrl+C during an active LLM request. Verify the abort status is
+    #    shown and CJK input state is preserved after interruption.
+    # 7. Repeat steps 2-6 with different IME engines (e.g. Sogou, Rime, macOS
+    #    built-in Pinyin) to confirm cross-IME compatibility.
+    # =================================================================
     repo = Path(__file__).resolve().parents[1]
     approve_path = repo / CONFIRM_APPROVE_TARGET
     deny_path = repo / CONFIRM_DENY_TARGET
@@ -495,6 +546,27 @@ def main() -> int:
         time.sleep(0.2)
         sync_screen()
 
+        # --- Bracketed multiline paste: buffer holds multi-line as one input ---
+        os.write(master, b"\x15")
+        time.sleep(0.15)
+        os.write(master, b"\x1b[200~aaa\nbbb\x1b[201~")
+        time.sleep(0.35)
+        visible_paste = sync_screen()
+        compact_paste = visible_paste.replace(" ", "")
+        if "aaa⏎bbb" not in compact_paste:
+            raise AssertionError(
+                "Bracketed multiline paste did not render as a single buffered input:\n"
+                + visible_paste
+            )
+        # Ctrl+U clears the pasted multiline buffer
+        os.write(master, b"\x15")
+        time.sleep(0.25)
+        visible_cleared = sync_screen()
+        if "aaa" in visible_cleared.replace(" ", ""):
+            raise AssertionError(
+                "Ctrl+U did not clear the pasted multiline buffer:\n" + visible_cleared
+            )
+
         os.write(master, b"\x15stream revise\r")
         wait_for(master, output, "mock-stream-chunk-1", timeout=8)
         os.write(master, "输入中事地方".encode("utf-8"))
@@ -523,31 +595,80 @@ def main() -> int:
         wait_for(master, output, "Revision received. Interrupting current response", timeout=8)
         wait_for(master, output, "revision-final-response", timeout=10)
 
+        # --- Multi-tool batch ordering test ---
+        os.write(master, b"\x15multi tool batch\r")
+        wait_for(master, output, "requesting batch of tools", timeout=8)
+        wait_for(master, output, "Running read_file", timeout=8)
+        wait_for(master, output, "multi-tool-batch-complete", timeout=10)
+        plain_after_batch = strip_ansi(b"".join(output).decode("utf-8", errors="replace"))
+        assert_output_order(plain_after_batch, [
+            "requesting batch of tools",
+            "Running read_file",
+            "multi-tool-batch-complete",
+        ])
+
+        os.write(master, b"\x15long output while typing\r")
+        wait_for(master, output, "long-output-chunk-1", timeout=8)
+        os.write(master, "这是一段持续输入".encode("utf-8"))
+        wait_for(master, output, "这是一段持续输入", timeout=5)
+        plain_during_long_output = strip_ansi(b"".join(output).decode("utf-8", errors="replace"))
+        if "这是一段持续输入" not in plain_during_long_output:
+            raise AssertionError(
+                "Live input was not reflected while long assistant output was streaming:\n"
+                + plain_during_long_output[-4000:]
+            )
+        set_window_size(master, rows=24, cols=52)
+        model.resize(rows=24, cols=52)
+        time.sleep(0.2)
+        plain_after_shrink = strip_ansi(b"".join(output).decode("utf-8", errors="replace"))
+        if "这是一段持续输入" not in plain_after_shrink:
+            raise AssertionError(
+                "Resize during long assistant output did not keep partial input visible:\n"
+                + plain_after_shrink[-4000:]
+            )
+        set_window_size(master, rows=24, cols=100)
+        model.resize(rows=24, cols=100)
+        time.sleep(0.2)
+        plain_after_restore = strip_ansi(b"".join(output).decode("utf-8", errors="replace"))
+        if "这是一段持续输入" not in plain_after_restore:
+            raise AssertionError(
+                "Restore after resize did not keep partial input:\n"
+                + plain_after_restore[-4000:]
+            )
+        wait_for(master, output, "long-output-chunk-20", timeout=8)
+
         os.write(master, b"confirm allow\r")
         wait_for(master, output, "Allow tool write_file?", timeout=8)
         wait_for(master, output, CONFIRM_APPROVE_TARGET, timeout=8)
-        plain_after_approve = strip_ansi(b"".join(output).decode("utf-8", errors="replace"))
-        assert_output_order(plain_after_approve, [
-            f"requesting write to {CONFIRM_APPROVE_TARGET}",
-            "Allow tool write_file?",
-            "confirmation-allowed-final",
-        ])
         os.write(master, b"y\r")
         wait_for(master, output, "confirmation-allowed-final", timeout=10)
+        # --- Tool timeline order assertion (approve path) ---
+        # Verify that tool events appear in strict timeline order:
+        #   requesting write to <target> -> Allow tool write_file? -> tool execution -> confirmation-allowed-final
+        plain_after_approve_full = strip_ansi(b"".join(output).decode("utf-8", errors="replace"))
+        assert_output_order(plain_after_approve_full, [
+            f"requesting write to {CONFIRM_APPROVE_TARGET}",
+            "Allow tool write_file?",
+            CONFIRM_APPROVE_TARGET,
+            "confirmation-allowed-final",
+        ])
         if not approve_path.exists() or approve_path.read_text(encoding="utf-8") != "approved":
             raise AssertionError("Approved write_file confirmation did not execute the tool")
 
         os.write(master, b"confirm deny\r")
         wait_for(master, output, "Allow tool write_file?", timeout=8)
         wait_for(master, output, CONFIRM_DENY_TARGET, timeout=8)
-        plain_after_deny = strip_ansi(b"".join(output).decode("utf-8", errors="replace"))
-        assert_output_order(plain_after_deny, [
+        os.write(master, b"n\r")
+        wait_for(master, output, "permission was denied (user)", timeout=10)
+        # --- Tool timeline order assertion (deny path) ---
+        # Verify that tool events appear in strict timeline order:
+        #   requesting write to <target> -> Allow tool write_file? -> permission was denied (user)
+        plain_after_deny_full = strip_ansi(b"".join(output).decode("utf-8", errors="replace"))
+        assert_output_order(plain_after_deny_full, [
             f"requesting write to {CONFIRM_DENY_TARGET}",
             "Allow tool write_file?",
             "permission was denied (user)",
         ])
-        os.write(master, b"n\r")
-        wait_for(master, output, "permission was denied (user)", timeout=10)
         if deny_path.exists():
             raise AssertionError("Denied write_file confirmation still created the target file")
 

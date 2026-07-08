@@ -197,6 +197,7 @@ describe('runtime/UI renderer parity contract', () => {
     expect(ui).toEqual(runtime);
     expect(ui.result).toBe(false);
     expect(ui.events).toEqual([
+      'status:Waiting: permission required for exec_command',
       'permission:exec_command:publishing changes external state',
     ]);
   });
@@ -226,6 +227,127 @@ describe('runtime/UI renderer parity contract', () => {
     expect(ui.runner.calls.map(call => call.input)).toEqual(runtime.runner.calls.map(call => call.input));
     expect(ui.runner.calls.map(call => call.input)).toEqual(['/resume session-abc --all']);
     expect(ui.events).toEqual(runtime.events);
+  });
+
+  it('routes plain text submit through both adapters identically', async () => {
+    const ui = createRecordingController('ui-events');
+    const runtime = createRecordingController('runtime-events');
+
+    expect(ui.controller.handle({ type: 'submit', text: 'hello', source: 'composer' })).toEqual({ type: 'started' });
+    expect(runtime.controller.handle({ type: 'submit', text: 'hello', source: 'composer' })).toEqual({ type: 'started' });
+
+    ui.runner.calls[0].resolve();
+    runtime.runner.calls[0].resolve();
+    await ui.controller.waitForIdle();
+    await runtime.controller.waitForIdle();
+
+    expect(ui.runner.calls.map(call => call.input)).toEqual(['hello']);
+    expect(runtime.runner.calls.map(call => call.input)).toEqual(['hello']);
+    expect(ui.events).toEqual(runtime.events);
+    expect(ui.events).toEqual([
+      'append:user:hello',
+      'processing:true',
+      'processing:false',
+    ]);
+  });
+
+  it('adapts tool started and finished events identically across runtime and UI sinks', () => {
+    const ui = createRecordingController('ui-events');
+    const runtime = createRecordingController('runtime-events');
+    const started = {
+      callId: 'call-123',
+      name: 'read_file',
+      args: { path: 'src/index.ts' },
+      batchCount: 1,
+      batchIndex: 0,
+    };
+    const finished = {
+      callId: 'call-123',
+      name: 'read_file',
+      args: { path: 'src/index.ts' },
+      success: true,
+      duration: 12,
+      batchCount: 1,
+      batchIndex: 0,
+    };
+
+    ui.events.length = 0;
+    runtime.events.length = 0;
+
+    const uiSink: UiEventSink = {
+      append: entry => {
+        ui.events.push(normalizeEvent({ type: 'transcript_append', entry }));
+        return 'ui-entry';
+      },
+      update: (id, patch) => ui.events.push(normalizeEvent({ type: 'transcript_update', id, patch })),
+      finalize: (id, patch) => ui.events.push(normalizeEvent({ type: 'transcript_finalize', id, patch })),
+      remove: id => ui.events.push(normalizeEvent({ type: 'transcript_remove', id })),
+      replaceTranscript: entries => ui.events.push(normalizeEvent({ type: 'transcript_replace', entries })),
+      clearTranscript: () => ui.events.push(normalizeEvent({ type: 'transcript_clear' })),
+      setStatus: message => ui.events.push(normalizeEvent({ type: 'status_changed', message })),
+      showSessionPicker: request => ui.events.push(normalizeEvent({ type: 'session_picker_requested', request })),
+      showEditPreview: request => ui.events.push(normalizeEvent({ type: 'edit_preview_requested', request })),
+      showPermissionRequest: request => ui.events.push(normalizeEvent({ type: 'permission_requested', request })),
+      toolStarted: tool => ui.events.push(normalizeEvent({ type: 'tool_started', event: tool })),
+      toolFinished: tool => ui.events.push(normalizeEvent({ type: 'tool_finished', event: tool })),
+      sessionRestored: restored => ui.events.push(normalizeEvent({ type: 'session_restored', event: restored })),
+      loopStatsUpdated: stats => ui.events.push(normalizeEvent({ type: 'loop_stats_updated', stats })),
+      traceEventRecorded: trace => ui.events.push(normalizeEvent({ type: 'trace_event_recorded', event: trace })),
+      harnessDiagnosticsUpdated: diagnostics => ui.events.push(normalizeEvent({ type: 'harness_diagnostics_updated', diagnostics })),
+      setProcessing: processing => ui.events.push(normalizeEvent({ type: 'processing_changed', processing })),
+    };
+    uiSink.toolStarted?.(started);
+    uiSink.toolFinished?.(finished);
+
+    runtime.events.push(normalizeEvent({ type: 'tool_started', event: started }));
+    runtime.events.push(normalizeEvent({ type: 'tool_finished', event: finished }));
+
+    expect(ui.events).toEqual(runtime.events);
+    expect(ui.events).toEqual([
+      'tool_started:call-123:read_file',
+      'tool_finished:call-123:read_file:true',
+    ]);
+  });
+
+  it('adapts transcript replacement identically across runtime and UI sinks', () => {
+    const ui = createRecordingController('ui-events');
+    const runtime = createRecordingController('runtime-events');
+    const entries = [
+      { id: 'entry-1', role: 'user' as const, content: 'hello' },
+      { id: 'entry-2', role: 'assistant' as const, content: 'world' },
+    ];
+
+    ui.events.length = 0;
+    runtime.events.length = 0;
+
+    const uiSink: UiEventSink = {
+      append: entry => {
+        ui.events.push(normalizeEvent({ type: 'transcript_append', entry }));
+        return 'ui-entry';
+      },
+      update: (id, patch) => ui.events.push(normalizeEvent({ type: 'transcript_update', id, patch })),
+      finalize: (id, patch) => ui.events.push(normalizeEvent({ type: 'transcript_finalize', id, patch })),
+      remove: id => ui.events.push(normalizeEvent({ type: 'transcript_remove', id })),
+      replaceTranscript: replaced => ui.events.push(normalizeEvent({ type: 'transcript_replace', entries: replaced })),
+      clearTranscript: () => ui.events.push(normalizeEvent({ type: 'transcript_clear' })),
+      setStatus: message => ui.events.push(normalizeEvent({ type: 'status_changed', message })),
+      showSessionPicker: request => ui.events.push(normalizeEvent({ type: 'session_picker_requested', request })),
+      showEditPreview: request => ui.events.push(normalizeEvent({ type: 'edit_preview_requested', request })),
+      showPermissionRequest: request => ui.events.push(normalizeEvent({ type: 'permission_requested', request })),
+      toolStarted: tool => ui.events.push(normalizeEvent({ type: 'tool_started', event: tool })),
+      toolFinished: tool => ui.events.push(normalizeEvent({ type: 'tool_finished', event: tool })),
+      sessionRestored: restored => ui.events.push(normalizeEvent({ type: 'session_restored', event: restored })),
+      loopStatsUpdated: stats => ui.events.push(normalizeEvent({ type: 'loop_stats_updated', stats })),
+      traceEventRecorded: trace => ui.events.push(normalizeEvent({ type: 'trace_event_recorded', event: trace })),
+      harnessDiagnosticsUpdated: diagnostics => ui.events.push(normalizeEvent({ type: 'harness_diagnostics_updated', diagnostics })),
+      setProcessing: processing => ui.events.push(normalizeEvent({ type: 'processing_changed', processing })),
+    };
+    uiSink.replaceTranscript?.(entries);
+
+    runtime.events.push(normalizeEvent({ type: 'transcript_replace', entries }));
+
+    expect(ui.events).toEqual(runtime.events);
+    expect(ui.events).toEqual(['replace:2']);
   });
 
   it('adapts session restored events identically across runtime and UI sinks', () => {

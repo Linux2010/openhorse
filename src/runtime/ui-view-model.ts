@@ -33,7 +33,7 @@ export interface TranscriptBlock {
   title?: string;
 }
 
-export type ToolActivityState = 'running' | 'success' | 'error' | 'requested';
+export type ToolActivityState = 'queued' | 'running' | 'success' | 'error' | 'skipped' | 'requested';
 
 export interface ToolActivity {
   callId?: string;
@@ -945,10 +945,14 @@ export function formatToolActivityTranscript(activity: ToolActivity): string {
   const lines: string[] = [];
   const detailLooksTruncated = Boolean(activity.detail?.includes('...'));
 
-  if (activity.state === 'running') {
+  if (activity.state === 'queued') {
+    lines.push(`${prefix}Queued ${activity.name}${activity.detail ? ` ${activity.detail}` : ''}`);
+  } else if (activity.state === 'running') {
     lines.push(`${prefix}Running ${activity.name}${activity.detail ? ` ${activity.detail}` : ''}`);
   } else if (activity.state === 'requested') {
     lines.push(`${prefix}Requested ${activity.name}${activity.detail ? ` ${activity.detail}` : ''}`);
+  } else if (activity.state === 'skipped') {
+    lines.push(`${prefix}Skipped ${activity.name}${activity.detail ? ` ${activity.detail}` : ''}`);
   } else {
     const symbol = activity.state === 'success' ? '✓' : '✗';
     const suffix = activity.detail ? ` ${activity.detail}` : '';

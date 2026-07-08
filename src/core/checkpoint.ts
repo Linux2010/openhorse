@@ -268,3 +268,13 @@ function safeFileName(filePath: string): string {
   // Replace problematic characters in file names for safe storage
   return filePath.replace(/[<>:"|?*]/g, '_');
 }
+
+/**
+ * TODO: Wire into createPreToolCheckpoint in chat-controller.ts to trigger
+ * an automatic checkpoint when a single turn would modify ≥ threshold files.
+ * This provides an extra safety net for large-scale refactoring with
+ * automated rollback guidance.
+ */
+export function shouldCreateMultiFileCheckpoint(changedFileCount: number, threshold = 5): boolean {
+  return changedFileCount >= threshold;
+}

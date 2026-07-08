@@ -55,7 +55,7 @@ import {
   toolActivityFromFinished,
   toolActivityFromStarted,
 } from './ui-view-model';
-import { agentStepStatus, runningToolsStatus } from './agent-status';
+import { agentStepStatus, batchingSuggestion, runningToolsStatus, verifyingStatus, verificationGateStatus } from './agent-status';
 import { resolveRuntimeLoopBudget } from './loop-budget';
 
 const ANSI_PATTERN = /\x1b\[[0-9;?]*[A-Za-z]/g;
@@ -73,6 +73,24 @@ function isAbortError(error: unknown, abortSignal?: AbortSignal): boolean {
     return error.name === 'AbortError' || error.message.toLowerCase().includes('aborted');
   }
   return false;
+}
+
+function errorLayerForChatError(error: unknown): import('./ui-events').ErrorLayer {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+  if (/NotEnoughCvError|code:\s*11210|provider|quota|rate.?limit|timeout|connection/i.test(message)) {
+    return 'provider';
+  }
+  if (/tool|command|exec_command|write_file|edit_file/i.test(message)) {
+    return 'tool';
+  }
+  if (/\bmcp\b/i.test(message)) return 'mcp';
+  if (/\b(session|resume|compact|harness)\b/i.test(message)) return 'session';
+  if (/\b(skill|skills)\b/i.test(message)) return 'skills';
+  if (/\b(memory|vector store|recall|forget)\b/i.test(message)) return 'memory';
+  if (/\b(renderer|terminal|tty|prompt|resize|scrollback)\b/i.test(message)) return 'renderer';
+  if (lower.includes('abort') || lower.includes('interrupted')) return 'runtime';
+  return 'unknown';
 }
 
 function formatChatError(error: unknown): string {
@@ -831,6 +849,12 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
 
   return {
     start(event: ToolCallEvent): void {
+      const entryId = events.append({
+        role: 'tool',
+        title: 'tool',
+        content: toolStartContent(event),
+      });
+      runningToolEntries.set(event.callId, entryId);
       events.toolStarted?.({
         callId: event.callId,
         name: event.name,
@@ -838,15 +862,28 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
         batchCount: event.batchCount,
         batchIndex: event.batchIndex,
       });
-      const entryId = events.append({
-        role: 'tool',
-        title: 'tool',
-        content: toolStartContent(event),
-      });
-      runningToolEntries.set(event.callId, entryId);
     },
 
     finish(event: ToolResultEvent): void {
+      const content = toolFinishContent(event);
+      const existingEntryId = runningToolEntries.get(event.callId);
+
+      if (existingEntryId) {
+        events.finalize(existingEntryId, {
+          role: event.success ? 'tool' : 'error',
+          title: 'tool',
+          content,
+        });
+        runningToolEntries.delete(event.callId);
+      } else {
+        const entryId = events.append({
+          role: event.success ? 'tool' : 'error',
+          title: 'tool',
+          content,
+        });
+        events.finalize(entryId);
+      }
+
       events.toolFinished?.({
         callId: event.callId,
         name: event.name,
@@ -860,25 +897,6 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
         batchCount: event.batchCount,
         batchIndex: event.batchIndex,
       });
-      const content = toolFinishContent(event);
-      const existingEntryId = runningToolEntries.get(event.callId);
-
-      if (existingEntryId) {
-        events.finalize(existingEntryId, {
-          role: event.success ? 'tool' : 'error',
-          title: 'tool',
-          content,
-        });
-        runningToolEntries.delete(event.callId);
-        return;
-      }
-
-      const entryId = events.append({
-        role: event.success ? 'tool' : 'error',
-        title: 'tool',
-        content,
-      });
-      events.finalize(entryId);
     },
   };
 }
@@ -914,6 +932,7 @@ export interface AgentChatControllerOptions {
   confirmToolUse?: Parameters<typeof query>[0]['confirmToolUse'];
   uiCapabilities?: UiRendererCapabilities;
   uiRenderer?: CommandUiRenderer;
+  onVerificationStateChange?: (state: 'pending' | 'running' | 'passed' | 'failed' | 'gated') => void;
 }
 
 /** @deprecated Use AgentChatControllerOptions. Chat execution is renderer-independent. */
@@ -971,6 +990,7 @@ export class AgentChatController {
         content: suggestions.length > 0
           ? `Unknown command: /${parsed.name}\nDid you mean: ${suggestions.map(item => `/${item}`).join(', ')}?`
           : `Unknown command: /${parsed.name}`,
+        errorLayer: 'runtime',
       });
       return;
     }
@@ -999,6 +1019,7 @@ export class AgentChatController {
         role: 'error',
         title: `/${command.name}`,
         content: result.error,
+        errorLayer: 'runtime',
       });
     }
 
@@ -1168,7 +1189,7 @@ export class AgentChatController {
       this.events.setStatus(envelope.success ? `Completed local ${action.label}` : `Failed local ${action.label}`);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      this.events.append({ role: 'error', title: 'local', content: message });
+      this.events.append({ role: 'error', title: 'local', content: message, errorLayer: 'tool' });
       this.events.setStatus('Local command failed. Ready for the next input.');
       const assistantContent = `Local fast path failed for ${action.label}.\n\n${message}`;
       this.runtime.store.addMessage({ role: 'assistant', content: assistantContent });
@@ -1246,7 +1267,7 @@ export class AgentChatController {
     options: { abortSignal?: AbortSignal; turnId?: number | string } = {}
   ): Promise<void> {
     if (!input) {
-      this.events.append({ role: 'error', content: 'Usage: /chat <message>' });
+      this.events.append({ role: 'error', content: 'Usage: /chat <message>', errorLayer: 'runtime' });
       return;
     }
 
@@ -1254,6 +1275,7 @@ export class AgentChatController {
       this.events.append({
         role: 'error',
         content: 'LLM is not configured. Set OPENHORSE_API_KEY in ~/.openhorse/openhorse.json or environment.',
+        errorLayer: 'provider',
       });
       return;
     }
@@ -1304,6 +1326,13 @@ export class AgentChatController {
     });
     const intent = harness.updateContractFromUserInput(input);
     harness.recordAppliedSkills(skillResolution.skills);
+
+    // Reconcile diagnostic: when harness state is present but objective may be incomplete
+    if (snapshot.harnessState && !snapshot.harnessState.rootObjective && !snapshot.harnessState.contract?.objective) {
+      this.events.setStatus(
+        'Resume diagnostic: harness state restored but objective may be incomplete. Run /harness explain to review.'
+      );
+    }
 
     const promptCtx: PromptContext = {
       cwd: this.runtime.cwd,
@@ -1433,6 +1462,17 @@ export class AgentChatController {
             assistantStream.ensureMessage(event.content || '');
             assistantStream.closeSegment();
             this.events.setStatus(runningToolsStatus(event.toolCalls.length));
+            {
+              const batchReadOnlyCount = event.toolCalls.filter(tc => {
+                const def = skillResolution.tools.find(t => t.name === tc.function.name);
+                const args = parseToolCallArgsForRuntime(tc);
+                return args && def?.isReadOnly?.(args) === true;
+              }).length;
+              const suggestion = batchingSuggestion(batchReadOnlyCount);
+              if (suggestion) {
+                this.events.append({ role: 'status', content: suggestion });
+              }
+            }
             const checkpointId = checkpointSequence === 0
               ? turnId
               : `${turnId}-checkpoint-${checkpointSequence + 1}`;
@@ -1635,12 +1675,22 @@ export class AgentChatController {
         this.events.setStatus('Interrupted.');
         removeTrailingUserMessage(this.runtime);
         if (sessionId) {
-          appendPostWorkspaceTrace(this.events, sessionId, turnId, this.runtime.cwd, preWorkspace, verificationResults);
+          const { delta } = appendPostWorkspaceTrace(this.events, sessionId, turnId, this.runtime.cwd, preWorkspace, verificationResults);
           recordTraceEvent(this.events, sessionId, {
             turnId,
             type: 'aborted',
             note: 'aborted_after_query',
           });
+          const recoveryNotice = workspaceDeltaHasTurnChanges(delta)
+            ? formatFailureRecoveryNotice(turnId, delta, checkpointIds)
+            : undefined;
+          if (recoveryNotice) {
+            this.events.append({
+              role: 'status',
+              title: 'recovery',
+              content: recoveryNotice,
+            });
+          }
           removeLastIncompleteAssistantMessage(sessionId);
         }
         return;
@@ -1657,6 +1707,10 @@ export class AgentChatController {
           preWorkspace,
           verificationResults,
         );
+        if (profile.changedFiles.length > 0 && profile.required) {
+          this.events.setStatus(verifyingStatus(profile.profile));
+          this.controllerOptions.onVerificationStateChange?.('running');
+        }
         if (shouldRecordVerificationLoopStats(profile, summary)) {
           const stats = pendingCompleteStats ?? this.runtime.store.getSnapshot().lastLoopStats;
           if (stats) {
@@ -1664,6 +1718,8 @@ export class AgentChatController {
           }
         }
         if (shouldGateCompletion(summary)) {
+          this.events.setStatus(verificationGateStatus(summary.skippedReason ?? 'verification checks not run'));
+          this.controllerOptions.onVerificationStateChange?.('gated');
           const notice = formatVerificationGateNotice(summary);
           this.events.append({
             role: 'status',
@@ -1684,7 +1740,36 @@ export class AgentChatController {
               finishReason: 'completion_gate',
             };
           }
+        } else if (profile.changedFiles.length > 0 && profile.required) {
+          this.controllerOptions.onVerificationStateChange?.('passed');
         }
+      }
+
+      if (pendingCompleteStats?.finishReason === 'budget_exceeded') {
+        const stats = pendingCompleteStats;
+        const lines: string[] = ['Loop budget reached — stopping this turn.'];
+        if (stats.budgetExceededReason) {
+          lines.push(`Reason: ${stats.budgetExceededReason}`);
+        }
+        const progressParts: string[] = [];
+        if (typeof stats.loopBudgetMaxLlmRequests === 'number') {
+          progressParts.push(`${stats.llmRequests ?? 0}/${stats.loopBudgetMaxLlmRequests} LLM requests`);
+        }
+        if (typeof stats.loopBudgetMaxToolCalls === 'number') {
+          progressParts.push(`${stats.toolCalls ?? 0}/${stats.loopBudgetMaxToolCalls} tool calls`);
+        }
+        if (progressParts.length) {
+          lines.push(`Progress: ${progressParts.join(', ')}`);
+        }
+        if (stats.continuationActions?.length) {
+          lines.push(`Next: ${stats.continuationActions.join('; ')}`);
+        } else if (stats.continuationHint) {
+          lines.push(`Next: ${stats.continuationHint}`);
+        }
+        const notice = lines.join('\n');
+        this.events.append({ role: 'status', title: 'budget', content: notice });
+        finalContent = finalContent ? `${finalContent}\n\n${notice}` : notice;
+        appendAssistantNotice(sessionMessagesToRecord, notice);
       }
 
       if (pendingCompleteStats) {
@@ -1730,19 +1815,29 @@ export class AgentChatController {
         this.events.setStatus('Interrupted.');
         removeTrailingUserMessage(this.runtime);
         if (sessionId) {
-          appendPostWorkspaceTrace(this.events, sessionId, turnId, this.runtime.cwd, preWorkspace, verificationResults);
+          const { delta } = appendPostWorkspaceTrace(this.events, sessionId, turnId, this.runtime.cwd, preWorkspace, verificationResults);
           recordTraceEvent(this.events, sessionId, {
             turnId,
             type: 'aborted',
             note: 'abort_error',
           });
+          const recoveryNotice = workspaceDeltaHasTurnChanges(delta)
+            ? formatFailureRecoveryNotice(turnId, delta, checkpointIds)
+            : undefined;
+          if (recoveryNotice) {
+            this.events.append({
+              role: 'status',
+              title: 'recovery',
+              content: recoveryNotice,
+            });
+          }
           removeLastIncompleteAssistantMessage(sessionId);
         }
         return;
       }
 
       assistantStream.discardSegment();
-      this.events.append({ role: 'error', content: formatChatError(error) });
+      this.events.append({ role: 'error', content: formatChatError(error), errorLayer: errorLayerForChatError(error) });
       this.events.setStatus('Turn failed. Ready for the next input.');
       const failedStats = error instanceof QueryLoopError
         ? error.stats

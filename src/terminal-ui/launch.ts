@@ -83,6 +83,11 @@ export function resolveTerminalSessionPickerInput(
   const trimmed = input.trim();
   if (!trimmed) return { type: 'cancelled' };
   if (trimmed.startsWith('/')) return { type: 'slash', input: trimmed };
+  if (trimmed === '--last') {
+    const latest = request.sessions[0];
+    if (latest) return { type: 'selected', sessionId: latest.id };
+    return { type: 'error', message: 'No recent session to resume.' };
+  }
 
   const explicitIndex = trimmed.match(/^#(\d+)$/);
   if (explicitIndex) {
@@ -135,7 +140,7 @@ function formatTranscriptEntry(entry: TranscriptEntry): string {
     case 'tool':
       return TOOL(content);
     case 'error':
-      return ERROR(formatTerminalErrorMessage(content));
+      return ERROR(formatTerminalErrorMessage(content, entry.errorLayer));
     case 'status':
       return DIM(content);
     case 'command':
@@ -168,10 +173,13 @@ const TERMINAL_ERROR_LAYERS: TerminalErrorLayer[] = [
   'skills',
 ];
 
-export function formatTerminalErrorMessage(message: string): string {
+export function formatTerminalErrorMessage(message: string, explicitLayer?: import('../runtime/ui-events').ErrorLayer): string {
   const trimmed = message.trim();
   if (!trimmed) return trimmed;
   if (hasErrorLayerPrefix(trimmed)) return trimmed;
+  if (explicitLayer) {
+    return `[${explicitLayer.toUpperCase()}] ${trimmed}`;
+  }
   return `[${inferTerminalErrorLayer(trimmed)}] ${trimmed}`;
 }
 
@@ -267,6 +275,10 @@ export function terminalContentWidth(fallback = 88): number {
   const columns = process.stdout.columns;
   if (typeof columns === 'number' && columns > 0) {
     return Math.max(1, Math.min(columns, 200));
+  }
+  const envColumns = Number(process.env.COLUMNS);
+  if (Number.isFinite(envColumns) && envColumns > 0) {
+    return Math.max(1, Math.min(envColumns, 200));
   }
   return Math.max(60, Math.min(fallback, 200));
 }
@@ -965,7 +977,7 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
     },
     onTurnError: error => {
       const message = error instanceof Error ? error.message : String(error);
-      events.append({ role: 'error', content: `Error: ${message}` });
+      events.append({ role: 'error', content: message });
     },
   });
   editor = new RawTerminalEditor({
@@ -1054,7 +1066,7 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
         const result = openExternalEditor({ initialContent: edit.initialContent });
         if (!stopping) editor.start();
         if (result.error) {
-          events.append({ role: 'error', content: `Editor failed: ${result.error}` });
+          events.append({ role: 'error', content: `Editor failed: ${result.error}`, errorLayer: 'renderer' });
           prompt();
           return;
         }

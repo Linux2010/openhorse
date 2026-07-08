@@ -86,7 +86,7 @@ import {
   formatStorageReport,
   repairProjectMetadata,
 } from '../services/storage-maintenance';
-import { agentStepStatus, runningToolsStatus } from '../runtime/agent-status';
+import { agentStepStatus, compactStatus, runningToolsStatus } from '../runtime/agent-status';
 import { resolveRuntimeLoopBudget } from '../runtime/loop-budget';
 
 // ============================================================================
@@ -1159,6 +1159,48 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
       }
     } else {
       console.log(DIM('    (no contract established)'));
+    }
+    console.log();
+
+    // Context source
+    console.log(HEADER('  Context Source'));
+    const session = ctx.getSession?.() ?? (ctx.sessionId ? loadSessionMeta(ctx.sessionId) : null);
+    const isRestored = session?.transcriptDisplayStartTime != null;
+    const isCompactActive = Boolean(state.promptAssemblyStats);
+    console.log(`    Root       ${ACCENT(state.rootObjective || contract?.objective || '(none)')}`);
+    console.log(`    Active     ${DIM(state.activeInstruction || contract?.userIntent || '(none)')}`);
+    console.log(`    Source     ${isRestored ? WARN('restored session') : DIM('live turn')}`);
+    if (isRestored && session) {
+      const restoredTime = session.transcriptDisplayStartTime
+        ? new Date(session.transcriptDisplayStartTime).toLocaleString()
+        : 'unknown';
+      console.log(`    Restored   ${DIM(restoredTime)}`);
+    }
+    if (isCompactActive) {
+      console.log(`    Compact    ${SUCCESS('active')}`);
+    }
+    console.log();
+
+    // Evidence index summary
+    console.log(HEADER('  Evidence Index'));
+    const evidenceItems = state.evidenceIndex?.length ?? 0;
+    const evidenceKinds = new Map<string, number>();
+    if (state.evidenceIndex) {
+      for (const item of state.evidenceIndex) {
+        const kind = item.kind || 'unknown';
+        evidenceKinds.set(kind, (evidenceKinds.get(kind) || 0) + 1);
+      }
+    }
+    console.log(`    Total      ${ACCENT(String(evidenceItems))} items`);
+    if (evidenceKinds.size > 0) {
+      const kinds = Array.from(evidenceKinds.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10);
+      for (const [kind, count] of kinds) {
+        console.log(`      ${DIM(kind.padEnd(16))} ${count}`);
+      }
+    } else {
+      console.log(DIM('      (no evidence records yet)'));
     }
     console.log();
 
@@ -2254,6 +2296,7 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
     return { success: true };
   }
 
+  console.log(DIM(compactStatus()));
   try {
     const autoCompact = getAutoCompact();
     autoCompact.configure({
