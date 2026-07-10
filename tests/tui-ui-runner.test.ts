@@ -4,6 +4,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { moveTo } from '../src/tui-core/terminal-writer';
 import { TuiRunner } from '../src/tui-ui/runner';
+import { makeToolStartedEvent, makeToolFinishedEvent, resetToolEventSequence } from './test-helpers';
 
 function createOutput() {
   const writes: string[] = [];
@@ -19,6 +20,8 @@ function createOutput() {
 }
 
 describe('tui-ui runner', () => {
+  beforeEach(() => resetToolEventSequence());
+
   it('keeps CJK input and the native cursor in the prompt frame', () => {
     const { output } = createOutput();
     const runner = new TuiRunner({ output, width: 48, height: 10 });
@@ -111,24 +114,24 @@ describe('tui-ui runner', () => {
     const { output } = createOutput();
     const runner = new TuiRunner({ output, width: 72, height: 12 });
 
-    runner.events.toolStarted?.({
+    runner.events.toolStarted?.(makeToolStartedEvent({
       callId: 'call-1',
       name: 'read_file',
       args: { path: 'src/index.ts' },
-    });
+    }));
     const toolId = runner.events.append({
       role: 'tool',
       title: 'tool',
       content: 'Running read_file src/index.ts',
     });
-    runner.events.toolFinished?.({
+    runner.events.toolFinished?.(makeToolFinishedEvent({
       callId: 'call-1',
       name: 'read_file',
       args: { path: 'src/index.ts' },
       success: true,
       duration: 12,
       summary: '✓ read_file src/index.ts (12ms)',
-    });
+    }));
     runner.events.finalize(toolId, {
       role: 'tool',
       title: 'tool',
@@ -146,7 +149,7 @@ describe('tui-ui runner', () => {
     expect(visible).toContain('Done.');
     expect(visible.indexOf('✓ read_file')).toBeLessThan(visible.indexOf('Done.'));
     expect(runner.getState().runtimeToolEvents).toEqual([
-      { type: 'started', callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } },
+      { type: 'started', callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' }, sequence: 1 },
       {
         type: 'finished',
         callId: 'call-1',
@@ -155,6 +158,7 @@ describe('tui-ui runner', () => {
         success: true,
         duration: 12,
         summary: '✓ read_file src/index.ts (12ms)',
+        sequence: 1,
       },
     ]);
     expect(runner.getState().transcript.map(entry => entry.id)).toEqual([toolId, assistantId]);

@@ -8,12 +8,15 @@ import {
   type TuiUiState,
 } from '../src/tui-ui/state';
 import type { SessionMeta } from '../src/services/session-storage';
+import { makeToolStartedEvent, makeToolFinishedEvent, resetToolEventSequence } from './test-helpers';
 
 function reduce(actions: TuiUiAction[]): TuiUiState {
   return actions.reduce(tuiUiReducer, initialTuiUiState);
 }
 
 describe('tui-ui state', () => {
+  beforeEach(() => resetToolEventSequence());
+
   it('keeps finalized transcript separate from live tool/activity entries', () => {
     const state = reduce([
       { type: 'appendTranscript', entry: { id: 'u1', role: 'user', content: 'hello' } },
@@ -111,24 +114,24 @@ describe('tui-ui state', () => {
     const state = reduce([
       {
         type: 'toolStarted',
-        event: { callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } },
+        event: makeToolStartedEvent({ callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } }),
       },
       {
         type: 'toolFinished',
-        event: {
+        event: makeToolFinishedEvent({
           callId: 'call-1',
           name: 'read_file',
           args: { path: 'src/index.ts' },
           success: true,
           duration: 12,
           summary: 'read ok',
-        },
+        }),
       },
     ]);
 
     expect(state.transcript).toEqual([]);
     expect(state.runtimeToolEvents).toEqual([
-      { type: 'started', callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } },
+      { type: 'started', callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' }, sequence: 1 },
       {
         type: 'finished',
         callId: 'call-1',
@@ -137,6 +140,7 @@ describe('tui-ui state', () => {
         success: true,
         duration: 12,
         summary: 'read ok',
+        sequence: 1,
       },
     ]);
   });

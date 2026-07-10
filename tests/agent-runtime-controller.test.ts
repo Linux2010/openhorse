@@ -32,6 +32,7 @@ import { listCheckpoints } from '../src/core/checkpoint';
 import { createContextHarness } from '../src/harness';
 import { findCommand } from '../src/commands';
 import type { CommandContext } from '../src/commands/types';
+import { makeToolStartedEvent, makeToolFinishedEvent, resetToolEventSequence } from './test-helpers';
 
 const stripAnsi = (text: string): string => text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
 
@@ -3072,18 +3073,18 @@ describe('AgentRuntimeController', () => {
     runtimeSink.emit({ type: 'processing_changed', processing: true });
     runtimeSink.emit({
       type: 'tool_started',
-      event: { callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } },
+      event: makeToolStartedEvent({ callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } }),
     });
     runtimeSink.emit({
       type: 'tool_finished',
-      event: {
+      event: makeToolFinishedEvent({
         callId: 'call-1',
         name: 'read_file',
         args: { path: 'src/index.ts' },
         success: true,
         duration: 12,
         summary: 'read file ok',
-      },
+      }),
     });
     runtimeSink.emit({
       type: 'loop_stats_updated',
@@ -3138,7 +3139,7 @@ describe('AgentRuntimeController', () => {
     expect(appended).toEqual([expect.objectContaining({ role: 'assistant', content: 'hello' })]);
     expect(statuses).toEqual(['ready']);
     expect(processing).toEqual([true]);
-    expect(events.toolStarted).toHaveBeenCalledWith({ callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } });
+    expect(events.toolStarted).toHaveBeenCalledWith({ callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' }, sequence: 1 });
     expect(events.toolFinished).toHaveBeenCalledWith(expect.objectContaining({ callId: 'call-1', success: true }));
     expect(loopStats).toEqual([expect.objectContaining({ finishReason: 'completed' })]);
     expect(traceEvents).toEqual([expect.objectContaining({ type: 'complete', turnId: 'turn-1' })]);
@@ -3237,15 +3238,15 @@ describe('AgentRuntimeController', () => {
 
     expect(uiEvents.append({ role: 'user', content: 'hello' })).toBe('runtime-entry-1');
     uiEvents.setStatus('working');
-    uiEvents.toolStarted?.({ callId: 'call-1', name: 'grep', args: { pattern: 'TODO' } });
-    uiEvents.toolFinished?.({
+    uiEvents.toolStarted?.(makeToolStartedEvent({ callId: 'call-1', name: 'grep', args: { pattern: 'TODO' } }));
+    uiEvents.toolFinished?.(makeToolFinishedEvent({
       callId: 'call-1',
       name: 'grep',
       args: { pattern: 'TODO' },
       success: false,
       duration: 34,
       error: 'not found',
-    });
+    }));
     uiEvents.sessionRestored?.({
       sessionId: 'session-1',
       projectPath: '/tmp/project',

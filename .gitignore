@@ -14,9 +14,13 @@ docs/codex/*
 !docs/codex/agent-loop-efficiency-optimization-plan.md
 !docs/codex/v0.2.14-targets-remaining-work.md
 !docs/codex/v0.2.17-ink-ui-upgrade-plan.md
+!docs/codex/v0.2.18-transcript-tool-detail-plan.md
 !docs/exp/
 docs/exp/*
+!docs/exp/runs/
+docs/exp/runs/*
 !docs/exp/openhorse-real-usage-testing.md
+!docs/exp/runs/v0.2.18-real-usage-test-2026-07-10.md
 !docs/targets/
 !docs/targets/**
 coverage/

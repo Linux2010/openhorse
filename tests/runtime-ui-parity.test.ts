@@ -254,19 +254,21 @@ describe('runtime/UI renderer parity contract', () => {
   it('adapts tool started and finished events identically across runtime and UI sinks', () => {
     const ui = createRecordingController('ui-events');
     const runtime = createRecordingController('runtime-events');
-    const started = {
+    const started: RuntimeToolStartedEvent = {
       callId: 'call-123',
       name: 'read_file',
       args: { path: 'src/index.ts' },
+      sequence: 1,
       batchCount: 1,
       batchIndex: 0,
     };
-    const finished = {
+    const finished: RuntimeToolFinishedEvent = {
       callId: 'call-123',
       name: 'read_file',
       args: { path: 'src/index.ts' },
       success: true,
       duration: 12,
+      sequence: 1,
       batchCount: 1,
       batchIndex: 0,
     };

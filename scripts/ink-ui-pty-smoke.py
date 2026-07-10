@@ -731,7 +731,7 @@ def main() -> int:
         write_input(master, b"\r")
         wait_for(master, output, "tool-intro: checking files first.", timeout=8)
         sync_screen("during tool intro")
-        wait_for(master, output, "› list_files .", timeout=8)
+        wait_for(master, output, "list_files", timeout=8)
         sync_screen("during tool running")
         wait_for(master, output, "list . (", timeout=8)
         tool_completion_start = len(b"".join(output))
@@ -741,9 +741,10 @@ def main() -> int:
         wait_for_prompt_frame_after(master, output, tool_completion_start, timeout=5)
         sync_screen("after tool turn completed")
         tool_order_output = strip_ansi(decode_output(b"".join(output)[tool_order_start:]))
+        # v0.2.18: structured sequence field may prefix tool names with #N
         assert_ordered(tool_order_output, [
             "tool-intro: checking files first.",
-            "› list_files .",
+            "list_files",
             "list . (",
             "tool-final: list_files result integrated.",
         ])

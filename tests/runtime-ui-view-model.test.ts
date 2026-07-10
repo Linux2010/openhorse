@@ -804,6 +804,7 @@ describe('runtime UI view model', () => {
       role: 'status',
       title: 'resume',
       content: 'Resumed session abc',
+      restored: true,
     });
     expect(transcriptEntryToBlock(toolEntry)).toEqual({
       id: 'entry-2',
@@ -811,6 +812,7 @@ describe('runtime UI view model', () => {
       role: 'tool',
       title: 'tool',
       content: 'Running read_file src/index.ts',
+      restored: undefined,
     });
   });
 
@@ -841,6 +843,7 @@ describe('runtime UI view model', () => {
       callId: 'call-1',
       name: 'exec_command',
       args: { command: 'npm test -- --runInBand tests/status-command.test.ts' },
+      sequence: 1,
       batchCount: 2,
       batchIndex: 0,
     };
@@ -864,6 +867,7 @@ describe('runtime UI view model', () => {
       outputBytes: 1200,
       artifactRef: { id: 'read_file-abc123', outputBytes: 1200 },
       error: 'failed to read',
+      sequence: 2,
     };
 
     expect(formatToolActivityTranscript(toolActivityFromFinished(event, 'src/index.ts'))).toBe([
@@ -883,6 +887,7 @@ describe('runtime UI view model', () => {
       skipped: true,
       duration: 0,
       error: 'permission denied',
+      sequence: 3,
     };
 
     const activity = toolActivityFromFinished(event);
