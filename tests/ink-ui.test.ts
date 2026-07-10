@@ -55,6 +55,7 @@ describe('Ink UI helpers', () => {
 
   it('normalizes bracketed paste and CRLF newlines', () => {
     expect(normalizePastedInput('\x1b[200~one\r\ntwo\x1b[201~')).toBe('one\ntwo');
+    expect(normalizePastedInput('[200~one\r\ntwo[201~')).toBe('one\ntwo');
   });
 
   it('counts repeated Ctrl+C bytes when terminal input batches them', () => {
@@ -897,5 +898,231 @@ describe('Ink UI helpers', () => {
       }
       rmSync(configDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('Ink UI input-buffer edges', () => {
+  it('ignores non-word-delete Ctrl+W control character (\x17)', () => {
+    // \x17 (Ctrl+W) is a control char < 32 (not \n or \t) — buffer ignores it
+    const state = reduceInputBuffer({ value: 'hello world foo', cursor: 'hello world foo'.length }, { type: 'inputChunk', text: '\x17' });
+    expect(state.value).toBe('hello world foo');
+  });
+
+  it('clears input on Ctrl+U from any cursor position', () => {
+    const state = reduceInputBuffer({ value: 'hello world', cursor: 5 }, { type: 'inputChunk', text: '\x15' });
+    expect(state.value).toBe('');
+    expect(state.cursor).toBe(0);
+  });
+
+  it('handles mixed CJK text input and deletion correctly', () => {
+    let state = reduceInputBuffer(initialInputBuffer, { type: 'inputChunk', text: '你好世界！' });
+    expect(state.value).toBe('你好世界！');
+    // Backspace on CJK punctuation
+    state = reduceInputBuffer(state, { type: 'backspace' });
+    expect(state.value).toBe('你好世界');
+    // Delete from start on CJK
+    state = reduceInputBuffer({ value: '你好世界', cursor: 0 }, { type: 'delete' });
+    expect(state.value).toBe('好世界');
+    expect(state.cursor).toBe(0);
+  });
+
+  it('handles emoji sequences with combining modifiers', () => {
+    // 👨‍💻 = man technologist emoji (👨‍💻)
+    const techEmoji = '👨‍💻';
+    let state = reduceInputBuffer(initialInputBuffer, { type: 'inputChunk', text: `hello ${techEmoji} world` });
+    expect(state.value).toContain(techEmoji);
+    // Backspace should remove the entire emoji sequence
+    state = reduceInputBuffer(state, { type: 'backspace' });
+    expect(state.value).toBe(`hello ${techEmoji} worl`);
+  });
+
+  it('handles Home/End keys via raw escape sequences', () => {
+    // \x1b[H = Home, \x1b[F = End
+    const homeState = reduceInputBuffer({ value: 'hello', cursor: 5 }, { type: 'inputChunk', text: '\x1b[H' });
+    expect(homeState.cursor).toBe(0);
+    const endState = reduceInputBuffer({ value: 'hello', cursor: 0 }, { type: 'inputChunk', text: '\x1b[F' });
+    expect(endState.cursor).toBe(5);
+  });
+
+  it('ignores non-printable control characters except newline and tab', () => {
+    const state = reduceInputBuffer(initialInputBuffer, { type: 'inputChunk', text: '\x01a\x02b\x1b' });
+    expect(state.value).toBe('ab');
+  });
+
+  it('preserves newline characters in input for multiline editing', () => {
+    const state = reduceInputBuffer(initialInputBuffer, { type: 'inputChunk', text: 'line1\nline2' });
+    expect(state.value).toBe('line1\nline2');
+  });
+
+  it('preserves bracketed paste marker text outside the paste handler', () => {
+    const state = reduceInputBuffer(initialInputBuffer, { type: 'inputChunk', text: '[200~literal[201~' });
+    expect(state.value).toBe('[200~literal[201~');
+  });
+
+});
+
+describe('Ink UI prompt-layout narrow and wide', () => {
+  it('splits CJK text correctly by visual width', () => {
+    // Each CJK char is 2 cells wide
+    const chunks = splitByVisualWidth('你好世界', 4);
+    expect(chunks).toEqual(['你好', '世界']);
+  });
+
+  it('handles mixed CJK and ASCII wrapping', () => {
+    const chunks = splitByVisualWidth('a你好b', 4);
+    expect(chunks).toEqual(['a你', '好b']);
+  });
+
+  it('wraps emoji without breaking the sequence', () => {
+    const emoji = '👨‍💻'; // man technologist
+    const chunks = splitByVisualWidth(`x${emoji}y`, 2);
+    expect(chunks[0]).toBe('x');
+    // emoji should be whole in one chunk
+    expect(chunks.find(c => c.includes(emoji))?.length).toBeGreaterThanOrEqual(emoji.length);
+  });
+
+  it('returns a single empty string chunk for empty input', () => {
+    const chunks = splitByVisualWidth('', 10);
+    expect(chunks).toEqual(['']);
+  });
+
+  it('handles very narrow width (1 cell)', () => {
+    // Each char wraps to its own line at width 1
+    const chunks = splitByVisualWidth('abc', 1);
+    expect(chunks).toEqual(['a', 'b', 'c']);
+  });
+
+  it('returns cursor at correct position for CJK prompt', () => {
+    // cursor=3 in '你好世界' means we've completed '你' + part of or all of '好'
+    const viewport = getPromptInputViewport('你好世界', 40, 6, 3);
+    // '好' is at byte offset 3, and is a CJK character (3 bytes for 你 + starting 好)
+    // After 你 (width 2, bytes 3), cursor offset 3 - 3 = 0 in the '好world' part
+    // Actually '你' is 3 bytes, cursor=3 means right after '你'
+    // So cursor in visual rendering: prefix '› ' (2 cells) + '你' (2 cells) = 4, then cursor at column 4
+    expect(viewport.cursorColumn).toBeGreaterThanOrEqual(4);
+  });
+
+  it('shows hidden indicator when prompt exceeds maxRows', () => {
+    const viewport = getPromptInputViewport('a\nb\nc\nd\ne\nf', 40, 3);
+    expect(viewport.showHiddenIndicator).toBe(true);
+    expect(viewport.hiddenRows).toBeGreaterThan(0);
+    // visible lines should be at most maxRows - 1 (for indicator)
+    expect(viewport.lines.length).toBeLessThanOrEqual(2);
+  });
+
+  it('pads visual lines with correct prefix for continuation lines', () => {
+    // First line has '› ' prefix, continuation lines have '  ' prefix
+    const longLine = 'x'.repeat(40);
+    const lines = getPromptVisualLines(longLine, 10); // narrow enough to wrap
+    expect(lines[0].logicalIndex).toBe(0);
+    expect(lines[0].wrapIndex).toBe(0);
+  });
+});
+
+describe('Ink UI layout-budget edge cases', () => {
+  it('handles very small terminal (20x8)', () => {
+    const budget = getInkLayoutBudget(20, 8);
+    expect(budget.layoutWidth).toBeGreaterThanOrEqual(19);
+    expect(budget.maxPromptRows).toBeGreaterThanOrEqual(1);
+    expect(budget.maxPromptRows).toBeLessThanOrEqual(6);
+    expect(budget.maxLiveTranscriptItems).toBeGreaterThanOrEqual(1);
+  });
+
+  it('handles very large terminal (240x80)', () => {
+    const budget = getInkLayoutBudget(240, 80);
+    expect(budget.layoutWidth).toBe(239);
+    expect(budget.maxPromptRows).toBe(6); // capped at 6
+    expect(budget.maxOverlayItems).toBe(10); // capped at 10
+  });
+
+  it('reduces live transcript items when overlay is visible', () => {
+    const withoutOverlay = getInkLayoutBudget(120, 40, { overlayVisible: false });
+    const withOverlay = getInkLayoutBudget(120, 40, { overlayVisible: true });
+    expect(withOverlay.maxLiveTranscriptItems).toBe(1); // minimal when overlay open
+    expect(withoutOverlay.maxLiveTranscriptItems).toBeGreaterThan(1);
+  });
+
+  it('keeps total items within terminal height', () => {
+    const budget = getInkLayoutBudget(100, 30, { overlayVisible: true });
+    const totalUsed = budget.maxOverlayItems + budget.maxPromptRows + budget.maxLiveTranscriptItems + 10;
+    expect(totalUsed).toBeLessThanOrEqual(budget.terminalHeight);
+  });
+
+  it('has all required fields in budget', () => {
+    const budget = getInkLayoutBudget(80, 24);
+    expect(budget).toHaveProperty('terminalWidth');
+    expect(budget).toHaveProperty('terminalHeight');
+    expect(budget).toHaveProperty('layoutWidth');
+    expect(budget).toHaveProperty('maxLiveTranscriptItems');
+    expect(budget).toHaveProperty('maxOverlayItems');
+    expect(budget).toHaveProperty('maxPromptRows');
+  });
+});
+
+describe('Ink UI transcript-state overlay safety', () => {
+  it('does not include overlay entries in transcript', () => {
+    let state = initialTranscriptState;
+    // Append normal entries
+    state = transcriptReducer(state, { type: 'append', entry: { id: 'user-1', role: 'user', content: 'hello' } });
+    state = transcriptReducer(state, { type: 'append', entry: { id: 'assistant-1', role: 'assistant', content: 'hi' } });
+    // Overlays are UI state, not transcript entries
+    expect(state.entries.map(e => e.id)).toEqual(['user-1', 'assistant-1']);
+    expect(state.entries.length).toBe(2);
+  });
+
+  it('maintains live/finalize order even with rapid append/update/finalize', () => {
+    let state = initialTranscriptState;
+    state = transcriptReducer(state, { type: 'append', entry: { id: 'a1', role: 'assistant', content: 'p1', live: true } });
+    state = transcriptReducer(state, { type: 'append', entry: { id: 't1', role: 'tool', content: 'Running x' } });
+    state = transcriptReducer(state, { type: 'update', id: 'a1', patch: { content: 'p1 updated' } });
+    state = transcriptReducer(state, { type: 'finalize', id: 't1', patch: { content: '✓ x done' } });
+    state = transcriptReducer(state, { type: 'finalize', id: 'a1' });
+
+    const static_ = staticTranscriptEntries(state);
+    const live = liveTranscriptEntries(state);
+
+    expect(live).toEqual([]);
+    expect(static_.map(e => e.id)).toEqual(['a1', 't1']);
+    expect(static_[0].content).toBe('p1 updated');
+    expect(static_[1].content).toBe('✓ x done');
+  });
+
+  it('removing a live entry does not affect static entries', () => {
+    let state = initialTranscriptState;
+    state = transcriptReducer(state, { type: 'append', entry: { id: 's1', role: 'user', content: 'stable' } });
+    state = transcriptReducer(state, { type: 'append', entry: { id: 'l1', role: 'assistant', content: 'streaming', live: true } });
+    state = transcriptReducer(state, { type: 'remove', id: 'l1' });
+
+    const static_ = staticTranscriptEntries(state);
+    expect(static_.map(e => e.id)).toEqual(['s1']);
+    expect(state.entries.some(e => e.id === 'l1')).toBe(false);
+  });
+
+  it('replace rebuilds the entire transcript and bumps generation', () => {
+    let state = initialTranscriptState;
+    state = transcriptReducer(state, { type: 'append', entry: { id: 'old-1', role: 'user', content: 'old' } });
+    state = transcriptReducer(state, { type: 'append', entry: { id: 'old-2', role: 'assistant', content: 'resp' } });
+
+    const gen = state.generation;
+    state = transcriptReducer(state, {
+      type: 'replace',
+      entries: [{ id: 'new-1', role: 'user', content: 'new' }],
+    });
+
+    expect(state.generation).toBe(gen + 1);
+    expect(state.entries.length).toBe(1);
+    expect(state.entries[0].id).toBe('new-1');
+    expect(staticTranscriptEntries(state).length).toBe(1);
+  });
+
+  it('clear empties all entries and bumps generation', () => {
+    let state = initialTranscriptState;
+    state = transcriptReducer(state, { type: 'append', entry: { id: 'u1', role: 'user', content: 'text' } });
+    const gen = state.generation;
+    state = transcriptReducer(state, { type: 'clear' });
+
+    expect(state.entries).toEqual([]);
+    expect(state.staticCount).toBe(0);
+    expect(state.generation).toBe(gen + 1);
   });
 });

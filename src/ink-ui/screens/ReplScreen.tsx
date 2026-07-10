@@ -127,6 +127,8 @@ export function normalizePastedInput(value: string): string {
   return value
     .replace(/\x1b\[200~/g, '')
     .replace(/\x1b\[201~/g, '')
+    .replace(/\[200~/g, '')
+    .replace(/\[201~/g, '')
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n');
 }
@@ -169,6 +171,7 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
   const lastCtrlCEventAtRef = useRef(0);
   const inputRef = useRef<InputBuffer>(initialInputBuffer);
   const promptBoxRef = useRef<DOMElement>(null);
+  const bracketedPasteActiveRef = useRef(false);
 
   useEffect(() => {
     inputRef.current = inputBuffer;
@@ -345,6 +348,28 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
     }
 
     agentController.handle({ type: 'clear_exit_intent' });
+
+    const rawInput = lastRawInputRef.current || '';
+    const pasteSource = value || rawInput;
+    const startsBracketedPaste = rawInput.includes('\x1b[200~')
+      || pasteSource.includes('\x1b[200~')
+      || pasteSource.includes('[200~');
+    const endsBracketedPaste = rawInput.includes('\x1b[201~')
+      || pasteSource.includes('\x1b[201~')
+      || pasteSource.includes('[201~');
+
+    if (!key?.ctrl && (bracketedPasteActiveRef.current || startsBracketedPaste || endsBracketedPaste)) {
+      bracketedPasteActiveRef.current = true;
+      const normalized = normalizePastedInput(value || rawInput);
+      if (normalized) {
+        dispatchInput({ type: 'inputChunk', text: normalized });
+      }
+      setOverlay(null);
+      if (endsBracketedPaste) {
+        bracketedPasteActiveRef.current = false;
+      }
+      return;
+    }
 
     if (!key?.ctrl && isMultilinePasteValue(value)) {
       dispatchInput({ type: 'inputChunk', text: normalizePastedInput(value) });

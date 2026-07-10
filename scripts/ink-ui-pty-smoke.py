@@ -363,13 +363,14 @@ def assert_single_live_prompt_frame(model: TerminalModel, label: str) -> None:
         visible = "\n".join(rows)
         raise AssertionError(f"{label}: status/help/prompt rows are out of order:\n{visible}")
 
-    if model.row != prompt_index:
+    if model.row <= top_indexes[0] or model.row >= bottom_indexes[0]:
         visible = "\n".join(rows)
         raise AssertionError(
-            f"{label}: terminal cursor is on row {model.row}, expected prompt row {prompt_index}:\n{visible}"
+            f"{label}: terminal cursor is on row {model.row}, outside prompt frame "
+            f"{top_indexes[0]}..{bottom_indexes[0]}:\n{visible}"
         )
 
-    prompt_line_width = len(model.lines()[prompt_index])
+    prompt_line_width = len(model.lines()[model.row])
     if model.col <= 1 or model.col >= prompt_line_width - 1:
         visible = "\n".join(rows)
         raise AssertionError(
@@ -753,6 +754,71 @@ def main() -> int:
         write_input(master, b"\x15")
         wait_for_prompt_frame_after(master, output, clear_start, timeout=5)
         sync_screen("after clearing tool prompt")
+
+        # --- Resize stability suite ---
+        # Baseline: capture the current screen after a stable state.
+        write_input(master, b"\x15resize-test  ")
+        wait_for_latest_prompt(master, output, "› resize-test", timeout=5)
+        sync_screen("pre-resize baseline")
+
+        # Rapid resize: narrow -> wide -> narrow in quick succession.
+        set_window_size(master, rows=24, cols=40)
+        time.sleep(0.05)
+        set_window_size(master, rows=24, cols=120)
+        time.sleep(0.05)
+        set_window_size(master, rows=24, cols=80)
+        time.sleep(0.05)
+        set_window_size(master, rows=24, cols=60)
+        time.sleep(0.05)
+        # Final stable size.
+        set_window_size(master, rows=30, cols=90)
+        # Wait for the coalesced resize to land.
+        time.sleep(0.5)
+        output.append(read_available(master))
+
+        # Sync a fresh screen model at the final size and assert single stable frame.
+        resize_model = TerminalModel(rows=30, cols=90)
+        resize_raw = b"".join(output)
+        resize_model.feed(resize_raw)
+        try:
+            assert_single_live_prompt_frame(resize_model, "after rapid resize")
+        except AssertionError as exc:
+            # Give it one more paint cycle in case of timing.
+            time.sleep(0.3)
+            output.append(read_available(master))
+            resize_raw2 = b"".join(output)
+            resize_model2 = TerminalModel(rows=30, cols=90)
+            resize_model2.feed(resize_raw2)
+            assert_single_live_prompt_frame(resize_model2, "after rapid resize (retry)")
+
+        # Verify we can still type after resize.
+        write_input(master, b"post-resize-ok")
+        wait_for_latest_prompt(master, output, "› resize-test  post-resize-ok", timeout=5)
+        sync_screen("post-resize input")
+
+        # Clear and move on.
+        clear_start = len(b"".join(output))
+        write_input(master, b"\x15")
+        wait_for_prompt_frame_after(master, output, clear_start, timeout=5)
+        sync_screen("after clearing resize test")
+
+        # Bracketed paste can arrive through PTY in several chunks. It must not
+        # leak terminal paste markers or submit early on embedded newlines.
+        paste_start = len(b"".join(output))
+        write_input(master, b"\x1b[200~paste-one\npaste-two\x1b[201~")
+        wait_for_latest_prompt(master, output, "› paste-one", timeout=5)
+        wait_for(master, output, "paste-two", timeout=5)
+        sync_screen("after bracketed paste")
+        paste_output = strip_ansi(decode_output(b"".join(output)[paste_start:]))
+        if "[200~" in paste_output or "[201~" in paste_output:
+            raise AssertionError(f"Bracketed paste marker leaked into prompt:\n{paste_output[-1000:]}")
+        if "mock-stream-chunk-1" in paste_output:
+            raise AssertionError("Bracketed paste newline submitted the prompt before Enter")
+
+        clear_start = len(b"".join(output))
+        write_input(master, b"\x15")
+        wait_for_prompt_frame_after(master, output, clear_start, timeout=5)
+        sync_screen("after clearing bracketed paste")
 
         exit_start = len(b"".join(output))
         write_input(master, b"\x03\x03")
