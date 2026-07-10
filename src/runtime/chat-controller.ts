@@ -46,6 +46,7 @@ import {
 import type {
   OpenHorseUiRuntime,
   RuntimeHarnessDiagnostics,
+  StructuredToolActivity,
   TranscriptEntry,
   UiEventSink,
   UiRendererCapabilities,
@@ -849,19 +850,28 @@ export interface ToolEventPresenter {
 }
 
 export function createToolEventPresenter(events: UiEventSink): ToolEventPresenter {
-  const runningToolEntries = new Map<string, { entryId: string; name: string; args: Record<string, unknown>; batchCount?: number; batchIndex?: number }>();
+  const runningToolEntries = new Map<string, { entryId: string; name: string; args: Record<string, unknown>; sequence: number; batchCount?: number; batchIndex?: number }>();
+  let toolSequenceCounter = 0;
 
   return {
     start(event: ToolCallEvent): void {
+      const seq = ++toolSequenceCounter;
       const entryId = events.append({
         role: 'tool',
         title: 'tool',
         content: toolStartContent(event),
+        toolActivity: {
+          state: 'running',
+          name: event.name,
+          detail: '',
+          seq,
+        },
       });
       runningToolEntries.set(event.callId, {
         entryId,
         name: event.name,
         args: event.args,
+        sequence: seq,
         batchCount: event.batchCount,
         batchIndex: event.batchIndex,
       });
@@ -869,6 +879,7 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
         callId: event.callId,
         name: event.name,
         args: event.args,
+        sequence: seq,
         batchCount: event.batchCount,
         batchIndex: event.batchIndex,
       });
@@ -877,12 +888,24 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
     finish(event: ToolResultEvent): void {
       const content = toolFinishContent(event);
       const stored = runningToolEntries.get(event.callId);
+      const seq = stored?.sequence ?? ++toolSequenceCounter;
+      const state = event.success ? 'success' : 'error';
+
+      const toolActivity: StructuredToolActivity = {
+        state,
+        name: event.name,
+        detail: '',
+        duration: `${event.duration}ms`,
+        error: event.error,
+        seq,
+      };
 
       if (stored) {
         events.finalize(stored.entryId, {
           role: event.success ? 'tool' : 'error',
           title: 'tool',
           content,
+          toolActivity,
         });
         runningToolEntries.delete(event.callId);
       } else {
@@ -890,6 +913,7 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
           role: event.success ? 'tool' : 'error',
           title: 'tool',
           content,
+          toolActivity,
         });
         events.finalize(entryId);
       }
@@ -904,6 +928,7 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
         error: event.error,
         outputBytes: event.outputBytes,
         artifactRef: event.artifactRef,
+        sequence: seq,
         batchCount: event.batchCount,
         batchIndex: event.batchIndex,
       });
@@ -915,6 +940,13 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
           role: 'tool',
           title: 'tool',
           content: `Skipped · ${reason}`,
+          toolActivity: {
+            state: 'skipped',
+            name: entry.name,
+            detail: '',
+            error: reason,
+            seq: entry.sequence,
+          },
         });
         events.toolFinished?.({
           callId,
@@ -924,6 +956,7 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
           skipped: true,
           duration: 0,
           error: reason,
+          sequence: entry.sequence,
           batchCount: entry.batchCount,
           batchIndex: entry.batchIndex,
         });

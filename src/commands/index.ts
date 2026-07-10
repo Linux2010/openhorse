@@ -708,11 +708,86 @@ function latestToolTrace(events: SessionTraceEvent[]): {
   return null;
 }
 
-function parseLastToolArgs(args: string = ''): { full: boolean; preview: boolean } {
+/** Find tool trace by 1-based sequence number across all tool events. */
+function toolTraceBySeq(events: SessionTraceEvent[], seq: number): {
+  call?: SessionTraceEvent;
+  result?: SessionTraceEvent;
+} | null {
+  let counter = 0;
+  const toolEvents = new Map<string, { call?: SessionTraceEvent; result?: SessionTraceEvent }>();
+
+  for (const event of events) {
+    if (event.type !== 'tool_call' && event.type !== 'tool_result') continue;
+    if (!event.callId) continue;
+    const entry = toolEvents.get(event.callId) ?? {};
+    if (event.type === 'tool_call') {
+      counter++;
+      entry.call = event;
+    } else {
+      if (!entry.call) counter++;
+      entry.result = event;
+    }
+    toolEvents.set(event.callId, entry);
+    if (counter === seq) {
+      return toolEvents.get(event.callId) ?? null;
+    }
+  }
+  return null;
+}
+
+/** Find tool trace by callId prefix. */
+function toolTraceByCallId(events: SessionTraceEvent[], callIdPrefix: string): {
+  call?: SessionTraceEvent;
+  result?: SessionTraceEvent;
+} | null {
+  let call: SessionTraceEvent | undefined;
+  let result: SessionTraceEvent | undefined;
+
+  for (const event of events) {
+    if (event.type !== 'tool_call' && event.type !== 'tool_result') continue;
+    if (!event.callId?.startsWith(callIdPrefix)) continue;
+    if (event.type === 'tool_call') call = event;
+    else result = event;
+  }
+
+  if (!call && !result) return null;
+  return { call, result };
+}
+
+/** Collect all tool trace pairs ordered by appearance (1-based sequence). */
+function collectToolTracePairs(events: SessionTraceEvent[]): Array<{
+  seq: number;
+  call?: SessionTraceEvent;
+  result?: SessionTraceEvent;
+}> {
+  const pairs: Array<{ seq: number; call?: SessionTraceEvent; result?: SessionTraceEvent }> = [];
+  const seen = new Map<string, { seq: number; call?: SessionTraceEvent; result?: SessionTraceEvent }>();
+  let counter = 0;
+
+  for (const event of events) {
+    if (event.type !== 'tool_call' && event.type !== 'tool_result') continue;
+    if (!event.callId) continue;
+    let entry = seen.get(event.callId);
+    if (!entry) {
+      counter++;
+      entry = { seq: counter };
+      seen.set(event.callId, entry);
+      pairs.push(entry);
+    }
+    if (event.type === 'tool_call') entry.call = event;
+    else entry.result = event;
+  }
+
+  return pairs;
+}
+
+function parseLastToolArgs(args: string = ''): { full: boolean; preview: boolean; ref?: string } {
   const parts = args.trim().split(/\s+/).filter(Boolean);
+  const ref = parts.length > 0 && !parts[0].startsWith('--') ? parts[0] : undefined;
   return {
     full: parts.includes('--full'),
     preview: !parts.includes('--no-preview'),
+    ref,
   };
 }
 
@@ -771,14 +846,56 @@ function handleLastTool(ctx: CommandContext, args: string = ''): CommandResult {
   }
 
   const events = readSessionTraceEvents(session.id);
-  const latest = latestToolTrace(events);
-  if (!latest) {
-    console.log(DIM(`No tool trace events recorded for session ${session.id.slice(0, 8)} yet.`));
+
+  // Resolve reference: latest (default), #N, or callId prefix
+  let trace: { call?: SessionTraceEvent; result?: SessionTraceEvent } | null = null;
+  let listMode = false;
+
+  if (!options.ref || options.ref === 'latest') {
+    trace = latestToolTrace(events);
+  } else if (/^#?\d+$/.test(options.ref)) {
+    const seq = parseInt(options.ref.replace('#', ''), 10);
+    trace = toolTraceBySeq(events, seq);
+    if (!trace) {
+      console.log(ERROR(`Tool #${seq} not found in session trace.`));
+      // Fall back to listing available tools
+      listMode = true;
+    }
+  } else {
+    trace = toolTraceByCallId(events, options.ref);
+    if (!trace) {
+      console.log(ERROR(`Tool with callId prefix "${options.ref}" not found in session trace.`));
+      listMode = true;
+    }
+  }
+
+  if (listMode || !trace) {
+    const pairs = collectToolTracePairs(events);
+    if (pairs.length === 0) {
+      console.log(DIM(`No tool trace events recorded for session ${session.id.slice(0, 8)} yet.`));
+      return { success: true };
+    }
+    console.log(HEADER(`Tools (${pairs.length})`));
+    console.log(DIM('─'.repeat(60)));
+    for (const pair of pairs.slice(-30)) {
+      const source = pair.result ?? pair.call;
+      const name = source?.name ?? 'tool';
+      const status = pair.result
+        ? (pair.result.success === false ? '✗' : '✓')
+        : '…';
+      const duration = typeof pair.result?.duration === 'number'
+        ? ` (${formatDurationMs(pair.result.duration)})`
+        : '';
+      const argsShort = (pair.call?.argsSummary ?? '').slice(0, 40);
+      console.log(`  #${pair.seq} ${status} ${ACCENT(name)}${duration}  ${DIM(argsShort)}`);
+    }
+    console.log();
+    console.log(DIM('Use /last-tool #N or /last-tool <callId> for details.'));
     return { success: true };
   }
 
-  const call = latest.call;
-  const result = latest.result;
+  const call = trace.call;
+  const result = trace.result;
   const source = result ?? call;
   const argsSource = call ?? result;
   const name = source?.name ?? 'tool';
@@ -786,7 +903,17 @@ function handleLastTool(ctx: CommandContext, args: string = ''): CommandResult {
   const callId = source?.callId ?? call?.callId;
   const status = result ? (result.success === false ? ERROR('error') : SUCCESS('ok')) : WARN('running');
 
-  console.log(HEADER('Last Tool'));
+  // Resolve sequence number from the trace events
+  let seqLabel = '';
+  if (options.ref && /^#?\d+$/.test(options.ref)) {
+    seqLabel = `#${parseInt(options.ref.replace('#', ''), 10)} `;
+  } else if (result || call) {
+    const allPairs = collectToolTracePairs(events);
+    const matchingPair = allPairs.find(p => p.call?.callId === callId || p.result?.callId === callId);
+    if (matchingPair) seqLabel = `#${matchingPair.seq} `;
+  }
+
+  console.log(HEADER(`Last Tool ${seqLabel}`.trimEnd()));
   console.log(DIM('─'.repeat(40)));
   console.log(`  Tool        ${ACCENT(name)}`);
   console.log(`  Turn        ${DIM(source?.turnId ?? 'unknown')}`);

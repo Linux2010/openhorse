@@ -1,10 +1,12 @@
 import {
   resolveUiRendererCapabilities,
   type EditPreviewRequest,
+  type ErrorLayer,
   type ResolvedUiRendererCapabilities,
   type RuntimeLoopStats,
   type RuntimeSessionRestoredEvent,
   type SessionPickerRequest,
+  type StructuredToolActivity,
   type ToolPermissionRequest,
   type RuntimeToolFinishedEvent,
   type RuntimeToolStartedEvent,
@@ -32,6 +34,12 @@ export interface TranscriptBlock {
   role: TranscriptRole;
   content: string;
   title?: string;
+  /** Error layer when kind is 'error'. Set by runtime, not inferred by renderer. */
+  errorLayer?: ErrorLayer;
+  /** Structured tool activity — set by tool event presenter. */
+  toolActivity?: StructuredToolActivity;
+  /** True when this entry was restored from a previous session. */
+  restored?: boolean;
 }
 
 export type ToolActivityState = 'queued' | 'running' | 'success' | 'error' | 'skipped' | 'requested';
@@ -47,6 +55,8 @@ export interface ToolActivity {
   error?: string;
   outputBytes?: number;
   artifactRef?: { id: string; outputBytes: number };
+  /** Monotonic tool invocation sequence (1-based). Stable across transcript/trace/last-tool. */
+  seq?: number;
   batchCount?: number;
   batchIndex?: number;
 }
@@ -887,6 +897,9 @@ export function transcriptEntryToBlock(entry: TranscriptEntry): TranscriptBlock 
     role: entry.role,
     title: entry.title,
     content: entry.content,
+    errorLayer: entry.errorLayer,
+    toolActivity: entry.toolActivity,
+    restored: entry.title === 'resume' ? true : undefined,
   };
 }
 
@@ -905,7 +918,7 @@ export function toolActivityBatchLabel(activity: Pick<ToolActivity, 'batchCount'
 }
 
 export function toolActivityFromStarted(
-  event: RuntimeToolStartedEvent,
+  event: { callId: string; name: string; args: Record<string, unknown>; sequence?: number; batchCount?: number; batchIndex?: number },
   detail = '',
 ): ToolActivity {
   const command = event.name === 'exec_command' && typeof event.args.command === 'string'
@@ -918,13 +931,14 @@ export function toolActivityFromStarted(
     state: 'running',
     detail: command ? undefined : detail || undefined,
     command,
+    seq: event.sequence,
     batchCount: event.batchCount,
     batchIndex: event.batchIndex,
   };
 }
 
 export function toolActivityFromFinished(
-  event: RuntimeToolFinishedEvent,
+  event: { callId: string; name: string; args: Record<string, unknown>; success: boolean; skipped?: boolean; duration: number; summary?: string; error?: string; outputBytes?: number; artifactRef?: { id: string; outputBytes: number }; sequence?: number; batchCount?: number; batchIndex?: number },
   detail = '',
 ): ToolActivity {
   return {
@@ -940,6 +954,7 @@ export function toolActivityFromFinished(
     error: event.error,
     outputBytes: event.outputBytes,
     artifactRef: event.artifactRef,
+    seq: event.sequence,
     batchCount: event.batchCount,
     batchIndex: event.batchIndex,
   };

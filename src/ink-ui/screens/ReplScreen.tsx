@@ -34,7 +34,7 @@ import {
   staticTranscriptEntries,
   transcriptReducer,
 } from '../runtime/transcript-state';
-import type { OpenHorseUiRuntime, SessionPickerRequest, ToolPermissionRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink, EditPreviewRequest } from '../types';
+import type { OpenHorseUiRuntime, SessionPickerRequest, ToolPermissionRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink, EditPreviewRequest, RuntimeSessionRestoredEvent } from '../types';
 
 type Overlay =
   | { type: 'commands'; selectedIndex: number }
@@ -214,6 +214,22 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
     showEditPreview: request => setOverlay({ type: 'edit', selectedIndex: 0, request }),
     showPermissionRequest: request => setOverlay({ type: 'permission', selectedIndex: 0, request }),
     setProcessing,
+    sessionRestored: event => {
+      const shortId = event.sessionId.slice(0, 8);
+      const total = event.messageCount !== event.restoredMessages
+        ? ` (${event.messageCount} total)`
+        : '';
+      dispatchTranscript({
+        type: 'append',
+        entry: {
+          id: `resume-${event.sessionId}`,
+          role: 'status',
+          title: 'resume',
+          content: `Resumed session ${shortId} · restored ${event.restoredMessages}${total} messages`,
+          errorLayer: undefined,
+        },
+      });
+    },
   }), [append, finalize, remove, stdout, update]);
 
   const agentController = useMemo(() => new AgentRuntimeController({

@@ -134,7 +134,8 @@ function stateColor(state: ToolActivityState): string {
 }
 
 export function ToolActivityBlock({ entry, width = 80 }: { entry: TranscriptEntry; width?: number }): JSX.Element | null {
-  const activity = parseToolActivity(entry.content);
+  // Prefer structured toolActivity over text parsing when available.
+  const activity = entry.toolActivity ?? parseToolActivity(entry.content);
   if (!activity) return null;
 
   const contentWidth = Math.max(1, width - 2);

@@ -5,6 +5,7 @@ import { spawnSync } from 'child_process';
 import { launchPrintMode, PrintEventSink } from '../src/print-ui/launch';
 import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
 import { appendSessionMessage, createSession } from '../src/services/session-storage';
+import { makeToolStartedEvent, makeToolFinishedEvent, resetToolEventSequence } from './test-helpers';
 
 function findPython(): string | null {
   for (const command of ['python3', 'python']) {
@@ -37,6 +38,8 @@ describe('print mode smoke', () => {
 });
 
 describe('print mode event sink', () => {
+  beforeEach(() => resetToolEventSequence());
+
   function runtime(cwd = '/tmp/openhorse'): OpenHorseUiRuntime {
     return {
       cwd,
@@ -60,20 +63,20 @@ describe('print mode event sink', () => {
     const sink = new PrintEventSink(runtime(), 'json');
 
     sink.append({ role: 'assistant', content: 'answer' });
-    sink.toolStarted({ callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } });
-    sink.toolFinished({
+    sink.toolStarted(makeToolStartedEvent({ callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } }));
+    sink.toolFinished(makeToolFinishedEvent({
       callId: 'call-1',
       name: 'read_file',
       args: { path: 'src/index.ts' },
       success: true,
       duration: 12,
       summary: 'read ok',
-    });
+    }));
 
     expect(sink.result()).toEqual(expect.objectContaining({
       content: 'answer',
       toolEvents: [
-        { type: 'started', callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' } },
+        { type: 'started', callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' }, sequence: 1 },
         {
           type: 'finished',
           callId: 'call-1',
@@ -82,6 +85,7 @@ describe('print mode event sink', () => {
           success: true,
           duration: 12,
           summary: 'read ok',
+          sequence: 1,
         },
       ],
     }));

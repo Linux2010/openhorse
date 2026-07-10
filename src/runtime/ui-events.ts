@@ -9,12 +9,25 @@ export type TranscriptRole = 'user' | 'assistant' | 'tool' | 'system' | 'command
 
 export type ErrorLayer = 'renderer' | 'runtime' | 'provider' | 'tool' | 'session' | 'memory' | 'mcp' | 'skills' | 'unknown';
 
+export interface StructuredToolActivity {
+  state: 'queued' | 'running' | 'success' | 'error' | 'skipped' | 'requested';
+  name: string;
+  detail: string;
+  duration?: string;
+  error?: string;
+  seq?: number;
+  artifactHint?: string;
+}
+
 export interface TranscriptEntry {
   id: string;
   role: TranscriptRole;
   content: string;
   title?: string;
   errorLayer?: ErrorLayer;
+  /** Structured tool activity — set by tool event presenter so renderers
+   *  consume typed data instead of parsing transcript text. */
+  toolActivity?: StructuredToolActivity;
 }
 
 export interface TranscriptAppendEntry extends Omit<TranscriptEntry, 'id'> {
@@ -111,6 +124,8 @@ export interface RuntimeToolStartedEvent {
   callId: string;
   name: string;
   args: Record<string, unknown>;
+  /** Monotonic tool invocation sequence across the session (1-based). */
+  sequence: number;
   batchCount?: number;
   batchIndex?: number;
 }
@@ -126,6 +141,8 @@ export interface RuntimeToolFinishedEvent {
   error?: string;
   outputBytes?: number;
   artifactRef?: { id: string; outputBytes: number };
+  /** Monotonic tool invocation sequence across the session (1-based). */
+  sequence: number;
   batchCount?: number;
   batchIndex?: number;
 }
