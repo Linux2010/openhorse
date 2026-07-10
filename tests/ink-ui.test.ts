@@ -55,6 +55,7 @@ describe('Ink UI helpers', () => {
 
   it('normalizes bracketed paste and CRLF newlines', () => {
     expect(normalizePastedInput('\x1b[200~one\r\ntwo\x1b[201~')).toBe('one\ntwo');
+    expect(normalizePastedInput('[200~one\r\ntwo[201~')).toBe('one\ntwo');
   });
 
   it('counts repeated Ctrl+C bytes when terminal input batches them', () => {
@@ -952,6 +953,12 @@ describe('Ink UI input-buffer edges', () => {
     const state = reduceInputBuffer(initialInputBuffer, { type: 'inputChunk', text: 'line1\nline2' });
     expect(state.value).toBe('line1\nline2');
   });
+
+  it('preserves bracketed paste marker text outside the paste handler', () => {
+    const state = reduceInputBuffer(initialInputBuffer, { type: 'inputChunk', text: '[200~literal[201~' });
+    expect(state.value).toBe('[200~literal[201~');
+  });
+
 });
 
 describe('Ink UI prompt-layout narrow and wide', () => {
