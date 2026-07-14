@@ -158,6 +158,7 @@ class SimpleMCPClient {
   private name = '';
   private serverConfig: MCPServerConfig | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
   private intentionallyDisconnected = false;
   private onDeadCallback: (() => void) | null = null;
@@ -170,7 +171,12 @@ class SimpleMCPClient {
     this.name = name;
     this.serverConfig = config;
     this.intentionallyDisconnected = false;
-    await this.spawnAndInit();
+    try {
+      await this.spawnAndInit();
+    } catch (err) {
+      this.disconnect();
+      throw err;
+    }
     this.startHeartbeat();
   }
 
@@ -257,6 +263,7 @@ class SimpleMCPClient {
   }
 
   private scheduleReconnect(): void {
+    if (this.intentionallyDisconnected || this.reconnectTimer) return;
     if (this.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
       console.error(`[MCP ${this.name}] giving up after ${RECONNECT_MAX_ATTEMPTS} failed reconnects`);
       this.stopHeartbeat();
@@ -266,7 +273,9 @@ class SimpleMCPClient {
     this.reconnectAttempts++;
     const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts - 1);
     console.error(`[MCP ${this.name}] reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS})`);
-    setTimeout(() => {
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.intentionallyDisconnected) return;
       this.spawnAndInit().catch((err) => {
         console.error(`[MCP ${this.name}] reconnect failed:`, err.message);
         this.scheduleReconnect();
@@ -298,8 +307,7 @@ class SimpleMCPClient {
           }
         }
       } catch {
-        // Incomplete JSON — put back into buffer for next chunk
-        this.state.buffer = line + '\n' + this.state.buffer;
+        // Each entry here was newline-terminated, so malformed or banner output is complete noise.
       }
     }
   }
@@ -361,6 +369,10 @@ class SimpleMCPClient {
   disconnect(): void {
     this.intentionallyDisconnected = true;
     this.stopHeartbeat();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.failPendingRequests('MCP client disconnected');
     if (this.state.process) {
       try { this.state.process.kill(); } catch { /* noop */ }

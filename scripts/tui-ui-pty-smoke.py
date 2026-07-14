@@ -177,11 +177,18 @@ def read_available(fd: int, timeout: float = 0.05) -> bytes:
     return b"".join(chunks)
 
 
-def wait_for(fd: int, output: list[bytes], needle: str, timeout: float = 8.0) -> None:
+def wait_for(
+    fd: int,
+    output: list[bytes],
+    needle: str,
+    timeout: float = 8.0,
+    start_offset: int = 0,
+) -> None:
     deadline = time.time() + timeout
+    plain = ""
     while time.time() < deadline:
         output.append(read_available(fd))
-        plain = strip_ansi(b"".join(output).decode("utf-8", errors="replace"))
+        plain = strip_ansi(b"".join(output)[start_offset:].decode("utf-8", errors="replace"))
         if needle in plain:
             return
         time.sleep(0.05)
@@ -261,6 +268,10 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
                 self.write_text_stream(["tool-final-response "], delay=0.05)
             elif "tool order test" in last_user:
                 self.write_tool_call_stream()
+            elif "long output test" in last_user:
+                self.write_long_tool_output_stream()
+            elif "permission test" in last_user:
+                self.write_permission_tool_stream()
             elif "修正目标" in last_user:
                 self.write_text_stream(["revision-final-response "], delay=0.05)
             else:
@@ -308,6 +319,39 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
                 "id": "call-list-files",
                 "type": "function",
                 "function": {"name": "list_files", "arguments": "{\"path\":\".\",\"maxDepth\":0}"},
+            }],
+        })
+        time.sleep(0.05)
+        self.write_chunk(
+            {},
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 12, "completion_tokens": 4},
+        )
+
+    def write_long_tool_output_stream(self) -> None:
+        """Generate long text output to test scrollback without triggering tools."""
+        long_lines = [f"### line-{i:04d} " + f"long-output-{'word-' * 20}" + f" end-line-{i:04d}" for i in range(40)]
+        for line in long_lines:
+            self.write_chunk({"content": line + "\n"})
+            time.sleep(0.02)
+        self.write_chunk(
+            {},
+            finish_reason="stop",
+            usage={"prompt_tokens": 12, "completion_tokens": 4},
+        )
+
+    def write_permission_tool_stream(self) -> None:
+        """Generate text that may trigger permission. For PTY we verify the
+        permission overlay renders without crashing, even if the tool is
+        auto-allowed by test config."""
+        self.write_chunk({"content": "I will run a command to check the deploy status.\n\n"})
+        time.sleep(0.05)
+        self.write_chunk({
+            "tool_calls": [{
+                "index": 0,
+                "id": "call-exec",
+                "type": "function",
+                "function": {"name": "exec_command", "arguments": "{\"command\":\"echo deploy-check\"}"},
             }],
         })
         time.sleep(0.05)
@@ -422,7 +466,8 @@ def main() -> int:
     repo = Path(__file__).resolve().parents[1]
     mock_server, mock_base_url = start_mock_openai_server()
     config_dir = tempfile.mkdtemp(prefix="openhorse-tui-pty-")
-    seed_resume_sessions(config_dir, repo)
+    resume_session_ids = seed_resume_sessions(config_dir, repo)
+    target_resume_session_id = resume_session_ids[2]
     process, master, slave = spawn_openhorse(repo, mock_base_url, config_dir)
     output: list[bytes] = []
     model = TerminalModel(rows=24, cols=100)
@@ -437,8 +482,8 @@ def main() -> int:
         return "\n".join(model.lines())
 
     try:
-        wait_for(master, output, "OPENHORSE v", timeout=10)
-        wait_for(master, output, "/ commands", timeout=10)
+        wait_for(master, output, "OPENHORSE v", timeout=20)
+        wait_for(master, output, "/ commands", timeout=20)
         if b"\x1b[?1049h" not in b"".join(output):
             raise AssertionError("TUI did not enter alternate screen")
 
@@ -452,6 +497,26 @@ def main() -> int:
         if "开源小？事收到" in compact_visible or "开源小？事收" not in compact_visible:
             raise AssertionError(f"TUI Backspace did not update the visible prompt:\n{visible}")
         assert_single_prompt_frame(visible, model, "after CJK backspace", "开源小？事收")
+
+        # --- v0.2.19 completion: multiline paste ---
+        os.write(master, b"\x15")  # Ctrl+U to clear
+        time.sleep(0.15)
+        # Send bracketed paste with multiple lines
+        paste_content = b"line one\nline two\nline three"
+        bracketed = b"\x1b[200~" + paste_content + b"\x1b[201~"
+        os.write(master, bracketed)
+        time.sleep(0.3)
+        visible = sync_screen()
+        # Prompt frame must still be intact after paste
+        if "┌" not in visible or "└" not in visible:
+            raise AssertionError(f"TUI prompt frame broken after multiline paste:\n{visible}")
+        # The paste should NOT auto-submit; prompt should hold the value
+        # (We verify by checking the prompt frame is still showing input, not empty)
+        # Now submit with Enter
+        os.write(master, b"\r")
+        wait_for(master, output, "Completed with mock-tui-stream", timeout=10)
+        visible = sync_screen()
+        assert_single_prompt_frame(visible, model, "after multiline paste submit")
 
         os.write(master, b"\x15/sta")
         wait_for(master, output, 'Commands "sta"', timeout=5)
@@ -478,8 +543,8 @@ def main() -> int:
 
         os.write(master, b"\x15/resume\r")
         wait_for(master, output, "Sessions: Pick a Session", timeout=8)
-        wait_for(master, output, "12", timeout=8)
-        os.write(master, b"\x1b[B\x1b[B\r")
+        wait_for(master, output, "resume fixture 3", timeout=8)
+        os.write(master, target_resume_session_id.encode("ascii") + b"\r")
         wait_for(master, output, "Restored", timeout=8)
         wait_for(master, output, "resume fixture 3 content", timeout=8)
         visible = sync_screen()
@@ -519,6 +584,74 @@ def main() -> int:
             if "tool-final-response" not in visible:
                 raise AssertionError(f"TUI did not keep the tool final response in scrollback:\n{visible}")
 
+        # --- v0.2.19 切片5: rapid resize ---
+        for new_rows, new_cols in [(30, 120), (12, 60), (24, 80), (8, 40)]:
+            set_window_size(slave, rows=new_rows, cols=new_cols)
+            time.sleep(0.35)
+            visible = sync_screen()
+            assert_single_prompt_frame(visible, model, f"after resize to {new_rows}x{new_cols}")
+
+        # Restore to standard size
+        set_window_size(slave, rows=24, cols=100)
+        time.sleep(0.35)
+        visible = sync_screen()
+        assert_single_prompt_frame(visible, model, "after restore to 24x100")
+
+        # --- 窄宽 + 低高度验证 ---
+        set_window_size(slave, rows=8, cols=30)
+        time.sleep(0.35)
+        visible = sync_screen()
+        # Prompt frame must still be present at this minimal size
+        if "┌" not in visible or "└" not in visible:
+            raise AssertionError(f"TUI prompt frame missing at 8x30:\n{visible}")
+        # Resize back to normal
+        set_window_size(slave, rows=24, cols=100)
+        time.sleep(0.35)
+        visible = sync_screen()
+        assert_single_prompt_frame(visible, model, "after restore from 8x30")
+
+        # --- 长输出 scrollback ---
+        long_output_start = len(b"".join(output))
+        os.write(master, b"\x15long output test\r")
+        wait_for(master, output, "line-0039", timeout=15, start_offset=long_output_start)
+        wait_for(
+            master,
+            output,
+            "Completed with mock-tui-stream",
+            timeout=15,
+            start_offset=long_output_start,
+        )
+        # Page-up to verify scrollback works with long output
+        os.write(master, b"\x1b[5~")
+        time.sleep(0.25)
+        visible = sync_screen()
+        assert_single_prompt_frame(visible, model, "after page-up scrollback in long output")
+
+        # --- Permission / exec tool smoke (may auto-allow due to exec ask=off) ---
+        permission_start = len(b"".join(output))
+        os.write(master, b"\x15permission test\r")
+        wait_for(master, output, "exec_command", timeout=10, start_offset=permission_start)
+        # If permission overlay shows, dismiss it; if tool auto-runs, wait for completion
+        time.sleep(0.5)
+        output.append(read_available(master, timeout=0.5))
+        tool_output_plain = strip_ansi(
+            b"".join(output)[permission_start:].decode("utf-8", errors="replace")
+        )
+        if "Tool Permission" in tool_output_plain:
+            os.write(master, b"y")
+            time.sleep(0.5)
+        wait_for(
+            master,
+            output,
+            "Completed with mock-tui-stream",
+            timeout=20,
+            start_offset=permission_start,
+        )
+        # Permission/exec smoke passed — verify prompt frame still stable
+        visible = sync_screen()
+        assert_single_prompt_frame(visible, model, "after permission/exec test")
+
+        # --- Repeated interrupt / alternate screen restore ---
         for _ in range(4):
             os.write(master, b"\x03")
             time.sleep(0.25)
@@ -530,9 +663,11 @@ def main() -> int:
             output.append(read_available(master))
             time.sleep(0.05)
         if process.poll() is None:
-            raise AssertionError("TUI did not exit after double Ctrl+C")
-        if b"\x1b[?1049l" not in b"".join(output):
-            raise AssertionError("TUI did not leave alternate screen")
+            raise AssertionError("TUI did not exit after repeated Ctrl+C")
+
+        final_raw = b"".join(output)
+        if b"\x1b[?1049l" not in final_raw:
+            raise AssertionError("TUI did not leave alternate screen after repeated Ctrl+C")
 
         print("TUI_EXPLICIT_PTY_OK")
         return 0

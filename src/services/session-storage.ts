@@ -932,7 +932,16 @@ export function readSessionMessages(sessionId: string): SessionMessage[] {
   try {
     const content = readFileSync(path, 'utf-8');
     const lines = content.trim().split('\n').filter(Boolean);
-    return lines.map(line => JSON.parse(line) as SessionMessage);
+    const messages: SessionMessage[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      try {
+        messages.push(JSON.parse(lines[i]) as SessionMessage);
+      } catch {
+        // A missing turn can orphan later tool results, so only restore the valid prefix.
+        break;
+      }
+    }
+    return messages;
   } catch {
     return [];
   }
