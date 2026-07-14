@@ -21,6 +21,10 @@ function writeFakeMcpServer(): void {
 const readline = require('readline');
 const rl = readline.createInterface({ input: process.stdin });
 
+if (process.env.MCP_TEST_NOISE === '1') {
+  process.stdout.write('fake MCP banner\\n{not-json}\\n');
+}
+
 function respond(id, result) {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n');
 }
@@ -35,6 +39,9 @@ rl.on('line', (line) => {
   if (!msg.id) return;
 
   if (msg.method === 'initialize') {
+    if (process.env.MCP_TEST_FAIL_INIT === '1') {
+      process.exit(1);
+    }
     respond(msg.id, {
       protocolVersion: msg.params.protocolVersion,
       capabilities: { tools: {} },
@@ -173,5 +180,48 @@ describe('MCP integration', () => {
     await mcpManager.connectAll();
 
     expect(getRuntimeTools().map(tool => tool.name)).toContain('mcp__sample__echo');
+  });
+
+  test('drops banner and malformed newline-delimited output before valid responses', async () => {
+    writeMcpConfig({
+      mcpServers: {
+        sample: {
+          command: process.execPath,
+          args: [serverPath],
+          env: { MCP_TEST_NOISE: '1' },
+        },
+      },
+    });
+
+    await mcpManager.connectAll();
+
+    const client = mcpManager.getClient('sample') as unknown as { state: { buffer: string } };
+    expect(client.state.buffer).toBe('');
+    expect(mcpManager.getStatus()).toEqual([
+      expect.objectContaining({ name: 'sample', connected: true, dead: false }),
+    ]);
+  });
+
+  test('cleans up a server that exits during initialization', async () => {
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    writeMcpConfig({
+      mcpServers: {
+        sample: {
+          command: process.execPath,
+          args: [serverPath],
+          env: { MCP_TEST_FAIL_INIT: '1' },
+        },
+      },
+    });
+
+    try {
+      await mcpManager.connectAll();
+      expect(mcpManager.getClient('sample')).toBeUndefined();
+      expect(mcpManager.getStatus()).toEqual([
+        expect.objectContaining({ name: 'sample', connected: false, toolCount: 0, dead: true }),
+      ]);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

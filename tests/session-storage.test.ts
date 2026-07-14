@@ -327,6 +327,28 @@ describe('session-storage', () => {
       expect(messages[1].role).toBe('assistant');
     });
 
+    test('readSessionMessages stops at a corrupt line to avoid orphaning later messages', () => {
+      const session = createSession('/tmp/project-read-corrupt-messages', 'gpt-4o');
+      appendSessionMessage(session.id, {
+        role: 'user',
+        content: 'before corruption',
+        timestamp: 1000,
+      });
+      appendSessionMessage(session.id, {
+        role: 'assistant',
+        content: 'after corruption',
+        timestamp: 2000,
+      });
+
+      const transcriptPath = getProjectSessionMessagesPath(session.projectPath, session.id);
+      const [first, second] = readFileSync(transcriptPath, 'utf-8').trim().split('\n');
+      writeFileSync(transcriptPath, `${first}\n{not-json}\n${second}\n`, 'utf-8');
+
+      expect(readSessionMessages(session.id).map(message => message.content)).toEqual([
+        'before corruption',
+      ]);
+    });
+
     test('loadSessionHistory uses model-visible content while transcript keeps full tool output', () => {
       const session = createSession('/tmp/project-model-visible-history', 'gpt-4o');
       const fullToolOutput = JSON.stringify({

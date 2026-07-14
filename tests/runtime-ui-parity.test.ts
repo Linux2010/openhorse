@@ -396,4 +396,28 @@ describe('runtime/UI renderer parity contract', () => {
     expect(ui.events).toEqual(runtime.events);
     expect(ui.events).toEqual(['session_restored:session-abc:3']);
   });
+
+  // --- v0.2.19 completion: TUI-vs-terminal capability parity ---
+
+  it('resolves identical capabilities for tui and terminal renderers', () => {
+    const { resolveUiRendererCapabilities } = require('../src/runtime/ui-events');
+    const tuiCaps = resolveUiRendererCapabilities(undefined, 'tui');
+    const terminalCaps = resolveUiRendererCapabilities(undefined, 'terminal');
+
+    // TUI must have the same interactive capabilities as the default terminal renderer
+    expect(tuiCaps).toEqual(terminalCaps);
+    expect(tuiCaps.structuredPickers).toBe(true);
+    expect(tuiCaps.inlineProgress).toBe(true);
+  });
+
+  it('resolves different capabilities for print vs interactive renderers', () => {
+    const { resolveUiRendererCapabilities } = require('../src/runtime/ui-events');
+    const printCaps = resolveUiRendererCapabilities(undefined, 'print');
+    const tuiCaps = resolveUiRendererCapabilities(undefined, 'tui');
+
+    // Print renderer is non-interactive; TUI is interactive
+    expect(printCaps.structuredPickers).toBe(false);
+    expect(tuiCaps.structuredPickers).toBe(true);
+    expect(printCaps).not.toEqual(tuiCaps);
+  });
 });

@@ -62,6 +62,47 @@ describe('tui-core input parser', () => {
       { type: 'key', key: 'left', raw: '\x1b[D' },
     ]);
   });
+
+  // --- 切片2: emoji / grapheme / long input ---
+
+  it('handles emoji as grapheme clusters without splitting', () => {
+    const parser = new TuiInputParser();
+    // 👋 = F0 9F 91 8B (4 bytes), 你好 = CJK
+    const emoji = '👋你好';
+    expect(parser.feed(Buffer.from(emoji, 'utf8'))).toEqual([
+      { type: 'text', value: emoji },
+    ]);
+  });
+
+  it('handles grapheme clusters with combining marks', () => {
+    const parser = new TuiInputParser();
+    // é as e + combining acute accent (U+0065 U+0301)
+    const text = 'é';
+    expect(parser.feed(Buffer.from(text, 'utf8'))).toEqual([
+      { type: 'text', value: text },
+    ]);
+  });
+
+  it('handles very long input without splitting key sequences', () => {
+    const parser = new TuiInputParser();
+    const long = 'A'.repeat(256) + '\x1b[D' + 'B'.repeat(256);
+    const events = parser.feed(Buffer.from(long, 'utf8'));
+    expect(events).toEqual([
+      { type: 'text', value: 'A'.repeat(256) },
+      { type: 'key', key: 'left', raw: '\x1b[D' },
+      { type: 'text', value: 'B'.repeat(256) },
+    ]);
+  });
+
+  it('handles delete (forward delete) for grapheme clusters', () => {
+    // This validates the parser distinguishes backspace (\x7f) from forward delete (\x1b[3~)
+    const parser = new TuiInputParser();
+    const events = parser.feed(Buffer.from('\x1b[3~\x7f'));
+    expect(events).toEqual([
+      { type: 'key', key: 'delete', raw: '\x1b[3~' },
+      { type: 'key', key: 'backspace', raw: '\x7f' },
+    ]);
+  });
 });
 
 describe('tui-core frame model', () => {
@@ -99,6 +140,71 @@ describe('tui-core frame model', () => {
       changedRows: [],
       cursorChanged: true,
     });
+  });
+
+  // --- 切片1: frame resize/diff edge cases ---
+
+  it('detects all rows changed when dimensions differ', () => {
+    const previous = createTuiFrame(10, 4);
+    const next = createTuiFrame(20, 6);
+    writeFrameText(previous, 0, 0, 'hello');
+    writeFrameText(next, 0, 0, 'hello');
+
+    const diff = diffTuiFrames(previous, next);
+    expect(diff.changedRows).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(diff.cursorChanged).toBe(true);
+  });
+
+  it('detects all rows changed after resize (full redraw)', () => {
+    // Simulate rapid resize: previous and next have same content but different sizes
+    const prev = createTuiFrame(40, 10);
+    const next = createTuiFrame(80, 24);
+    writeFrameText(prev, 0, 0, 'same content');
+    writeFrameText(next, 0, 0, 'same content');
+
+    const diff = diffTuiFrames(prev, next);
+    expect(diff.changedRows).toHaveLength(24);
+    expect(diff.cursorChanged).toBe(true);
+  });
+
+  it('sets every row to default char after creation (no leftover state)', () => {
+    const frame = createTuiFrame(8, 3);
+    const rows = renderFrameRows(frame);
+    expect(rows[0]).toBe('        ');
+    expect(rows[1]).toBe('        ');
+    expect(rows[2]).toBe('        ');
+  });
+
+  it('clamps cursor to frame bounds', () => {
+    const frame = createTuiFrame(10, 4);
+    setFrameCursor(frame, 99, 99, true);
+    expect(frame.cursor.row).toBe(3);  // max height - 1
+    expect(frame.cursor.column).toBe(9); // max width - 1
+    setFrameCursor(frame, -5, -5, true);
+    expect(frame.cursor.row).toBe(0);
+    expect(frame.cursor.column).toBe(0);
+  });
+
+  it('preserves CJK full-width cells after writeFrameText', () => {
+    const frame = createTuiFrame(12, 2);
+    writeFrameText(frame, 0, 0, '你好');
+    // Cell [0][0] = '你' (width 2), [0][1] = '' (width 0, placeholder)
+    expect(frame.rows[0][0]).toMatchObject({ char: '你', width: 2 });
+    expect(frame.rows[0][1]).toMatchObject({ char: '', width: 0 });
+    // Cell [0][2] = '好' (width 2), [0][3] = '' (width 0)
+    expect(frame.rows[0][2]).toMatchObject({ char: '好', width: 2 });
+    expect(frame.rows[0][3]).toMatchObject({ char: '', width: 0 });
+  });
+
+  it('does not leak frame rows between separate frame instances', () => {
+    const a = createTuiFrame(8, 2);
+    const b = createTuiFrame(8, 2);
+    writeFrameText(a, 0, 0, 'frame-A');
+    writeFrameText(b, 0, 0, 'frame-B');
+    expect(renderFrameRows(a)[0]).toContain('frame-A');
+    expect(renderFrameRows(a)[0]).not.toContain('frame-B');
+    expect(renderFrameRows(b)[0]).toContain('frame-B');
+    expect(renderFrameRows(b)[0]).not.toContain('frame-A');
   });
 });
 

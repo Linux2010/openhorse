@@ -135,6 +135,7 @@ export async function launchTuiUI(
   };
 
   const handleResize = (): void => {
+    if (stopping) return;
     const { width, height } = dimensions();
     runner.resize(width, height);
   };
@@ -172,7 +173,7 @@ export async function launchTuiUI(
   });
   runner.events.append({
     role: 'system',
-    content: `OPENHORSE v${runtime.version}\nProject ${runtime.cwd}\n/ commands   @ files   ? shortcuts   Alt+Enter newline   Ctrl+C twice exits`,
+    content: `OPENHORSE v${runtime.version}\nProject ${runtime.cwd}\n/ commands   @ files   ? shortcuts   Ctrl+C twice exits`,
   });
   runner.events.setStatus(statusSnapshot(runtime, 'ready'));
 

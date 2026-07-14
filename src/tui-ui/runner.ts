@@ -102,17 +102,21 @@ export class TuiRunner {
   }
 
   private applyInputEvent(event: TuiInputEvent): void {
-    if (this.state.overlay?.type === 'permission' && event.type === 'text') {
-      const answer = event.value.trim().toLowerCase();
-      if (answer === 'y' || answer === 'yes') {
-        this.answerPermission(true);
+    if (this.state.overlay?.type === 'permission') {
+      if (event.type === 'text') {
+        const answer = event.value.trim().toLowerCase();
+        if (answer === 'y' || answer === 'yes') {
+          this.answerPermission(true);
+          return;
+        }
+        if (answer === 'n' || answer === 'no') {
+          this.answerPermission(false);
+          return;
+        }
         return;
       }
-      if (answer === 'n' || answer === 'no') {
-        this.answerPermission(false);
-        return;
-      }
-      return;
+      // Ignore paste and non-escape keys during permission overlay
+      if (event.type === 'paste') return;
     }
 
     switch (event.type) {
@@ -253,6 +257,7 @@ export class TuiRunner {
           this.answerPermission(false);
           return;
       }
+      return;
     }
 
     switch (key) {
@@ -313,7 +318,18 @@ export class TuiRunner {
     const input = this.state.prompt.value;
     if (!input.trim() && !options.allowEmpty) return;
     this.dispatch({ type: 'setPrompt', value: '', cursor: 0 });
-    void this.options.onSubmit?.(input);
+    try {
+      const submission = this.options.onSubmit?.(input);
+      if (submission) {
+        void submission.catch(() => this.reportSubmitFailure());
+      }
+    } catch {
+      this.reportSubmitFailure();
+    }
+  }
+
+  private reportSubmitFailure(): void {
+    this.events.append({ role: 'error', content: 'Input submission failed.' });
   }
 
   private updatePrompt(next: { value: string; cursor: number }): void {

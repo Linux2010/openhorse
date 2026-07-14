@@ -107,6 +107,10 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
     rows.slice(0, maxRows).forEach((line, index) => {
       writeFrameText(frame, index, 0, line);
     });
+    // Clear any remaining transcript rows below overlay content
+    for (let i = rows.length; i < maxRows; i++) {
+      writeFrameText(frame, i, 0, '');
+    }
     return;
   }
 
@@ -138,6 +142,10 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
     rows.slice(0, maxRows).forEach((line, index) => {
       writeFrameText(frame, index, 0, line);
     });
+    // Clear any remaining transcript rows below overlay content
+    for (let i = rows.length; i < maxRows; i++) {
+      writeFrameText(frame, i, 0, '');
+    }
     return;
   }
 
@@ -164,6 +172,10 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
     rows.slice(0, maxRows).forEach((line, index) => {
       writeFrameText(frame, index, 0, line);
     });
+    // Clear any remaining transcript rows below overlay content
+    for (let i = rows.length; i < maxRows; i++) {
+      writeFrameText(frame, i, 0, '');
+    }
     return;
   }
 
@@ -185,6 +197,10 @@ function renderOverlay(frame: TuiFrame, state: TuiUiState, maxRows: number): voi
     rows.slice(0, maxRows).forEach((line, index) => {
       writeFrameText(frame, index, 0, line);
     });
+    // Clear any remaining transcript rows below overlay content
+    for (let i = rows.length; i < maxRows; i++) {
+      writeFrameText(frame, i, 0, '');
+    }
     return;
   }
 
