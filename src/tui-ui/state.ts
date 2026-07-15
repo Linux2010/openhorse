@@ -1,5 +1,6 @@
 import type {
   EditPreviewRequest,
+  RuntimeSubtaskEvent,
   RuntimeToolFinishedEvent,
   RuntimeToolStartedEvent,
   SessionPickerRequest,
@@ -8,7 +9,12 @@ import type {
   TranscriptEntry,
   UiEventSink,
 } from '../runtime/ui-events';
-import { createPromptState, type PromptState } from '../runtime/ui-view-model';
+import {
+  createPromptState,
+  subtaskEventToTimelineEntry,
+  type PromptState,
+  type SubtaskTimelineEntry,
+} from '../runtime/ui-view-model';
 import type { TuiPickerItem } from './pickers';
 
 export type TuiPromptState = Pick<PromptState, 'value' | 'cursor'>;
@@ -33,6 +39,8 @@ export type TuiOverlayState =
 export interface TuiUiState {
   transcript: TuiTranscriptRecord[];
   runtimeToolEvents: TuiRuntimeToolEvent[];
+  /** R8: typed subagent timeline, keyed by taskId (last write wins). */
+  subtaskTimeline: SubtaskTimelineEntry[];
   staticTranscriptCount: number;
   transcriptGeneration: number;
   transcriptScrollOffset: number;
@@ -58,6 +66,7 @@ export type TuiUiAction =
   | { type: 'showPermissionRequest'; request: ToolPermissionRequest }
   | { type: 'toolStarted'; event: RuntimeToolStartedEvent }
   | { type: 'toolFinished'; event: RuntimeToolFinishedEvent }
+  | { type: 'subtaskEvent'; event: RuntimeSubtaskEvent }
   | { type: 'showCommandPalette'; query: string; items: TuiPickerItem[] }
   | { type: 'showFilePicker'; base: string; query: string; items: TuiPickerItem[] }
   | { type: 'showShortcuts' }
@@ -67,6 +76,7 @@ export type TuiUiAction =
 export const initialTuiUiState: TuiUiState = {
   transcript: [],
   runtimeToolEvents: [],
+  subtaskTimeline: [],
   staticTranscriptCount: 0,
   transcriptGeneration: 0,
   transcriptScrollOffset: 0,
@@ -193,6 +203,14 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
     case 'toolFinished':
       return appendRuntimeToolEvent(state, { type: 'finished', ...action.event });
 
+    case 'subtaskEvent': {
+      // R8: update the typed timeline, keyed by taskId (last write wins so
+      // state advances queued -> running -> terminal without duplicates).
+      const entry = subtaskEventToTimelineEntry(action.event);
+      const existing = state.subtaskTimeline.filter(e => e.taskId !== entry.taskId);
+      return { ...state, subtaskTimeline: [...existing, entry] };
+    }
+
     case 'showCommandPalette':
       return {
         ...state,
@@ -274,6 +292,7 @@ export function createTuiUiEventSink(
     showPermissionRequest: request => dispatch({ type: 'showPermissionRequest', request }),
     toolStarted: event => dispatch({ type: 'toolStarted', event }),
     toolFinished: event => dispatch({ type: 'toolFinished', event }),
+    subtaskEvent: event => dispatch({ type: 'subtaskEvent', event }),
     setProcessing: processing => dispatch({ type: 'setProcessing', processing }),
   };
 }

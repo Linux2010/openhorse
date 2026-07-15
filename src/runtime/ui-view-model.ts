@@ -61,6 +61,66 @@ export interface ToolActivity {
   batchIndex?: number;
 }
 
+// ============================================================================
+// R8: Subagent timeline view-model (shared across terminal/Ink/TUI)
+// ============================================================================
+
+/**
+ * Stable timeline entry for a subagent lifecycle, derived from the
+ * renderer-independent {@link RuntimeSubtaskEvent}. terminal/Ink/TUI all
+ * consume this single shape instead of each implementing its own state
+ * machine. The chat-controller's transcript summary remains as a degraded
+ * output, but the typed timeline is the authoritative view.
+ */
+export interface SubtaskTimelineEntry {
+  batchId: string;
+  taskId: string;
+  role: string;
+  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'rejected';
+  objective: string;
+  summary?: string;
+  durationMs?: number;
+  /** True once a terminal state (completed/failed/cancelled/timed_out/rejected) is reached. */
+  terminal: boolean;
+}
+
+/**
+ * Map a {@link RuntimeSubtaskEvent} to a timeline entry. Pure: renderers call
+ * this from their `subtaskEvent` consumer and store the result keyed by
+ * `taskId`, so each task has exactly one entry whose state advances.
+ */
+export function subtaskEventToTimelineEntry(event: {
+  batchId: string;
+  taskId: string;
+  role: string;
+  state: SubtaskTimelineEntry['state'];
+  objective: string;
+  summary?: string;
+  durationMs?: number;
+}): SubtaskTimelineEntry {
+  const terminalStates: SubtaskTimelineEntry['state'][] = [
+    'completed', 'failed', 'cancelled', 'timed_out', 'rejected',
+  ];
+  return {
+    batchId: event.batchId,
+    taskId: event.taskId,
+    role: event.role,
+    state: event.state,
+    objective: event.objective,
+    summary: event.summary,
+    durationMs: event.durationMs,
+    terminal: terminalStates.includes(event.state),
+  };
+}
+
+/** A short human-readable label for a timeline entry, used by renderers. */
+export function subtaskTimelineLabel(entry: SubtaskTimelineEntry): string {
+  const arrow = entry.terminal ? '◂' : '▸';
+  const tail = entry.summary ? ` - ${entry.summary.slice(0, 120)}` : '';
+  const dur = entry.durationMs ? ` (${entry.durationMs}ms)` : '';
+  return `${arrow} subtask ${entry.role} ${entry.state}${tail}${dur}`;
+}
+
 export type UiRendererStatus = 'stable' | 'beta' | 'non-interactive' | 'custom';
 
 export interface StatusSnapshot {

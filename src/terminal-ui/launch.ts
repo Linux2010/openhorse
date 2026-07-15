@@ -12,8 +12,10 @@ import {
   movePickerPageOffset,
   permissionRiskDisplayValue,
   permissionScopeDisplayValue,
+  subtaskEventToTimelineEntry,
   type SessionPickerItem,
   sessionPickerTitle,
+  type SubtaskTimelineEntry,
 } from '../runtime/ui-view-model';
 import { formatBytes } from '../services/format';
 import { redactTraceText } from '../services/redaction';
@@ -24,6 +26,7 @@ import type {
   EditPreviewRequest,
   OpenHorseUiRuntime,
   RuntimeSessionRestoredEvent,
+  RuntimeSubtaskEvent,
   SessionPickerRequest,
   TranscriptAppendEntry,
   TranscriptEntry,
@@ -416,6 +419,13 @@ export class TerminalEventSink implements UiEventSink {
   private pickerOffset = 0;
   private pendingEditPreview: EditPreviewRequest | null = null;
   private lastStatusMessage = '';
+  /**
+   * R8: typed subagent timeline, keyed by taskId. The chat-controller's
+   * transcript summary drives the visible terminal output (so we do not
+   * double-print); this map is the structured source for parity tests and
+   * future timeline rendering.
+   */
+  private readonly subtaskTimeline = new Map<string, SubtaskTimelineEntry>();
 
   constructor(
     private readonly runtime: OpenHorseUiRuntime,
@@ -642,6 +652,20 @@ export class TerminalEventSink implements UiEventSink {
     }
 
     this.pendingAssistantOutput.set(entry.id, pending);
+  }
+
+  /**
+   * R8: consume the typed subagent event into the shared timeline view-model.
+   * Does not print (the chat-controller transcript summary already drives
+   * visible terminal output); this is the structured source for parity.
+   */
+  subtaskEvent(event: RuntimeSubtaskEvent): void {
+    this.subtaskTimeline.set(event.taskId, subtaskEventToTimelineEntry(event));
+  }
+
+  /** R8: read-only access to the typed subagent timeline (for parity tests). */
+  getSubtaskTimeline(): SubtaskTimelineEntry[] {
+    return Array.from(this.subtaskTimeline.values());
   }
 }
 

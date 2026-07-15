@@ -180,3 +180,30 @@ describe('Stable prefix cache invariance', () => {
     expect(uniqueDynamic.size).toBeGreaterThan(1);
   });
 });
+
+describe('subagent prompt section', () => {
+  const subtaskTool: OpenHorseTool = buildTool({
+    name: 'subtask',
+    description: 'Delegate subtasks',
+    parameters: { type: 'object', properties: { tasks: { type: 'array', description: 'tasks' } } },
+    execute: async () => ({ success: true, output: '' }),
+  });
+
+  it('includes subagent guidance when subtask tool is present', () => {
+    const ctx: PromptContext = { ...baseContext, tools: [mockTool, subtaskTool] };
+    const prompt = getSystemPrompt(ctx);
+    expect(prompt).toMatch(/Subagent capability/);
+    expect(prompt).toMatch(/subtask/);
+    expect(prompt).toMatch(/READ-ONLY/);
+    // Positive triggers + abuse prevention
+    expect(prompt).toMatch(/independent/);
+    expect(prompt).toMatch(/Do NOT use subtask/);
+    expect(prompt).toMatch(/cannot edit/);
+  });
+
+  it('omits subagent guidance when subtask tool is absent', () => {
+    const ctx: PromptContext = { ...baseContext, tools: [mockTool] };
+    const prompt = getSystemPrompt(ctx);
+    expect(prompt).not.toMatch(/Subagent capability/);
+  });
+});

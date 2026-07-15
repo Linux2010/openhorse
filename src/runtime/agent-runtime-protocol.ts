@@ -7,6 +7,7 @@ import type {
   RuntimeTraceEvent,
   RuntimeHarnessDiagnostics,
   RuntimeSessionRestoredEvent,
+  RuntimeSubtaskEvent,
   ToolPermissionRequest,
   TranscriptAppendEntry,
   TranscriptEntry,
@@ -80,6 +81,7 @@ export type AgentRuntimeEvent =
   | { type: 'loop_stats_updated'; stats: RuntimeLoopStats }
   | { type: 'trace_event_recorded'; event: RuntimeTraceEvent }
   | { type: 'harness_diagnostics_updated'; diagnostics: RuntimeHarnessDiagnostics }
+  | { type: 'subtask_event'; event: RuntimeSubtaskEvent }
   | { type: 'processing_changed'; processing: boolean };
 
 export interface AgentRuntimeEventSink {
@@ -134,6 +136,9 @@ export function emitToUiEventSink(events: UiEventSink, event: AgentRuntimeEvent)
       return undefined;
     case 'harness_diagnostics_updated':
       events.harnessDiagnosticsUpdated?.(event.diagnostics);
+      return undefined;
+    case 'subtask_event':
+      events.subtaskEvent?.(event.event);
       return undefined;
     case 'processing_changed':
       events.setProcessing(event.processing);
@@ -193,6 +198,9 @@ export function createUiEventSinkFromAgentRuntimeEvents(sink: AgentRuntimeEventS
     },
     harnessDiagnosticsUpdated: diagnostics => {
       sink.emit({ type: 'harness_diagnostics_updated', diagnostics });
+    },
+    subtaskEvent: event => {
+      sink.emit({ type: 'subtask_event', event });
     },
     setProcessing: processing => {
       sink.emit({ type: 'processing_changed', processing });

@@ -141,7 +141,7 @@ export class ContextHarness {
 
   recordAssistantResponse(response: LLMResponse): void {
     if (this.config.enabled === false) return;
-    if (response.content.trim()) {
+    if (response.content?.trim()) {
       this.ledger.recordAssistantDecision(response.content);
     }
     this.refreshCapsule();

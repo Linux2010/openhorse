@@ -89,6 +89,29 @@ export interface AgentLoopConfig {
   budget?: AgentLoopBudgetConfig;
 }
 
+/** Subagent mode: whether the `subtask` capability is exposed to the root Agent. */
+export type SubagentMode = 'off' | 'explicit' | 'auto';
+
+/** Built-in subagent roles exposed to the root Agent. */
+export type SubagentRole = 'research' | 'review' | 'test-investigate';
+
+/**
+ * User-facing subagent configuration (all fields optional; missing fields fall
+ * back to runtime defaults). The runtime resolves and clamps this to a full
+ * {@link SubagentConfig} at startup.
+ */
+export interface SubagentUserConfig {
+  mode?: SubagentMode;
+  maxParallel?: number;
+  maxTasksPerTurn?: number;
+  maxTurnsPerTask?: number;
+  maxModelRequestsPerTask?: number;
+  maxModelRequestsPerTurn?: number;
+  maxToolCallsPerTask?: number;
+  timeoutMs?: number;
+  roles?: SubagentRole[];
+}
+
 /**
  * 全局配置 — 用户只需关注少量核心项
  * maxTokens/temperature/retries 等由 Agent 智能控制
@@ -112,6 +135,8 @@ export interface GlobalConfig {
   skills?: SkillsConfig;
   /** Agent-loop guardrails. */
   agentLoop?: AgentLoopConfig;
+  /** Read-only subagent runtime configuration (v0.2.20 beta). */
+  subagents?: SubagentUserConfig;
 
   // ---- 内部标识 ----
   userId?: string;

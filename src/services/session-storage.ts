@@ -148,7 +148,14 @@ export type SessionTraceEventType =
   | 'verification_result'
   | 'verification_summary'
   | 'aborted'
-  | 'error';
+  | 'error'
+  | 'subtask_requested'
+  | 'subtask_started'
+  | 'subtask_completed'
+  | 'subtask_failed'
+  | 'subtask_cancelled'
+  | 'subtask_rejected'
+  | 'subtask_timed_out';
 
 export interface SessionTraceEvent {
   sessionId: string;
