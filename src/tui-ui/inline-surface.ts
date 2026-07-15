@@ -157,6 +157,10 @@ export class InlineTerminalSurface {
       await op();
     }
     this.processing = false;
+    // Re-check in case an enqueue happened during the last op's async yield.
+    if (this.queue.length > 0) {
+      void this.drainQueue();
+    }
   }
 
   /** Mount: enable bracketed paste + hide cursor. NO alternate screen. */

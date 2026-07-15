@@ -8,6 +8,7 @@ const ENABLE_BRACKETED_PASTE = '\x1b[?2004h';
 const DISABLE_BRACKETED_PASTE = '\x1b[?2004l';
 const SHOW_CURSOR = '\x1b[?25h';
 const HIDE_CURSOR = '\x1b[?25l';
+const ENABLE_AUTOWRAP = '\x1b[?7h';
 
 export interface TuiLaunchOptions {
   input?: NodeJS.ReadStream;
@@ -31,6 +32,8 @@ export async function launchTuiUI(
   let stopping = false;
   let settled = false;
   let resolveLaunch: (() => void) | null = null;
+  // Once guard: shared cleanup promise so concurrent stop calls share one execution.
+  let cleanupPromise: Promise<void> | null = null;
 
   const dimensions = () => {
     const size = readTtyDimensions(output);
@@ -46,32 +49,117 @@ export async function launchTuiUI(
     resolveLaunch?.();
   };
 
-  const cleanup = async (): Promise<void> => {
-    input.off('data', handleData);
-    output.off('resize', handleResize);
-    process.off('SIGWINCH', handleResize);
-    process.off('SIGINT', handleSigint);
-    if (typeof input.setRawMode === 'function') {
-      try {
+  /**
+   * Emergency terminal restore — independent of runner/controller/surface.
+   * Used when cleanup cannot complete normally (renderer error, partial init).
+   * Must not throw; all operations are best-effort with optional guards.
+   */
+  const emergencyRestore = (): void => {
+    try {
+      if (typeof input.setRawMode === 'function') {
         input.setRawMode(false);
-      } catch {
-        // best effort terminal restoration
       }
-    }
-    input.pause();
-    // Primary-screen restore: NO alternate-screen exit, NO full clear.
-    // Surface unmount clears only the ephemeral live region.
-    await surface.unmount();
-    output.write(`${SHOW_CURSOR}${DISABLE_BRACKETED_PASTE}`);
-    await runtime.shutdown();
+    } catch { /* best effort */ }
+    try {
+      input.pause();
+    } catch { /* best effort */ }
+    try {
+      output.write(`${SHOW_CURSOR}${ENABLE_AUTOWRAP}${DISABLE_BRACKETED_PASTE}\n`);
+    } catch { /* best effort */ }
   };
 
+  /**
+   * Once-guarded cleanup. Multiple concurrent calls (SIGINT, SIGTERM, runtime
+   * shutdown, renderer error) all share the same promise. Only the first call
+   * executes; subsequent calls await the same promise.
+   */
+  const cleanup = (): Promise<void> => {
+    if (cleanupPromise) return cleanupPromise;
+
+    cleanupPromise = (async () => {
+      // Remove listeners first to prevent re-entrancy.
+      try { input.off('data', handleData); } catch { /* ok */ }
+      try { output.off('resize', handleResize); } catch { /* ok */ }
+      try { process.off('SIGWINCH', handleResize); } catch { /* ok */ }
+      try { process.off('SIGINT', handleSigint); } catch { /* ok */ }
+      try { process.off('SIGTERM', handleSigterm); } catch { /* ok */ }
+      try { process.off('SIGHUP', handleSighup); } catch { /* ok */ }
+
+      // Stop active turn (controller may not exist if init failed).
+      if (controller) {
+        try {
+          await controller.stopActiveTurn();
+        } catch { /* best effort — don't block cleanup */ }
+      }
+
+      // Restore raw mode.
+      try {
+        if (typeof input.setRawMode === 'function') {
+          input.setRawMode(false);
+        }
+      } catch { /* best effort */ }
+      try { input.pause(); } catch { /* best effort */ }
+
+      // Unmount surface (clears ephemeral live region only).
+      if (surface) {
+        try {
+          await surface.unmount();
+        } catch { /* best effort */ }
+      }
+
+      // Restore terminal state: cursor, autowrap, bracketed paste.
+      // NO alternate-screen exit, NO full clear, NO erasing committed scrollback.
+      try {
+        output.write(`${SHOW_CURSOR}${ENABLE_AUTOWRAP}${DISABLE_BRACKETED_PASTE}`);
+      } catch { /* best effort */ }
+
+      // Runtime shutdown last; preserves original exit code/signal semantics.
+      try {
+        await runtime.shutdown();
+      } catch { /* best effort */ }
+    })();
+
+    return cleanupPromise;
+  };
+
+  /**
+   * Initiate graceful stop. Once-guarded: only the first call proceeds.
+   * Uses async/await so finishLaunch() runs in the same microtask chain
+   * as cleanup completion.
+   */
   const stop = async (): Promise<void> => {
     if (stopping) return;
     stopping = true;
-    await controller.stopActiveTurn();
-    await cleanup();
+    try {
+      await cleanup();
+    } catch {
+      // Cleanup error must not mask the original error.
+      // Emergency restore as fallback.
+      emergencyRestore();
+    }
     finishLaunch();
+  };
+
+  /**
+   * Handle renderer-layer errors. Emergency restore first, then report.
+   */
+  const failRenderer = (error: unknown): void => {
+    if (stopping) return;
+    stopping = true;
+
+    // Emergency restore independent of partially-constructed objects.
+    emergencyRestore();
+
+    // Report sanitized renderer-layer error to stderr.
+    try {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`\nTUI renderer error: ${message}\n`);
+    } catch { /* best effort */ }
+
+    // Attempt full cleanup (may partially fail — that's ok).
+    void cleanup().then(() => {
+      finishLaunch();
+    });
   };
 
   const consumeSessionPickerSelection = (inputValue: string): string | AgentRuntimeInput => {
@@ -148,70 +236,83 @@ export async function launchTuiUI(
     handleCtrlC();
   };
 
-  // Primary-screen inline surface: no alternate screen (1049).
-  // The runner continues to own frame rendering via its writer; the surface
-  // manages the primary-screen lifecycle (mount/unmount/suspend/restore)
-  // and will progressively take over live-region rendering in later slices.
-  const { width, height } = dimensions();
-  surface = new InlineTerminalSurface({ output });
-  void surface.mount(width, height);
-  output.write(`${ENABLE_BRACKETED_PASTE}${HIDE_CURSOR}`);
-  runner = new TuiRunner({
-    output,
-    width,
-    height,
-    cwd: runtime.cwd,
-    onSubmit: submit,
-    onCtrlC: handleCtrlC,
-    onPermissionDecision: (requestId, approved) => {
-      controller.handle({
-        type: 'permission_decision',
-        requestId,
-        approved,
-        source: 'keyboard',
-      });
-    },
-  });
-  const dispatchStatusSnapshot = (phase: 'ready' | 'running'): string => {
-    const snapshot = createStatusSnapshot({
-      renderer: 'tui',
-      model: runtime.store.getSnapshot().currentModel || runtime.config.model,
-      sessionId: runtime.getSession()?.id,
-      costUsd: runtime.store.getSnapshot().costTracker.getSessionStats().totalCost,
-      runningState: phase,
-      tokens: tokensFromRuntime(runtime),
-    });
-    runner.dispatch({ type: 'setStatusSnapshot', snapshot, phase });
-    return statusSnapshotString(runtime, phase);
+  // SIGTERM/SIGHUP: direct cancel + cleanup (no "double Ctrl+C" product semantics).
+  const handleSigterm = (): void => {
+    void stop();
   };
-  controller = new AgentRuntimeController({
-    runtime,
-    events: runner.events,
-    uiCapabilities: resolveUiRendererCapabilities(undefined, 'tui'),
-    uiRenderer: 'tui',
-    useRuntimeToolPermissions: true,
-    runningStatus: () => dispatchStatusSnapshot('running'),
-    readyStatus: () => dispatchStatusSnapshot('ready'),
-  });
-  runner.events.append({
-    role: 'system',
-    content: `OPENHORSE v${runtime.version}\nProject ${runtime.cwd}\n/ commands   @ files   ? shortcuts   Ctrl+C twice exits`,
-  });
-  runner.events.setStatus(statusSnapshotString(runtime, 'ready'));
-  dispatchStatusSnapshot('ready');
 
-  input.resume();
-  if (typeof input.setRawMode === 'function') {
-    input.setRawMode(true);
+  const handleSighup = (): void => {
+    void stop();
+  };
+
+  try {
+    // Primary-screen inline surface: no alternate screen (1049).
+    const { width, height } = dimensions();
+    surface = new InlineTerminalSurface({ output });
+    void surface.mount(width, height);
+    output.write(`${ENABLE_BRACKETED_PASTE}${HIDE_CURSOR}`);
+    runner = new TuiRunner({
+      output,
+      width,
+      height,
+      cwd: runtime.cwd,
+      onSubmit: submit,
+      onCtrlC: handleCtrlC,
+      onPermissionDecision: (requestId, approved) => {
+        controller.handle({
+          type: 'permission_decision',
+          requestId,
+          approved,
+          source: 'keyboard',
+        });
+      },
+    });
+    const dispatchStatusSnapshot = (phase: 'ready' | 'running'): string => {
+      const snapshot = createStatusSnapshot({
+        renderer: 'tui',
+        model: runtime.store.getSnapshot().currentModel || runtime.config.model,
+        sessionId: runtime.getSession()?.id,
+        costUsd: runtime.store.getSnapshot().costTracker.getSessionStats().totalCost,
+        runningState: phase,
+        tokens: tokensFromRuntime(runtime),
+      });
+      runner.dispatch({ type: 'setStatusSnapshot', snapshot, phase });
+      return statusSnapshotString(runtime, phase);
+    };
+    controller = new AgentRuntimeController({
+      runtime,
+      events: runner.events,
+      uiCapabilities: resolveUiRendererCapabilities(undefined, 'tui'),
+      uiRenderer: 'tui',
+      useRuntimeToolPermissions: true,
+      runningStatus: () => dispatchStatusSnapshot('running'),
+      readyStatus: () => dispatchStatusSnapshot('ready'),
+    });
+    runner.events.append({
+      role: 'system',
+      content: `OPENHORSE v${runtime.version}\nProject ${runtime.cwd}\n/ commands   @ files   ? shortcuts   Ctrl+C twice exits`,
+    });
+    runner.events.setStatus(statusSnapshotString(runtime, 'ready'));
+    dispatchStatusSnapshot('ready');
+
+    input.resume();
+    if (typeof input.setRawMode === 'function') {
+      input.setRawMode(true);
+    }
+    input.on('data', handleData);
+    output.on('resize', handleResize);
+    process.on('SIGWINCH', handleResize);
+    process.on('SIGINT', handleSigint);
+    process.on('SIGTERM', handleSigterm);
+    process.on('SIGHUP', handleSighup);
+
+    await new Promise<void>(resolve => {
+      resolveLaunch = resolve;
+    });
+  } catch (error) {
+    failRenderer(error);
+    throw error;
   }
-  input.on('data', handleData);
-  output.on('resize', handleResize);
-  process.on('SIGWINCH', handleResize);
-  process.on('SIGINT', handleSigint);
-
-  await new Promise<void>(resolve => {
-    resolveLaunch = resolve;
-  });
 }
 
 function tokensFromRuntime(rt: OpenHorseUiRuntime): { input?: number; output?: number } {
