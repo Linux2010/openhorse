@@ -155,15 +155,7 @@ function formatTranscriptEntry(entry: TranscriptEntry): string {
   }
 }
 
-export type TerminalErrorLayer =
-  | 'renderer'
-  | 'runtime'
-  | 'provider'
-  | 'tool'
-  | 'session'
-  | 'memory'
-  | 'MCP'
-  | 'skills';
+export type TerminalErrorLayer = import('../runtime/ui-events').ErrorLayer;
 
 const TERMINAL_ERROR_LAYERS: TerminalErrorLayer[] = [
   'renderer',
@@ -172,8 +164,9 @@ const TERMINAL_ERROR_LAYERS: TerminalErrorLayer[] = [
   'tool',
   'session',
   'memory',
-  'MCP',
+  'mcp',
   'skills',
+  'unknown',
 ];
 
 export function formatTerminalErrorMessage(message: string, explicitLayer?: import('../runtime/ui-events').ErrorLayer): string {
@@ -199,7 +192,7 @@ function hasErrorLayerPrefix(message: string): boolean {
 export function inferTerminalErrorLayer(message: string): TerminalErrorLayer {
   const lower = message.toLowerCase();
 
-  if (/\bmcp\b/u.test(lower)) return 'MCP';
+  if (/\bmcp\b/u.test(lower)) return 'MCP' as TerminalErrorLayer;
   if (/\b(skill|skills)\b/u.test(lower)) return 'skills';
   if (/\b(memory|vector store|recall|forget)\b/u.test(lower)) return 'memory';
   if (/\b(session|resume|compact)\b/u.test(lower)) return 'session';
