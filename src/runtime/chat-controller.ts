@@ -1922,6 +1922,11 @@ export class AgentChatController {
           }
           removeLastIncompleteAssistantMessage(sessionId);
         }
+        // Persist any accumulated session messages before returning,
+        // so tool results from the interrupted turn are not lost.
+        if (sessionId && sessionMessagesToRecord.length > 0) {
+          appendSessionMessages(sessionId, sessionMessagesToRecord);
+        }
         return;
       }
 
