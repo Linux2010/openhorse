@@ -1508,12 +1508,13 @@ export class AgentChatController {
             const json = JSON.stringify(result);
             const artifact = storeArtifact(projectPath, `subtask_${result.role}`, json, Buffer.byteLength(json, 'utf8'));
             if (artifact) {
-              // Record a trace event linking the subtask to its artifact for
-              // /artifacts and /trace discoverability.
+              // Record a trace event for artifact discoverability only.
+              // The subtask state transition (subtask_completed) is already
+              // emitted by handleSubtaskEvent above.
               if (sessionId) {
                 recordTraceEvent(this.events, sessionId, {
                   turnId: String(turnId),
-                  type: 'subtask_completed',
+                  type: 'subtask_artifact_stored',
                   name: `${result.role}:${result.id}`,
                   argsSummary: result.summary.slice(0, 200),
                   argsArtifactId: artifact.id,

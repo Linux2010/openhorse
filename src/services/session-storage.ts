@@ -155,7 +155,8 @@ export type SessionTraceEventType =
   | 'subtask_failed'
   | 'subtask_cancelled'
   | 'subtask_rejected'
-  | 'subtask_timed_out';
+  | 'subtask_timed_out'
+  | 'subtask_artifact_stored';
 
 export interface SessionTraceEvent {
   sessionId: string;
