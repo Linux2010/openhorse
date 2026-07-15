@@ -1,9 +1,8 @@
 import { AgentRuntimeController, type AgentRuntimeInput } from '../runtime/agent-runtime-controller';
 import { resolveUiRendererCapabilities, type OpenHorseUiRuntime, type SessionPickerRequest } from '../runtime/ui-events';
 import { TuiRunner } from './runner';
+import { InlineTerminalSurface } from './inline-surface';
 
-const ENTER_ALT_SCREEN = '\x1b[?1049h';
-const EXIT_ALT_SCREEN = '\x1b[?1049l';
 const ENABLE_BRACKETED_PASTE = '\x1b[?2004h';
 const DISABLE_BRACKETED_PASTE = '\x1b[?2004l';
 const SHOW_CURSOR = '\x1b[?25h';
@@ -27,6 +26,7 @@ export async function launchTuiUI(
 
   let runner!: TuiRunner;
   let controller!: AgentRuntimeController;
+  let surface!: InlineTerminalSurface;
   let stopping = false;
   let settled = false;
   let resolveLaunch: (() => void) | null = null;
@@ -58,7 +58,10 @@ export async function launchTuiUI(
       }
     }
     input.pause();
-    output.write(`${SHOW_CURSOR}${DISABLE_BRACKETED_PASTE}${EXIT_ALT_SCREEN}`);
+    // Primary-screen restore: NO alternate-screen exit, NO full clear.
+    // Surface unmount clears only the ephemeral live region.
+    await surface.unmount();
+    output.write(`${SHOW_CURSOR}${DISABLE_BRACKETED_PASTE}`);
     await runtime.shutdown();
   };
 
@@ -144,8 +147,14 @@ export async function launchTuiUI(
     handleCtrlC();
   };
 
-  output.write(`${ENTER_ALT_SCREEN}${ENABLE_BRACKETED_PASTE}${HIDE_CURSOR}`);
+  // Primary-screen inline surface: no alternate screen (1049).
+  // The runner continues to own frame rendering via its writer; the surface
+  // manages the primary-screen lifecycle (mount/unmount/suspend/restore)
+  // and will progressively take over live-region rendering in later slices.
   const { width, height } = dimensions();
+  surface = new InlineTerminalSurface({ output });
+  void surface.mount(width, height);
+  output.write(`${ENABLE_BRACKETED_PASTE}${HIDE_CURSOR}`);
   runner = new TuiRunner({
     output,
     width,

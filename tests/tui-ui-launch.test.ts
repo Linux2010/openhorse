@@ -91,8 +91,9 @@ describe('tui-ui launch', () => {
     expect(input.rawModeValues).toEqual([true, false]);
     expect(input.resumed).toBe(true);
     expect(input.paused).toBe(true);
-    expect(output.text()).toContain('\x1b[?1049h');
-    expect(output.text()).toContain('\x1b[?1049l');
+    // v0.2.21: primary-screen inline surface - NO alternate screen.
+    expect(output.text()).not.toContain('\x1b[?1049h');
+    expect(output.text()).not.toContain('\x1b[?1049l');
     expect(output.text()).toContain('\x1b[?2004h');
     expect(output.text()).toContain('\x1b[?2004l');
     expect(runtime.shutdown).toHaveBeenCalledTimes(1);

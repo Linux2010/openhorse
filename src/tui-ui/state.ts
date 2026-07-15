@@ -41,7 +41,12 @@ export interface TuiUiState {
   runtimeToolEvents: TuiRuntimeToolEvent[];
   /** R8: typed subagent timeline, keyed by taskId (last write wins). */
   subtaskTimeline: SubtaskTimelineEntry[];
-  staticTranscriptCount: number;
+  /** Continuous finalized prefix count (renamed from staticTranscriptCount). */
+  committableTranscriptCount: number;
+  /** Reserved and enqueued into surface queue (prevents duplicate enqueue). */
+  queuedTranscriptCount: number;
+  /** Successfully written to shell scrollback. */
+  committedTranscriptCount: number;
   transcriptGeneration: number;
   transcriptScrollOffset: number;
   prompt: TuiPromptState;
@@ -77,7 +82,9 @@ export const initialTuiUiState: TuiUiState = {
   transcript: [],
   runtimeToolEvents: [],
   subtaskTimeline: [],
-  staticTranscriptCount: 0,
+  committableTranscriptCount: 0,
+  queuedTranscriptCount: 0,
+  committedTranscriptCount: 0,
   transcriptGeneration: 0,
   transcriptScrollOffset: 0,
   prompt: { value: '', cursor: 0 },
@@ -134,7 +141,9 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
       return {
         ...state,
         transcript: action.entries.map(entry => ({ ...entry, finalized: true })),
-        staticTranscriptCount: action.entries.length,
+        committableTranscriptCount: action.entries.length,
+        queuedTranscriptCount: 0,
+        committedTranscriptCount: 0,
         transcriptGeneration: state.transcriptGeneration + 1,
         transcriptScrollOffset: 0,
       };
@@ -143,7 +152,9 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
       return {
         ...state,
         transcript: [],
-        staticTranscriptCount: 0,
+        committableTranscriptCount: 0,
+        queuedTranscriptCount: 0,
+        committedTranscriptCount: 0,
         transcriptGeneration: state.transcriptGeneration + 1,
         transcriptScrollOffset: 0,
       };
@@ -261,11 +272,26 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
 }
 
 export function staticTuiTranscriptEntries(state: TuiUiState): TranscriptEntry[] {
-  return state.transcript.slice(0, state.staticTranscriptCount).map(stripRecord);
+  return state.transcript.slice(0, state.committableTranscriptCount).map(stripRecord);
 }
 
 export function liveTuiTranscriptEntries(state: TuiUiState): TranscriptEntry[] {
-  return state.transcript.slice(state.staticTranscriptCount).map(stripRecord);
+  return state.transcript.slice(state.committableTranscriptCount).map(stripRecord);
+}
+
+/** Entries ready to commit (committable but not yet queued). */
+export function pendingCommitEntries(state: TuiUiState): TranscriptEntry[] {
+  return state.transcript.slice(state.queuedTranscriptCount, state.committableTranscriptCount).map(stripRecord);
+}
+
+/** Advance the queued boundary after enqueueing a commit batch. */
+export function markTranscriptQueued(state: TuiUiState, count: number): TuiUiState {
+  return { ...state, queuedTranscriptCount: state.queuedTranscriptCount + count };
+}
+
+/** Advance the committed boundary after successful surface write. */
+export function markTranscriptCommitted(state: TuiUiState, count: number): TuiUiState {
+  return { ...state, committedTranscriptCount: state.committedTranscriptCount + count };
 }
 
 export function createTuiUiEventSink(
@@ -309,27 +335,27 @@ function isLiveTranscriptAppend(entry: TranscriptAppendEntry): boolean {
 }
 
 function commitStaticTranscriptPrefix(state: TuiUiState): TuiUiState {
-  let staticTranscriptCount = state.staticTranscriptCount;
+  let committableTranscriptCount = state.committableTranscriptCount;
   while (
-    staticTranscriptCount < state.transcript.length
-    && state.transcript[staticTranscriptCount]?.finalized
+    committableTranscriptCount < state.transcript.length
+    && state.transcript[committableTranscriptCount]?.finalized
   ) {
-    staticTranscriptCount += 1;
+    committableTranscriptCount += 1;
   }
-  return staticTranscriptCount === state.staticTranscriptCount
+  return committableTranscriptCount === state.committableTranscriptCount
     ? state
-    : { ...state, staticTranscriptCount };
+    : { ...state, committableTranscriptCount };
 }
 
 function recomputeStaticTranscriptPrefix(state: TuiUiState): TuiUiState {
-  let staticTranscriptCount = 0;
+  let committableTranscriptCount = 0;
   while (
-    staticTranscriptCount < state.transcript.length
-    && state.transcript[staticTranscriptCount]?.finalized
+    committableTranscriptCount < state.transcript.length
+    && state.transcript[committableTranscriptCount]?.finalized
   ) {
-    staticTranscriptCount += 1;
+    committableTranscriptCount += 1;
   }
-  return { ...state, staticTranscriptCount };
+  return { ...state, committableTranscriptCount };
 }
 
 function stripRecord(entry: TuiTranscriptRecord): TranscriptEntry {

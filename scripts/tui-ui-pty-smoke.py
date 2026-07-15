@@ -484,8 +484,9 @@ def main() -> int:
     try:
         wait_for(master, output, "OPENHORSE v", timeout=20)
         wait_for(master, output, "/ commands", timeout=20)
-        if b"\x1b[?1049h" not in b"".join(output):
-            raise AssertionError("TUI did not enter alternate screen")
+        # v0.2.21: primary-screen inline surface - NO alternate screen.
+        if b"\x1b[?1049h" in b"".join(output):
+            raise AssertionError("TUI entered alternate screen (should stay on primary screen)")
 
         os.write(master, "开源小？事收到".encode("utf-8"))
         wait_for(master, output, "开源小？事收到", timeout=5)
@@ -666,8 +667,11 @@ def main() -> int:
             raise AssertionError("TUI did not exit after repeated Ctrl+C")
 
         final_raw = b"".join(output)
-        if b"\x1b[?1049l" not in final_raw:
-            raise AssertionError("TUI did not leave alternate screen after repeated Ctrl+C")
+        # v0.2.21: primary-screen restore - bracketed paste disable and cursor show.
+        if b"\x1b[?2004l" not in final_raw:
+            raise AssertionError("TUI did not disable bracketed paste on exit")
+        if b"\x1b[?25h" not in final_raw:
+            raise AssertionError("TUI did not show cursor on exit")
 
         print("TUI_EXPLICIT_PTY_OK")
         return 0
