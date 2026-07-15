@@ -77,6 +77,11 @@ export async function launchTuiUI(
     if (cleanupPromise) return cleanupPromise;
 
     cleanupPromise = (async () => {
+      // Clear any pending resize debounce timer.
+      if (resizeDebounceTimer !== null) {
+        clearTimeout(resizeDebounceTimer);
+        resizeDebounceTimer = null;
+      }
       // Remove listeners first to prevent re-entrancy.
       try { input.off('data', handleData); } catch { /* ok */ }
       try { output.off('resize', handleResize); } catch { /* ok */ }
@@ -217,7 +222,15 @@ export async function launchTuiUI(
     const result = controller.handle({ type: 'interrupt', source: 'keyboard' });
     if (result.type === 'exit_requested') {
       void stop();
+      return;
     }
+    // Visual feedback: show interrupt/exit-prompt warning in the status bar
+    runner.dispatch({
+      type: 'setStatus',
+      message: result.type === 'interrupted'
+        ? '⚠️ Interrupted — press Ctrl+C again to force exit'
+        : '⚠️ Press Ctrl+C again to exit',
+    });
   };
 
   const handleData = (chunk: Buffer): void => {
@@ -226,10 +239,20 @@ export async function launchTuiUI(
     }
   };
 
+  let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  const RESIZE_DEBOUNCE_MS = 100;
+
   const handleResize = (): void => {
     if (stopping) return;
-    const { width, height } = dimensions();
-    runner.resize(width, height);
+    if (resizeDebounceTimer !== null) {
+      clearTimeout(resizeDebounceTimer);
+    }
+    resizeDebounceTimer = setTimeout(() => {
+      resizeDebounceTimer = null;
+      if (stopping) return;
+      const { width, height } = dimensions();
+      runner.resize(width, height);
+    }, RESIZE_DEBOUNCE_MS);
   };
 
   const handleSigint = (): void => {
