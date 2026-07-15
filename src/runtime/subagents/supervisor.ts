@@ -219,8 +219,29 @@ async function runParallel(
 ): Promise<Array<{ result: SubtaskResult; parentCancelled: boolean }>> {
   // Launch each child; the provider gate bounds actual concurrency. Collect
   // by index so the final order matches the request order.
+  // allSettled guarantees every task is accounted for even if a future
+  // refactor breaks the "runOne never throws" contract.
   const slots = tasks.map((task, i) => runOne(task, taskIds[i], batchId, i, deps, runnerDeps(i)));
-  return Promise.all(slots);
+  const settled = await Promise.allSettled(slots);
+  return settled.map((s, i) => {
+    if (s.status === 'fulfilled') return s.value;
+    // Defensive: construct a failed result for any slot that threw unexpectedly.
+    const task = tasks[i];
+    const result: SubtaskResult = {
+      id: taskIds[i],
+      role: task.role,
+      status: 'failed',
+      summary: 'Unexpected runner error.',
+      findings: [],
+      files: [],
+      commands: [],
+      verification: [],
+      risks: ['runner threw unexpectedly'],
+      usage: { modelRequests: 0, toolCalls: 0, promptTokens: 0, completionTokens: 0, durationMs: 0 },
+    };
+    finalizeTask(deps, batchId, taskIds[i], task, result);
+    return { result, parentCancelled: false };
+  });
 }
 
 async function runSerial(
@@ -237,7 +258,7 @@ async function runSerial(
       // R7: finalize each cancelled result (trace/artifact/usage) exactly
       // once, same as a ran task, so resume sees the cancelled state.
       for (let j = i; j < tasks.length; j++) {
-        const cancelled = cancelledResult(batchId, taskIds[j], tasks[j]);
+        const cancelled = cancelledResult(taskIds[j], tasks[j]);
         finalizeTask(deps, batchId, taskIds[j], tasks[j], cancelled);
         outcomes.push({
           result: cancelled,
@@ -269,7 +290,7 @@ async function runOne(
     // AcquireAbortedError: parent aborted while queued. Treat as cancelled.
     // R7: finalize the cancelled result so trace/artifact/usage are recorded
     // exactly once, same as any other terminal state.
-    const cancelled = cancelledResult(batchId, taskId, task);
+    const cancelled = cancelledResult(taskId, task);
     finalizeTask(deps, batchId, taskId, task, cancelled);
     return { result: cancelled, parentCancelled: true };
   }
@@ -362,8 +383,7 @@ function buildRejectedResult(packet: SubtaskPacket, reason: string, taskId?: str
   };
 }
 
-function cancelledResult(batchId: string, taskId: string, packet: SubtaskPacket): SubtaskResult {
-  void batchId;
+function cancelledResult(taskId: string, packet: SubtaskPacket): SubtaskResult {
   return {
     id: taskId,
     role: packet.role,

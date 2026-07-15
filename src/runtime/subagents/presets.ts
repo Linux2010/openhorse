@@ -43,6 +43,9 @@ export const SUBAGENT_FORBIDDEN_TOOLS = [
   // (mcp__<server>__<tool>) with readOnlyHint === true instead.
   'mcp_call',
   'mcp_list',
+  // Cross-session information leak: history_search reads transcripts from
+  // all projects. Children must never access session history.
+  'history_search',
 ] as const;
 
 export interface RolePreset {
