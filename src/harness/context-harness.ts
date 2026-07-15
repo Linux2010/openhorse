@@ -241,9 +241,15 @@ export class ContextHarness {
       this.refreshCapsule();
     }
 
+    // Block completion at most once per intent cycle. When the task moves
+    // forward (canComplete becomes true), the counter resets for next time.
     if (!result.canComplete && mode === 'block' && this.completionBlockCount < 1) {
       this.completionBlockCount++;
       return result;
+    }
+
+    if (result.canComplete) {
+      this.completionBlockCount = 0;
     }
 
     return { ...result, canComplete: true };
