@@ -48,6 +48,7 @@ function isVerificationCommand(command: string | undefined): boolean {
 }
 
 export class ContextLedger {
+  static readonly MAX_ENTRIES = 200;
   private entries: ContextLedgerEntry[];
 
   constructor(entries: ContextLedgerEntry[] = []) {
@@ -66,6 +67,13 @@ export class ContextLedger {
       metadata: input.metadata,
     };
     this.entries.push(entry);
+    // Bound entries: evict low-importance old items when over capacity.
+    if (this.entries.length > ContextLedger.MAX_ENTRIES) {
+      const sorted = [...this.entries].sort((a, b) => a.importance - b.importance || a.createdAt - b.createdAt);
+      const toRemove = sorted.slice(0, this.entries.length - ContextLedger.MAX_ENTRIES);
+      const removeIds = new Set(toRemove.map(e => e.source.ref));
+      this.entries = this.entries.filter(e => !removeIds.has(e.source.ref));
+    }
     return entry;
   }
 

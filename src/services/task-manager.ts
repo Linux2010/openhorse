@@ -117,6 +117,9 @@ const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
 export class TaskManager extends EventEmitter {
   private tasks: Map<string, TaskRecord> = new Map();
 
+  /** Evict oldest completed/failed tasks when map exceeds this size. */
+  private static readonly MAX_TASKS = 1000;
+
   // ==========================================================================
   // CRUD
   // ==========================================================================
@@ -125,6 +128,17 @@ export class TaskManager extends EventEmitter {
    * 创建任务
    */
   create(options: CreateTaskOptions): TaskRecord {
+    // Evict oldest terminal tasks if at capacity.
+    if (this.tasks.size >= TaskManager.MAX_TASKS) {
+      const terminal = [...this.tasks.values()]
+        .filter(t => t.status === 'completed' || t.status === 'failed')
+        .sort((a, b) => a.updatedAt - b.updatedAt);
+      for (const t of terminal) {
+        if (this.tasks.size < TaskManager.MAX_TASKS) break;
+        this.tasks.delete(t.id);
+      }
+    }
+
     const now = Date.now();
     const record: TaskRecord = {
       id: uuidv4(),
