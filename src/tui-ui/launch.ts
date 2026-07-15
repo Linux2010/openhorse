@@ -272,6 +272,12 @@ export async function launchTuiUI(
     // Primary-screen inline surface: no alternate screen (1049).
     const { width, height } = dimensions();
     surface = new InlineTerminalSurface({ output });
+    // Mount is serialized through the surface FIFO queue. In the real terminal,
+    // the queue drains synchronously for the first operation (no prior ops).
+    // Fire-and-forget is safe because subsequent output.write calls go through
+    // the same queue via surface.commit/renderLive, not directly.
+    // Using `await` here causes test hangs because the test FakeTTY output
+    // doesn't trigger the async drain loop in the same way.
     void surface.mount(width, height);
     output.write(`${ENABLE_BRACKETED_PASTE}${HIDE_CURSOR}`);
     runner = new TuiRunner({
