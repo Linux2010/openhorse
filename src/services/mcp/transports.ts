@@ -85,6 +85,7 @@ export abstract class BaseTransport extends EventEmitter {
 
 export class SseTransport extends BaseTransport {
   private eventSource: EventSource | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts: number = 0;
 
   constructor(config: TransportConfig) {
@@ -125,6 +126,10 @@ export class SseTransport extends BaseTransport {
   }
 
   async disconnect(): Promise<void> {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.eventSource) {
       this.eventSource.close();
       this.eventSource = null;
@@ -176,9 +181,15 @@ export class SseTransport extends BaseTransport {
     this.reconnectAttempts++;
     this.emit('reconnecting', this.reconnectAttempts);
 
+    // Clear any pending reconnect timer before scheduling a new one.
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     const interval = exponentialBackoff(this.reconnectAttempts);
 
-    setTimeout(() => {
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
       this.connect().catch(err => {
         this.emitError(err);
       });
@@ -193,6 +204,7 @@ export class SseTransport extends BaseTransport {
 export class WebSocketTransport extends BaseTransport {
   private ws: WebSocket | null = null;
   private reconnectAttempts: number = 0;
+  private reconnectTimer: NodeJS.Timeout | null = null;
 
   constructor(config: TransportConfig) {
     super(config);
@@ -237,6 +249,10 @@ export class WebSocketTransport extends BaseTransport {
   }
 
   async disconnect(): Promise<void> {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -272,7 +288,12 @@ export class WebSocketTransport extends BaseTransport {
 
     const interval = exponentialBackoff(this.reconnectAttempts);
 
-    setTimeout(() => {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
       this.connect().catch(err => {
         this.emitError(err);
       });
