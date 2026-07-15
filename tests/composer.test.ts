@@ -1,3 +1,4 @@
+import stringWidth from 'string-width';
 import {
   segmentGraphemes,
   previousGraphemeBoundary,
@@ -223,4 +224,42 @@ describe('shared composer: history', () => {
     // Oldest entries evicted.
     expect(state.entries[0]).toBe(`cmd-10`);
   });
+});
+
+// ============================================================================
+// Slice 1 completion gate: prompt width bounds
+// ============================================================================
+
+describe('slice 1 gate: prompt width bounds', () => {
+  const longPath = '/Users/developer/very/long/project/path/to/some/deeply/nested/module/src/components/feature/implementation.tsx';
+  const longWord = 'supercalifragilisticexpialidocious';
+  const widths = [24, 40, 80, 120];
+
+  for (const width of widths) {
+    it(`long path does not overflow at width=${width}`, () => {
+      const lines = getPromptVisualLines(longPath, width);
+      for (const line of lines) {
+        const lineVisualWidth = stringWidth(line.content);
+        // Each visual line must fit within the content width.
+        expect(lineVisualWidth).toBeLessThanOrEqual(promptContentWidth(width));
+      }
+    });
+
+    it(`long word does not overflow at width=${width}`, () => {
+      const lines = getPromptVisualLines(longWord, width);
+      for (const line of lines) {
+        const lineVisualWidth = stringWidth(line.content);
+        expect(lineVisualWidth).toBeLessThanOrEqual(promptContentWidth(width));
+      }
+    });
+
+    it(`CJK + emoji input does not overflow at width=${width}`, () => {
+      const input = '你好世界🌍这是中文输入🎉react组件';
+      const lines = getPromptVisualLines(input, width);
+      for (const line of lines) {
+        const lineVisualWidth = stringWidth(line.content);
+        expect(lineVisualWidth).toBeLessThanOrEqual(promptContentWidth(width));
+      }
+    });
+  }
 });
