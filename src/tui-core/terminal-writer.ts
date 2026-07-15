@@ -1,9 +1,10 @@
 import {
   diffTuiFrames,
-  renderFrameRows,
+  renderStyledFrameRow,
   type TuiFrame,
   type TuiFrameDiff,
 } from './frame';
+import { encodeStyleToSgr, SGR_RESET, shouldSuppressColor } from './style';
 
 export interface TuiTerminalRenderResult {
   output: string;
@@ -52,11 +53,11 @@ export function renderTerminalFrame(
   options: TuiTerminalWriterOptions = {}
 ): TuiTerminalRenderResult {
   const diff = diffTuiFrames(previous, next);
-  const rows = renderFrameRows(next);
   const chunks: string[] = [];
   const bracketCursor = options.bracketCursor ?? true;
   const shouldPaint = diff.changedRows.length > 0 || diff.cursorChanged;
   const bracketAutoWrap = options.bracketAutoWrap ?? true;
+  const suppressColor = shouldSuppressColor();
 
   if (shouldPaint && bracketAutoWrap) {
     chunks.push(disableAutoWrap());
@@ -69,7 +70,18 @@ export function renderTerminalFrame(
   for (const rowIndex of diff.changedRows) {
     chunks.push(moveTo(rowIndex, 0));
     chunks.push(clearLine());
-    chunks.push(rows[rowIndex] ?? '');
+    // Emit styled spans: SGR per span, SGR0 reset at end (only if styled).
+    const spans = renderStyledFrameRow(next.rows[rowIndex] ?? []);
+    let emittedSgr = false;
+    for (const span of spans) {
+      const sgr = encodeStyleToSgr(span.style, suppressColor);
+      if (sgr) {
+        chunks.push(sgr);
+        emittedSgr = true;
+      }
+      chunks.push(span.text);
+    }
+    if (emittedSgr) chunks.push(SGR_RESET);
   }
 
   if (diff.cursorChanged || diff.changedRows.length > 0) {
