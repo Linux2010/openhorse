@@ -195,6 +195,8 @@ export class AgentRuntimeController {
     if (this.activeRun) {
       await this.activeRun.catch(() => undefined);
     }
+    // Reset stopping flag so subsequent turns can execute.
+    this.stopping = false;
   }
 
   waitForIdle(): Promise<void> {

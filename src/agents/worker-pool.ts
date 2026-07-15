@@ -230,7 +230,9 @@ export class WorkerPool {
       if (this.taskQueue.length > 0) {
         const nextTask = this.taskQueue.shift();
         if (nextTask) {
-          this.executeTask(workerId, nextTask, forkOptions);
+          this.executeTask(workerId, nextTask, forkOptions).catch(() => {
+            // Prevent unhandled rejection from recursive call.
+          });
         }
       }
 

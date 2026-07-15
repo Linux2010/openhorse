@@ -634,7 +634,14 @@ export class LLMService {
 
       if (response.toolCalls && response.toolCalls.length > 0) {
         for (const tc of response.toolCalls) {
-          const result = await toolExecutor(tc.function.name, JSON.parse(tc.function.arguments));
+          let args: Record<string, unknown>;
+          try {
+            args = JSON.parse(tc.function.arguments);
+          } catch {
+            // Malformed JSON arguments from LLM — use empty object as fallback.
+            args = {};
+          }
+          const result = await toolExecutor(tc.function.name, args);
           messages.push({
             role: 'tool',
             content: result,

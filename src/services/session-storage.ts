@@ -834,7 +834,15 @@ export function readHistory(limit?: number): HistoryEntry[] {
   try {
     const content = readFileSync(path, 'utf-8');
     const lines = content.trim().split('\n').filter(Boolean);
-    const entries = lines.map(line => JSON.parse(line) as HistoryEntry);
+    // Parse each line individually — skip corrupted lines instead of losing all history.
+    const entries: HistoryEntry[] = [];
+    for (const line of lines) {
+      try {
+        entries.push(JSON.parse(line) as HistoryEntry);
+      } catch {
+        // Skip corrupted line, preserve remaining valid entries.
+      }
+    }
 
     // 从最新开始
     const reversed = entries.reverse();

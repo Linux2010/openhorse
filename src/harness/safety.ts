@@ -98,10 +98,16 @@ const MAX_AUDIT_LOG_ENTRIES = 1000;
 export class SafetyChecker extends EventEmitter {
   private policy: SafetyPolicy;
   private auditLog: AuditLogEntry[] = [];
+  private compiledBlocked: RegExp[] = [];
+  private compiledDangerous: RegExp[] = [];
 
   constructor(policy: Partial<SafetyPolicy> = {}) {
     super();
     this.policy = { ...DEFAULT_POLICY, ...policy };
+    // Pre-compile regex patterns at construction time.
+    // Invalid patterns fall back to a never-matching regex.
+    this.compiledBlocked = this.policy.blocked.map(p => safeCompileRegex(p));
+    this.compiledDangerous = this.policy.dangerousPatterns.map(p => safeCompileRegex(p));
   }
 
   /**
@@ -113,22 +119,22 @@ export class SafetyChecker extends EventEmitter {
     }
 
     // 1. 检查是否被直接禁止
-    const blockedMatch = this.policy.blocked.find(pattern =>
-      new RegExp(pattern, 'i').test(action),
+    const blockedMatch = this.compiledBlocked.find(re =>
+      re.test(action),
     );
     if (blockedMatch) {
       return this.record({
         passed: false,
         level: 'blocked',
-        reason: `Action matches blocked pattern: ${blockedMatch}`,
+        reason: `Action matches blocked pattern`,
         suggestion: 'This action is explicitly forbidden by safety policy.',
         action,
       });
     }
 
     // 2. 检查危险模式
-    const dangerousMatch = this.policy.dangerousPatterns.find(pattern =>
-      new RegExp(pattern, 'i').test(action),
+    const dangerousMatch = this.compiledDangerous.find(re =>
+      re.test(action),
     );
     if (dangerousMatch) {
       return this.record({
@@ -260,5 +266,23 @@ export class SafetyChecker extends EventEmitter {
 
     this.emit('check', check);
     return check;
+  }
+}
+
+/**
+ * Safely compile a user-provided regex pattern.
+ * Invalid patterns return a never-matching regex instead of throwing.
+ * Patterns longer than 500 chars are rejected to mitigate ReDoS.
+ */
+function safeCompileRegex(pattern: string): RegExp {
+  if (pattern.length > 500) {
+    // Overly long pattern — likely malicious or malformed.
+    return /^$/; // matches empty string only (effectively never matches actions)
+  }
+  try {
+    return new RegExp(pattern, 'i');
+  } catch {
+    // Invalid regex syntax — return never-matching pattern.
+    return /^$/;
   }
 }
