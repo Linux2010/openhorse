@@ -12,12 +12,27 @@ import { getCommands } from '../commands';
 import { renderTuiUiFrame } from './layout';
 import { getFileQuery, visibleCommandItems, visibleFileItems, type TuiPickerItem } from './pickers';
 import {
+  createTuiRenderScheduler,
+  type TuiRenderScheduler,
+  type TuiRenderSchedulerDeps,
+} from './render-scheduler';
+import {
   createTuiUiEventSink,
   initialTuiUiState,
   tuiUiReducer,
   type TuiUiAction,
   type TuiUiState,
 } from './state';
+
+/** Actions that should use 'stream' priority (FPS-capped). */
+const STREAM_ACTIONS: ReadonlySet<string> = new Set([
+  'updateTranscript',
+  'setStatusSnapshot',
+  'setStatus',
+  'toolStarted',
+  'toolFinished',
+  'subtaskEvent',
+]);
 
 export interface TuiRunnerOptions {
   output: Pick<NodeJS.WriteStream, 'write'>;
@@ -27,22 +42,42 @@ export interface TuiRunnerOptions {
   onSubmit?: (input: string) => void | Promise<void>;
   onCtrlC?: () => void;
   onPermissionDecision?: (requestId: string, approved: boolean) => void | Promise<void>;
+  /** Inject scheduler deps for testing (fake timers). */
+  schedulerDeps?: Partial<TuiRenderSchedulerDeps>;
+  /** Disable scheduler for backward-compat synchronous tests (default: true). */
+  noScheduler?: boolean;
+}
+
+export interface TuiRunnerCounters {
+  layoutCount: number;
+  paintCount: number;
+  changedRows: number;
 }
 
 export class TuiRunner {
   readonly events: UiEventSink;
   private readonly parser = new TuiInputParser();
   private readonly writer: TuiTerminalWriter;
+  private readonly scheduler: TuiRenderScheduler | null;
   private state: TuiUiState = initialTuiUiState;
   private width: number;
   private height: number;
   private lastFrame: TuiFrame | null = null;
   private lastRenderResult: TuiTerminalRenderResult | null = null;
+  readonly counters: TuiRunnerCounters = { layoutCount: 0, paintCount: 0, changedRows: 0 };
 
   constructor(private readonly options: TuiRunnerOptions) {
     this.width = options.width;
     this.height = options.height;
     this.writer = new TuiTerminalWriter(options.output);
+    if (options.noScheduler !== false) {
+      this.scheduler = null;
+    } else {
+      this.scheduler = createTuiRenderScheduler(
+        () => this.render(),
+        options.schedulerDeps,
+      );
+    }
     this.events = createTuiUiEventSink(action => this.dispatch(action));
     this.render();
   }
@@ -67,12 +102,22 @@ export class TuiRunner {
     this.width = width;
     this.height = height;
     this.writer.reset();
-    this.render();
+    if (this.scheduler) {
+      this.scheduler.request('immediate');
+      this.scheduler.flush();
+    } else {
+      this.render();
+    }
   }
 
   dispatch(action: TuiUiAction): void {
     this.state = tuiUiReducer(this.state, action);
-    this.render();
+    if (this.scheduler) {
+      const priority = STREAM_ACTIONS.has(action.type) ? 'stream' : 'immediate';
+      this.scheduler.request(priority);
+    } else {
+      this.render();
+    }
   }
 
   feedInput(chunk: Buffer | string): TuiInputEvent[] {
@@ -91,6 +136,7 @@ export class TuiRunner {
   }
 
   render(): TuiTerminalRenderResult {
+    this.counters.layoutCount += 1;
     const frame = renderTuiUiFrame(this.state, {
       width: this.width,
       height: this.height,
@@ -98,6 +144,8 @@ export class TuiRunner {
     const result = this.writer.render(frame);
     this.lastFrame = frame;
     this.lastRenderResult = result;
+    this.counters.paintCount += 1;
+    this.counters.changedRows += result.diff.changedRows.length;
     return result;
   }
 

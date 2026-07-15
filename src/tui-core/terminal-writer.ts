@@ -88,7 +88,7 @@ export function renderTerminalFrame(
     chunks.push(moveTo(next.cursor.row, next.cursor.column));
   }
 
-  if (bracketCursor) {
+  if (bracketCursor && shouldPaint) {
     chunks.push(next.cursor.visible ? cursorShow() : cursorHide());
   } else if (diff.cursorChanged && !next.cursor.visible) {
     chunks.push(cursorHide());
