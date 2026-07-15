@@ -212,3 +212,99 @@ describe('tui-ui state', () => {
     expect(state.processing).toBe(false);
   });
 });
+
+// ============================================================================
+// Slice 5: Status, Tool and Subagent Timeline
+// ============================================================================
+
+describe('slice 5: status snapshot and active counts', () => {
+  beforeEach(() => resetToolEventSequence());
+
+  it('setStatusSnapshot stores structured snapshot and phase', () => {
+    const state = reduce([{
+      type: 'setStatusSnapshot',
+      snapshot: {
+        renderer: { name: 'tui', status: 'beta', capabilities: {} as never, capabilityLabels: [] },
+        model: 'glm-5',
+      } as never,
+      phase: 'running',
+    }]);
+    expect(state.statusState.phase).toBe('running');
+    expect(state.statusState.snapshot).toBeDefined();
+    expect(state.statusState.snapshot?.model).toBe('glm-5');
+  });
+
+  it('counts active tools (started without finished)', () => {
+    const state = reduce([
+      { type: 'toolStarted', event: makeToolStartedEvent({ callId: 'c1', name: 'read_file' }) },
+      { type: 'toolStarted', event: makeToolStartedEvent({ callId: 'c2', name: 'grep' }) },
+    ]);
+    expect(state.statusState.activeTools).toBe(2);
+  });
+
+  it('decrements active count when tool finishes', () => {
+    const state = reduce([
+      { type: 'toolStarted', event: makeToolStartedEvent({ callId: 'c1', name: 'read_file' }) },
+      { type: 'toolStarted', event: makeToolStartedEvent({ callId: 'c2', name: 'grep' }) },
+      { type: 'toolFinished', event: makeToolFinishedEvent({ callId: 'c1', name: 'read_file', success: true }) },
+    ]);
+    expect(state.statusState.activeTools).toBe(1);
+  });
+
+  it('setProcessing updates phase to running/ready', () => {
+    const running = reduce([{ type: 'setProcessing', processing: true }]);
+    expect(running.statusState.phase).toBe('running');
+    const ready = reduce([
+      { type: 'setProcessing', processing: true },
+      { type: 'setProcessing', processing: false },
+    ]);
+    expect(ready.statusState.phase).toBe('ready');
+  });
+});
+
+describe('slice 5: subtask timeline keyed updates', () => {
+  it('updates same taskId without duplicate rows', () => {
+    const queuedEvent = {
+      batchId: 'b1', taskId: 't1', role: 'research' as const,
+      state: 'queued' as const, objective: 'investigate',
+    };
+    const runningEvent = {
+      batchId: 'b1', taskId: 't1', role: 'research' as const,
+      state: 'running' as const, objective: 'investigate',
+    };
+    const completedEvent = {
+      batchId: 'b1', taskId: 't1', role: 'research' as const,
+      state: 'completed' as const, objective: 'investigate', summary: 'done',
+    };
+
+    const state = reduce([
+      { type: 'subtaskEvent', event: queuedEvent },
+      { type: 'subtaskEvent', event: runningEvent },
+      { type: 'subtaskEvent', event: completedEvent },
+    ]);
+
+    // Only one entry for taskId t1 (last write wins).
+    const t1Entries = state.subtaskTimeline.filter(e => e.taskId === 't1');
+    expect(t1Entries).toHaveLength(1);
+    expect(t1Entries[0].state).toBe('completed');
+  });
+
+  it('counts active subtasks (queued/running)', () => {
+    const state = reduce([
+      { type: 'subtaskEvent', event: { batchId: 'b1', taskId: 't1', role: 'research', state: 'running', objective: 'a' } },
+      { type: 'subtaskEvent', event: { batchId: 'b1', taskId: 't2', role: 'review', state: 'queued', objective: 'b' } },
+      { type: 'subtaskEvent', event: { batchId: 'b1', taskId: 't3', role: 'review', state: 'completed', objective: 'c', summary: 'done' } },
+    ]);
+    expect(state.statusState.activeSubtasks).toBe(2);
+  });
+
+  it('Ctrl+C cancelled subtask does not stay running', () => {
+    const state = reduce([
+      { type: 'subtaskEvent', event: { batchId: 'b1', taskId: 't1', role: 'research', state: 'running', objective: 'a' } },
+      { type: 'subtaskEvent', event: { batchId: 'b1', taskId: 't1', role: 'research', state: 'cancelled', objective: 'a' } },
+    ]);
+    expect(state.statusState.activeSubtasks).toBe(0);
+    const entry = state.subtaskTimeline.find(e => e.taskId === 't1');
+    expect(entry?.state).toBe('cancelled');
+  });
+});

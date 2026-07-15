@@ -1,5 +1,6 @@
 import { AgentRuntimeController, type AgentRuntimeInput } from '../runtime/agent-runtime-controller';
 import { resolveUiRendererCapabilities, type OpenHorseUiRuntime, type SessionPickerRequest } from '../runtime/ui-events';
+import { createStatusSnapshot } from '../runtime/ui-view-model';
 import { TuiRunner } from './runner';
 import { InlineTerminalSurface } from './inline-surface';
 
@@ -171,20 +172,33 @@ export async function launchTuiUI(
       });
     },
   });
+  const dispatchStatusSnapshot = (phase: 'ready' | 'running'): string => {
+    const snapshot = createStatusSnapshot({
+      renderer: 'tui',
+      model: runtime.store.getSnapshot().currentModel || runtime.config.model,
+      sessionId: runtime.getSession()?.id,
+      costUsd: runtime.store.getSnapshot().costTracker.getSessionStats().totalCost,
+      runningState: phase,
+      tokens: tokensFromRuntime(runtime),
+    });
+    runner.dispatch({ type: 'setStatusSnapshot', snapshot, phase });
+    return statusSnapshotString(runtime, phase);
+  };
   controller = new AgentRuntimeController({
     runtime,
     events: runner.events,
     uiCapabilities: resolveUiRendererCapabilities(undefined, 'tui'),
     uiRenderer: 'tui',
     useRuntimeToolPermissions: true,
-    runningStatus: () => statusSnapshot(runtime, 'running'),
-    readyStatus: () => statusSnapshot(runtime, 'ready'),
+    runningStatus: () => dispatchStatusSnapshot('running'),
+    readyStatus: () => dispatchStatusSnapshot('ready'),
   });
   runner.events.append({
     role: 'system',
     content: `OPENHORSE v${runtime.version}\nProject ${runtime.cwd}\n/ commands   @ files   ? shortcuts   Ctrl+C twice exits`,
   });
-  runner.events.setStatus(statusSnapshot(runtime, 'ready'));
+  runner.events.setStatus(statusSnapshotString(runtime, 'ready'));
+  dispatchStatusSnapshot('ready');
 
   input.resume();
   if (typeof input.setRawMode === 'function') {
@@ -200,14 +214,20 @@ export async function launchTuiUI(
   });
 }
 
-function statusSnapshot(runtime: OpenHorseUiRuntime, left: string): string {
-  const snapshot = runtime.store.getSnapshot();
-  const session = runtime.getSession()?.id.slice(0, 8) ?? 'none';
+function tokensFromRuntime(rt: OpenHorseUiRuntime): { input?: number; output?: number } {
+  const usage = rt.store.getSnapshot().tokenUsage;
+  if (!usage) return {};
+  return { input: usage.promptTokens, output: usage.completionTokens };
+}
+
+function statusSnapshotString(rt: OpenHorseUiRuntime, left: string): string {
+  const snapshot = rt.store.getSnapshot();
+  const session = rt.getSession()?.id.slice(0, 8) ?? 'none';
   const tokens = snapshot.tokenUsage
     ? `${((snapshot.tokenUsage.promptTokens + snapshot.tokenUsage.completionTokens) / 1000).toFixed(1)}K`
     : '0.0K';
   const cost = snapshot.costTracker.getSessionStats().totalCost;
-  return `${left}   model=${snapshot.currentModel || runtime.config.model}  session=${session}  tokens=${tokens}  cost=$${cost.toFixed(4)}`;
+  return `${left}   model=${snapshot.currentModel || rt.config.model}  session=${session}  tokens=${tokens}  cost=$${cost.toFixed(4)}`;
 }
 
 function readTtyDimensions(output: NodeJS.WriteStream): { width: number; height: number } {

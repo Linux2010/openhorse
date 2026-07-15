@@ -13,6 +13,7 @@ import {
   createPromptState,
   subtaskEventToTimelineEntry,
   type PromptState,
+  type StatusSnapshot,
   type SubtaskTimelineEntry,
 } from '../runtime/ui-view-model';
 import type { TuiPickerItem } from './pickers';
@@ -21,6 +22,17 @@ export type TuiPromptState = Pick<PromptState, 'value' | 'cursor'>;
 
 export interface TuiTranscriptRecord extends TranscriptEntry {
   finalized: boolean;
+  revision: number;
+}
+
+/** Structured status state (replaces renderer-local string concatenation). */
+export interface TuiStatusState {
+  phase: 'ready' | 'running' | 'error' | 'interrupted';
+  snapshot: StatusSnapshot | null;
+  message?: string;
+  activeTools: number;
+  activeSubtasks: number;
+  committedTranscriptEntries: number;
 }
 
 export type TuiRuntimeToolEvent =
@@ -41,16 +53,15 @@ export interface TuiUiState {
   runtimeToolEvents: TuiRuntimeToolEvent[];
   /** R8: typed subagent timeline, keyed by taskId (last write wins). */
   subtaskTimeline: SubtaskTimelineEntry[];
-  /** Continuous finalized prefix count (renamed from staticTranscriptCount). */
   committableTranscriptCount: number;
-  /** Reserved and enqueued into surface queue (prevents duplicate enqueue). */
   queuedTranscriptCount: number;
-  /** Successfully written to shell scrollback. */
   committedTranscriptCount: number;
   transcriptGeneration: number;
   transcriptScrollOffset: number;
   prompt: TuiPromptState;
   statusMessage: string;
+  /** Structured status (v0.2.21 slice 5). */
+  statusState: TuiStatusState;
   processing: boolean;
   overlay: TuiOverlayState;
 }
@@ -65,6 +76,7 @@ export type TuiUiAction =
   | { type: 'scrollTranscript'; delta: number }
   | { type: 'setPrompt'; value: string; cursor?: number }
   | { type: 'setStatus'; message: string }
+  | { type: 'setStatusSnapshot'; snapshot: StatusSnapshot; phase?: TuiStatusState['phase']; message?: string }
   | { type: 'setProcessing'; processing: boolean }
   | { type: 'showSessionPicker'; request: SessionPickerRequest }
   | { type: 'showEditPreview'; request: EditPreviewRequest }
@@ -89,6 +101,13 @@ export const initialTuiUiState: TuiUiState = {
   transcriptScrollOffset: 0,
   prompt: { value: '', cursor: 0 },
   statusMessage: '',
+  statusState: {
+    phase: 'ready',
+    snapshot: null,
+    activeTools: 0,
+    activeSubtasks: 0,
+    committedTranscriptEntries: 0,
+  },
   processing: false,
   overlay: null,
 };
@@ -105,6 +124,7 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
           {
             ...entry,
             finalized: !isLiveTranscriptAppend(action.entry),
+            revision: 1,
           },
         ],
       });
@@ -115,7 +135,9 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
         ...state,
         transcriptScrollOffset: 0,
         transcript: state.transcript.map(entry => (
-          entry.id === action.id ? { ...entry, ...action.patch } : entry
+          entry.id === action.id
+            ? { ...entry, ...action.patch, revision: entry.revision + 1 }
+            : entry
         )),
       };
 
@@ -140,7 +162,7 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
     case 'replaceTranscript':
       return {
         ...state,
-        transcript: action.entries.map(entry => ({ ...entry, finalized: true })),
+        transcript: action.entries.map(entry => ({ ...entry, finalized: true, revision: 1 })),
         committableTranscriptCount: action.entries.length,
         queuedTranscriptCount: 0,
         committedTranscriptCount: 0,
@@ -185,10 +207,37 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
       }
 
     case 'setStatus':
-      return { ...state, statusMessage: action.message };
+      return {
+        ...state,
+        statusMessage: action.message,
+        statusState: { ...state.statusState, message: action.message },
+      };
+
+    case 'setStatusSnapshot': {
+      const activeTools = countActiveTools(state.runtimeToolEvents);
+      const activeSubtasks = countActiveSubtasks(state.subtaskTimeline);
+      return {
+        ...state,
+        statusState: {
+          phase: action.phase ?? state.statusState.phase,
+          snapshot: action.snapshot,
+          message: action.message ?? state.statusState.message,
+          activeTools,
+          activeSubtasks,
+          committedTranscriptEntries: state.committedTranscriptCount,
+        },
+      };
+    }
 
     case 'setProcessing':
-      return { ...state, processing: action.processing };
+      return {
+        ...state,
+        processing: action.processing,
+        statusState: {
+          ...state.statusState,
+          phase: action.processing ? 'running' : 'ready',
+        },
+      };
 
     case 'showSessionPicker':
       return {
@@ -208,18 +257,23 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
         overlay: { type: 'permission', request: action.request, selectedIndex: 0 },
       };
 
-    case 'toolStarted':
-      return appendRuntimeToolEvent(state, { type: 'started', ...action.event });
+    case 'toolStarted': {
+      const next = appendRuntimeToolEvent(state, { type: 'started', ...action.event });
+      return updateStatusCounts(next);
+    }
 
-    case 'toolFinished':
-      return appendRuntimeToolEvent(state, { type: 'finished', ...action.event });
+    case 'toolFinished': {
+      const next = appendRuntimeToolEvent(state, { type: 'finished', ...action.event });
+      return updateStatusCounts(next);
+    }
 
     case 'subtaskEvent': {
       // R8: update the typed timeline, keyed by taskId (last write wins so
       // state advances queued -> running -> terminal without duplicates).
       const entry = subtaskEventToTimelineEntry(action.event);
       const existing = state.subtaskTimeline.filter(e => e.taskId !== entry.taskId);
-      return { ...state, subtaskTimeline: [...existing, entry] };
+      const next = { ...state, subtaskTimeline: [...existing, entry] };
+      return updateStatusCounts(next);
     }
 
     case 'showCommandPalette':
@@ -330,6 +384,41 @@ function appendRuntimeToolEvent(state: TuiUiState, event: TuiRuntimeToolEvent): 
   };
 }
 
+/** Count tools with a 'started' event but no matching 'finished' event. */
+function countActiveTools(events: TuiRuntimeToolEvent[]): number {
+  const finished = new Set<string>();
+  let active = 0;
+  for (const ev of events) {
+    if (ev.type === 'finished') {
+      finished.add(ev.callId);
+    }
+  }
+  for (const ev of events) {
+    if (ev.type === 'started' && !finished.has(ev.callId)) {
+      active += 1;
+    }
+  }
+  return active;
+}
+
+/** Count subtasks in a non-terminal state (queued/running). */
+function countActiveSubtasks(timeline: SubtaskTimelineEntry[]): number {
+  return timeline.filter(e => e.state === 'queued' || e.state === 'running').length;
+}
+
+/** Recompute status counts after tool/subtask state changes. */
+function updateStatusCounts(state: TuiUiState): TuiUiState {
+  return {
+    ...state,
+    statusState: {
+      ...state.statusState,
+      activeTools: countActiveTools(state.runtimeToolEvents),
+      activeSubtasks: countActiveSubtasks(state.subtaskTimeline),
+      committedTranscriptEntries: state.committedTranscriptCount,
+    },
+  };
+}
+
 function isLiveTranscriptAppend(entry: TranscriptAppendEntry): boolean {
   return entry.live === true || entry.role === 'tool';
 }
@@ -359,7 +448,7 @@ function recomputeStaticTranscriptPrefix(state: TuiUiState): TuiUiState {
 }
 
 function stripRecord(entry: TuiTranscriptRecord): TranscriptEntry {
-  const { finalized: _finalized, ...rest } = entry;
+  const { finalized: _finalized, revision: _revision, ...rest } = entry;
   return rest;
 }
 
