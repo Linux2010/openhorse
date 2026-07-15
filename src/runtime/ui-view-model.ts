@@ -121,7 +121,7 @@ export function subtaskTimelineLabel(entry: SubtaskTimelineEntry): string {
   return `${arrow} subtask ${entry.role} ${entry.state}${tail}${dur}`;
 }
 
-export type UiRendererStatus = 'stable' | 'beta' | 'non-interactive' | 'custom';
+export type UiRendererStatus = 'stable' | 'beta' | 'deprecated' | 'non-interactive' | 'custom';
 
 export interface StatusSnapshot {
   model?: string;
@@ -355,7 +355,8 @@ const COMMAND_CATEGORY_LABELS: Record<CommandCategory, string> = {
 
 export function rendererStatus(renderer: unknown): UiRendererStatus {
   if (renderer === 'terminal') return 'stable';
-  if (renderer === 'tui' || renderer === 'ink') return 'beta';
+  if (renderer === 'tui') return 'beta';
+  if (renderer === 'ink') return 'deprecated';
   if (renderer === 'print') return 'non-interactive';
   return 'custom';
 }

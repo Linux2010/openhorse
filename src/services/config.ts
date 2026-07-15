@@ -10,8 +10,8 @@
  *   4. Agent 内部默认值
  *
  * UI renderer is intentionally not read from openhorse.json or env. The stable
- * native terminal UI is the default; --ui tui and --ui ink keep beta renderer
- * experiments available for explicit testing while they mature.
+ * native terminal UI is the default; --ui tui is the recommended beta renderer;
+ * --ui ink is deprecated and will be removed in a future release.
  */
 
 import {
@@ -52,7 +52,9 @@ export type {
 };
 
 export const STABLE_UI_RENDERER: UIRenderer = 'terminal';
-export const BETA_UI_RENDERERS = ['tui', 'ink'] as const satisfies readonly UIRenderer[];
+export const RECOMMENDED_BETA_UI_RENDERER: UIRenderer = 'tui';
+export const DEPRECATED_BETA_UI_RENDERERS = ['ink'] as const satisfies readonly UIRenderer[];
+export const BETA_UI_RENDERERS = [RECOMMENDED_BETA_UI_RENDERER, ...DEPRECATED_BETA_UI_RENDERERS] as const satisfies readonly UIRenderer[];
 export const SUPPORTED_UI_RENDERERS = [STABLE_UI_RENDERER, ...BETA_UI_RENDERERS] as const satisfies readonly UIRenderer[];
 
 // ============================================================================
@@ -137,6 +139,14 @@ export function isInteractiveUIRenderer(value: unknown): value is UIRenderer {
 
 export function isBetaUIRenderer(value: unknown): value is typeof BETA_UI_RENDERERS[number] {
   return typeof value === 'string' && (BETA_UI_RENDERERS as readonly string[]).includes(value);
+}
+
+export function isRecommendedBetaUIRenderer(value: unknown): boolean {
+  return value === RECOMMENDED_BETA_UI_RENDERER;
+}
+
+export function isDeprecatedUIRenderer(value: unknown): boolean {
+  return typeof value === 'string' && (DEPRECATED_BETA_UI_RENDERERS as readonly string[]).includes(value);
 }
 
 function normalizeUIConfirmationMode(value: unknown): UIConfirmationMode | undefined {

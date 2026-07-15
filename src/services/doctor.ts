@@ -9,7 +9,7 @@ import {
   getProjectMemoryDir,
   getProjectSessionsDir,
 } from './config-dir';
-import { isBetaUIRenderer, isConfigured, type OpenHorseCLIConfig } from './config';
+import { isBetaUIRenderer, isDeprecatedUIRenderer, isRecommendedBetaUIRenderer, isConfigured, type OpenHorseCLIConfig } from './config';
 import { getMcpConfigPath, mcpManager } from '../tools/mcp';
 import { getRuntimeTools } from '../tools';
 import { loadProjectInstructionFiles } from './project-instructions';
@@ -395,7 +395,7 @@ export function collectDoctorReport(ctx: DoctorContext): DoctorReport {
       label: 'Permissions',
       summary: `toolConfirmation=${ctx.config.toolConfirmation}, ui=${ctx.config.ui?.renderer}/${ctx.config.ui?.confirmations}`,
       detail: ctx.config.toolConfirmation === 'ask'
-        ? `Interactive tool confirmation is routed through the shared runtime permission protocol.${isBetaUIRenderer(ctx.config.ui?.renderer) ? ' This renderer is beta; terminal remains the primary product UI.' : ''}`
+        ? `Interactive tool confirmation is routed through the shared runtime permission protocol.${isDeprecatedUIRenderer(ctx.config.ui?.renderer) ? ' This renderer is deprecated; consider switching to --ui tui.' : isRecommendedBetaUIRenderer(ctx.config.ui?.renderer) ? ' TUI is the recommended beta renderer; terminal remains the stable default.' : ''}`
         : undefined,
     },
     {

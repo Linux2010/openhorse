@@ -139,13 +139,15 @@ function formatRendererStatus(ctx: CommandContext): string {
     renderer: ctx.uiRenderer ?? ctx.config.ui?.renderer ?? 'terminal',
     capabilities: ctx.uiCapabilities,
   });
-  const status = snapshot.renderer.status === 'beta' || isBetaUIRenderer(snapshot.renderer.name)
-    ? WARN('beta')
-    : snapshot.renderer.status === 'stable'
-      ? SUCCESS('stable')
-      : snapshot.renderer.status === 'non-interactive'
-        ? DIM('non-interactive')
-      : DIM('custom');
+  const status = snapshot.renderer.status === 'deprecated'
+    ? WARN('deprecated')
+    : snapshot.renderer.status === 'beta' || isBetaUIRenderer(snapshot.renderer.name)
+      ? WARN('beta')
+      : snapshot.renderer.status === 'stable'
+        ? SUCCESS('stable')
+        : snapshot.renderer.status === 'non-interactive'
+          ? DIM('non-interactive')
+        : DIM('custom');
 
   return `${BRAND(snapshot.renderer.name)} ${status} ${DIM(snapshot.renderer.capabilityLabels.join(', '))}`;
 }
