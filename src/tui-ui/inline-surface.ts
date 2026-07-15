@@ -358,10 +358,10 @@ export class InlineTerminalSurface {
     });
   }
 
-  /** Flush: wait for queue to drain. */
+  /** Flush: wait for queue to drain. Yields to I/O between checks. */
   async flush(): Promise<void> {
     while (this.processing || this.queue.length > 0) {
-      await new Promise<void>(resolve => setImmediate(resolve));
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
     }
   }
 

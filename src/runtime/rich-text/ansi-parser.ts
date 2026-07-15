@@ -146,14 +146,14 @@ function parseSgrParams(params: string): TuiStyle | null {
       case 46: result = { ...result, background: named('cyan') }; break;
       case 47: result = { ...result, background: named('white') }; break;
       case 49: result = { ...result, background: undefined }; break;  // default bg
-      case 90: result = { ...result, foreground: named('black'), bold: true }; break;
-      case 91: result = { ...result, foreground: named('red'), bold: true }; break;
-      case 92: result = { ...result, foreground: named('green'), bold: true }; break;
-      case 93: result = { ...result, foreground: named('yellow'), bold: true }; break;
-      case 94: result = { ...result, foreground: named('blue'), bold: true }; break;
-      case 95: result = { ...result, foreground: named('magenta'), bold: true }; break;
-      case 96: result = { ...result, foreground: named('cyan'), bold: true }; break;
-      case 97: result = { ...result, foreground: named('white'), bold: true }; break;
+      case 90: result = { ...result, foreground: named('black') }; break;
+      case 91: result = { ...result, foreground: named('red') }; break;
+      case 92: result = { ...result, foreground: named('green') }; break;
+      case 93: result = { ...result, foreground: named('yellow') }; break;
+      case 94: result = { ...result, foreground: named('blue') }; break;
+      case 95: result = { ...result, foreground: named('magenta') }; break;
+      case 96: result = { ...result, foreground: named('cyan') }; break;
+      case 97: result = { ...result, foreground: named('white') }; break;
       // Unrecognised SGR codes are ignored (they are still valid SGR).
       default: break;
     }
@@ -161,8 +161,15 @@ function parseSgrParams(params: string): TuiStyle | null {
   return result;
 }
 
+const VALID_NAMED_COLORS = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white'] as const;
+type NamedColorValue = typeof VALID_NAMED_COLORS[number];
+
 function named(name: string): TuiColor {
-  return { kind: 'named', value: name } as TuiColor;
+  // The SGR code mapping only produces valid named colors, but guard anyway.
+  const value = VALID_NAMED_COLORS.includes(name as NamedColorValue)
+    ? (name as NamedColorValue)
+    : 'white';
+  return { kind: 'named', value };
 }
 
 /** Merge a parsed SGR style on top of the current style. */

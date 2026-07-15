@@ -18,6 +18,9 @@ import {
 } from '../runtime/ui-view-model';
 import type { TuiPickerItem } from './pickers';
 
+/** Maximum subtask timeline entries (bounded for long-session safety). */
+const MAX_SUBTASK_TIMELINE = 100;
+
 export type TuiPromptState = Pick<PromptState, 'value' | 'cursor'>;
 
 export interface TuiTranscriptRecord extends TranscriptEntry {
@@ -272,7 +275,12 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
       // state advances queued -> running -> terminal without duplicates).
       const entry = subtaskEventToTimelineEntry(action.event);
       const existing = state.subtaskTimeline.filter(e => e.taskId !== entry.taskId);
-      const next = { ...state, subtaskTimeline: [...existing, entry] };
+      let timeline = [...existing, entry];
+      // Cap to prevent unbounded growth in long sessions.
+      if (timeline.length > MAX_SUBTASK_TIMELINE) {
+        timeline = timeline.slice(timeline.length - MAX_SUBTASK_TIMELINE);
+      }
+      const next = { ...state, subtaskTimeline: timeline };
       return updateStatusCounts(next);
     }
 

@@ -65,10 +65,10 @@ describe('ansi-to-style parser', () => {
     ]);
   });
 
-  it('handles bold+bright foreground (90-97)', () => {
-    const spans = parseAnsiToStyledSpans('\x1b[91mBOLD RED\x1b[0m');
+  it('handles bright foreground colors (90-97) without setting bold', () => {
+    const spans = parseAnsiToStyledSpans('\x1b[91mBRIGHT RED\x1b[0m');
     expect(spans).toEqual([
-      { text: 'BOLD RED', style: { foreground: { kind: 'named', value: 'red' }, bold: true } },
+      { text: 'BRIGHT RED', style: { foreground: { kind: 'named', value: 'red' } } },
     ]);
   });
 });

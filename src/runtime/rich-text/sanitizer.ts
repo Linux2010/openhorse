@@ -21,10 +21,10 @@ export function sanitizeRichTextInput(text: string): string {
 
 /**
  * Sanitize a code block's content for display.
- * Preserves whitespace and indentation, strips control chars.
+ * Preserves whitespace and indentation, strips escape sequences.
  */
 export function sanitizeCodeContent(code: string): string {
-  // Code blocks keep their content mostly intact but strip escape sequences.
-  const cleaned = code.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  return cleaned;
+  // Code blocks keep their content mostly intact but strip ANSI escape sequences.
+  const normalized = code.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  return sanitizeTerminalText(normalized, 4);
 }

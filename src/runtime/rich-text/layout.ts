@@ -20,6 +20,7 @@ import {
   type StyledRow,
   type StyledSpan,
   type TuiStyle,
+  styleKey,
 } from '../../tui-core/style';
 
 export interface RichTextLayoutOptions {
@@ -70,24 +71,77 @@ function layoutBlock(block: RichTextBlock, width: number, theme: RichTextThemeRe
 
 function layoutParagraph(spans: RichTextSpan[], width: number, style: TuiStyle, indent: number): StyledRow[] {
   const availableWidth = Math.max(1, width - indent);
-  const allSpans: StyledSpan[] = spans.map(s => ({
+  const styledSpans: StyledSpan[] = spans.map(s => ({
     text: s.text,
     style: resolveSpanStyle(s, style),
   }));
 
-  // Join all span text, then wrap by visual width.
-  const fullText = allSpans.map(s => s.text).join('');
+  // If no text content, return an empty row with indent.
+  const fullText = styledSpans.map(s => s.text).join('');
   if (!fullText) return [[{ text: ' '.repeat(indent), style }]];
 
-  // Split by newlines first (hard breaks), then wrap each line.
+  // Check if all spans share the same style — if so, use simple wrap.
+  const allSameStyle = styledSpans.every(s => styleKey(s.style) === styleKey(styledSpans[0].style));
+
+  if (allSameStyle) {
+    // Simple path: join text, wrap, apply single style.
+    const lines = fullText.split('\n');
+    const rows: StyledRow[] = [];
+    for (const line of lines) {
+      const wrapped = wrapText(line, availableWidth);
+      for (const wrappedLine of wrapped) {
+        rows.push([{ text: ' '.repeat(indent) + wrappedLine, style: styledSpans[0].style }]);
+      }
+    }
+    return rows;
+  }
+
+  // Mixed-style path: build a character-to-style map, wrap the joined text,
+  // then reconstruct spans per row preserving style boundaries.
+  const charStyles: TuiStyle[] = [];
+  for (const span of styledSpans) {
+    for (const char of Array.from(span.text)) {
+      charStyles.push(span.style);
+    }
+  }
+
   const lines = fullText.split('\n');
   const rows: StyledRow[] = [];
+  let charOffset = 0;
 
   for (const line of lines) {
     const wrapped = wrapText(line, availableWidth);
     for (const wrappedLine of wrapped) {
-      rows.push([{ text: ' '.repeat(indent) + wrappedLine, style }]);
+      const lineStart = charOffset;
+      const lineEnd = charOffset + Array.from(wrappedLine).length;
+      // Build spans for this line from the charStyles map.
+      const rowSpans: StyledSpan[] = [{ text: ' '.repeat(indent), style }];
+      let currentSpanText = '';
+      let currentSpanStyle: TuiStyle | null = null;
+
+      for (let ci = lineStart; ci < lineEnd && ci < charStyles.length; ci++) {
+        const ch = Array.from(fullText)[ci] || '';
+        const chStyle = charStyles[ci];
+        if (currentSpanStyle !== null && styleKey(chStyle) !== styleKey(currentSpanStyle)) {
+          if (currentSpanText) {
+            rowSpans.push({ text: currentSpanText, style: currentSpanStyle });
+          }
+          currentSpanText = ch;
+          currentSpanStyle = chStyle;
+        } else {
+          currentSpanText += ch;
+          currentSpanStyle = chStyle;
+        }
+      }
+      if (currentSpanText && currentSpanStyle !== null) {
+        rowSpans.push({ text: currentSpanText, style: currentSpanStyle });
+      }
+
+      rows.push(rowSpans);
+      charOffset = lineEnd;
     }
+    // Skip the newline character in the charStyles map.
+    charOffset += 1;
   }
 
   return rows;
@@ -174,7 +228,7 @@ function layoutQuote(block: { blocks: RichTextBlock[] }, width: number, theme: R
   const quoteIndent = indent + 2;
 
   for (const subBlock of block.blocks) {
-    const subRows = layoutBlock(subBlock, width - 2, theme, quoteIndent);
+    const subRows = layoutBlock(subBlock, width, theme, quoteIndent);
     for (const row of subRows) {
       // Add quote prefix.
       rows.push([{ text: '> ', style: theme('muted') }, ...row]);
