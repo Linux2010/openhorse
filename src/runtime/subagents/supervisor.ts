@@ -160,8 +160,8 @@ export async function runSubtaskBatch(
     if (!reserved) {
       // Release what we reserved and reject the rest.
       for (let j = 0; j <= i; j++) deps.budget.release(taskIds[j]);
-      const results = tasks.map((packet) => {
-        const result = buildRejectedResult(packet, 'budget_exhausted');
+      const results = tasks.map((packet, i) => {
+        const result = buildRejectedResult(packet, 'budget_exhausted', taskIds[i]);
         // R7: finalize rejected tasks too.
         finalizeTask(deps, batchId, result.id, packet, result);
         return result;
@@ -346,10 +346,10 @@ function toEventState(status: SubtaskResult['status']): RuntimeSubtaskEvent['sta
 }
 
 /** Build a rejected result (does not emit - finalizeTask handles that). */
-function buildRejectedResult(packet: SubtaskPacket, reason: string): SubtaskResult {
-  const taskId = nextTaskId();
+function buildRejectedResult(packet: SubtaskPacket, reason: string, taskId?: string): SubtaskResult {
+  const id = taskId ?? nextTaskId();
   return {
-    id: taskId,
+    id,
     role: packet.role,
     status: 'rejected',
     summary: `Rejected by policy: ${reason}`,
