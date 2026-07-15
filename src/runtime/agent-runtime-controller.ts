@@ -339,6 +339,22 @@ export class AgentRuntimeController {
     if (this.options.useRuntimeToolPermissions && !chatOptions.confirmToolUse) {
       chatOptions.confirmToolUse = request => this.requestToolPermission(request);
     }
+    // R6: wire live permission state so the subagent policy gate can prevent
+    // background delegation while the user is deciding a tool permission.
+    if (!chatOptions.hasPendingPermission) {
+      chatOptions.hasPendingPermission = () => this.pendingPermissions.size > 0;
+    }
+    // R6: wire child usage callback so CostTracker records subagent token
+    // consumption, making /cost complete and honest about child agent spend.
+    if (!chatOptions.onChildUsage) {
+      chatOptions.onChildUsage = (taskId, _role, usage, modelLabel) => {
+        const costTracker = this.options.runtime.store.getSnapshot().costTracker;
+        costTracker.record(
+          { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens },
+          { model: modelLabel ?? 'unknown', agentId: 'subagent', taskId },
+        );
+      };
+    }
     return Object.keys(chatOptions).length > 0 ? chatOptions : undefined;
   }
 }

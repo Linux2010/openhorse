@@ -115,13 +115,28 @@ export function createSubtaskTool(supervisorDeps: SubagentSupervisorDeps): OpenH
         const outcome = await runSubtaskBatch(request, depsWithAbort);
         const batch = outcome.result;
         const compact = summarizeBatchForModel(batch);
+        let serialized: string;
+        try {
+          serialized = JSON.stringify(batch);
+        } catch (jsonErr) {
+          // N9: JSON.stringify can throw on circular references. Preserve
+          // partial data by serializing a safe subset.
+          serialized = JSON.stringify({
+            batchId: batch.batchId,
+            results: batch.results.map(r => ({ ...r, findings: [], commands: [], verification: [] })),
+            aggregateUsage: batch.aggregateUsage,
+            _serializationError: String(jsonErr instanceof Error ? jsonErr.message : jsonErr),
+          });
+        }
         return {
           success: !outcome.rejected,
-          output: JSON.stringify(batch),
+          output: serialized,
           summary: compact,
           metadata: { batchId: batch.batchId, rejected: outcome.rejected, rejectReason: outcome.rejectReason },
         };
       } catch (err) {
+        // N10: log unexpected errors for diagnostics before swallowing.
+        console.error('[subtask] unexpected error:', err instanceof Error ? err.message : err);
         return {
           success: false,
           output: '',

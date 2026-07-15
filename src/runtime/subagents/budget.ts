@@ -157,7 +157,12 @@ export class SubagentBudgetLedger {
     return Math.max(0, this.limits.maxModelRequestsPerTurn - this.aggregateReservedOrUsed());
   }
 
-  /** Whether `count` new tasks can each reserve at least one request. */
+  /**
+   * Whether `count` new tasks can each reserve at least one model request.
+   * NOTE: this checks the minimum (1 request per task), not the full
+   * per-task cap. The supervisor's reserve loop (supervisor.ts:158-179)
+   * handles per-task reserve amounts individually.
+   */
   canReserveBatch(count: number): boolean {
     return this.availableModelRequests() >= count;
   }

@@ -18,8 +18,8 @@ export type SubagentMode = 'off' | 'explicit' | 'auto';
 /**
  * Renderer-independent subtask lifecycle state.
  *
- * `rejected`/`requested` are pre-execution and not surfaced as runtime
- * events; the runtime event states are the post-queue ones.
+ * `requested` is a pre-queue state. `rejected` is emitted as a runtime event
+ * (via finalizeTask) when policy denies a task before it runs.
  */
 export type RuntimeSubtaskState =
   | 'queued'

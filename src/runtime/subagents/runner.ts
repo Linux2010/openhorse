@@ -129,13 +129,18 @@ export async function runSubtask(
   // R5: parent abort is a distinct terminal outcome that wins the race even
   // if the query subsequently resolves. Without this, a query that resolves
   // just after the abort fires would flip the result to 'completed'.
+  // N15: store reference to the second abort listener so it can be cleaned up
+  // in the finally block alongside the first.
+  let onParentAbortForRace: (() => void) | undefined;
   const parentAbortPromise = new Promise<{ kind: 'parent_abort' }>(resolve => {
     if (parentAborted) {
       resolve({ kind: 'parent_abort' });
       return;
     }
     if (deps.parentAbortSignal) {
-      deps.parentAbortSignal.addEventListener('abort', () => resolve({ kind: 'parent_abort' }), { once: true });
+      const handler = () => resolve({ kind: 'parent_abort' });
+      onParentAbortForRace = handler;
+      deps.parentAbortSignal.addEventListener('abort', handler, { once: true });
     }
   });
 
@@ -183,7 +188,12 @@ export async function runSubtask(
     }
   } finally {
     if (timeoutHandle) clearTimeout(timeoutHandle);
-    if (deps.parentAbortSignal) deps.parentAbortSignal.removeEventListener('abort', onParentAbort);
+    if (deps.parentAbortSignal) {
+      deps.parentAbortSignal.removeEventListener('abort', onParentAbort);
+      if (onParentAbortForRace) {
+        deps.parentAbortSignal.removeEventListener('abort', onParentAbortForRace);
+      }
+    }
   }
 
   // R5: on timeout/abort the query promise may still be running in the

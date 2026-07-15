@@ -57,7 +57,11 @@ export class SubagentProviderGate {
   private cooldownTimer: { clear(): void } | null = null;
 
   constructor(options: ProviderGateOptions) {
-    this.maxConcurrent = Math.max(1, options.maxConcurrent);
+    const maxConcurrent = Number(options.maxConcurrent);
+    // N12: guard against NaN/undefined/negative — clamp to 1 as safe minimum.
+    this.maxConcurrent = Number.isFinite(maxConcurrent) && maxConcurrent >= 1
+      ? Math.floor(maxConcurrent)
+      : 1;
     this.now = options.now ?? (() => Date.now());
     this.scheduleTimer = options.scheduleTimer ?? defaultScheduleTimer;
   }
@@ -87,11 +91,14 @@ export class SubagentProviderGate {
   }
 
   /**
-   * R4: whether the provider can accept `count` new children. This is a
-   * non-blocking check used by policy to detect unrecoverable states
-   * (cooldown). It returns false ONLY during cooldown - normal concurrency
-   * saturation is not a rejection reason, because the FIFO semaphore queues
-   * excess tasks and bounds actual peak concurrency at acquire time.
+   * R4: whether the provider can accept new children. Returns false ONLY during
+   * cooldown — normal concurrency saturation is not a rejection reason, because
+   * the FIFO semaphore queues excess tasks and bounds actual peak concurrency
+   * at acquire time.
+   *
+   * NOTE: the `count` parameter is currently unused. It is reserved for future
+   * per-slot reservation checks. Today, policy only needs to know whether the
+   * provider is in an unrecoverable state (cooldown).
    */
   canReserve(_count: number): boolean {
     return !this.isInCooldown();

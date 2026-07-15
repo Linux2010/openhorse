@@ -1004,6 +1004,20 @@ export interface AgentChatControllerOptions {
   uiCapabilities?: UiRendererCapabilities;
   uiRenderer?: CommandUiRenderer;
   onVerificationStateChange?: (state: 'pending' | 'running' | 'passed' | 'failed' | 'gated') => void;
+  /**
+   * R6: returns true when a tool permission request is awaiting user decision.
+   * When provided, the subagent policy gate uses it to prevent background
+   * delegation while the user is deciding a permission. When absent, defaults
+   * to false (no pending permission) — the root loop should inject the real
+   * state via AgentRuntimeController.
+   */
+  hasPendingPermission?: () => boolean;
+  /**
+   * R6: called with each child's observed usage so the root loop can record
+   * it into its shared CostTracker. The observed values are never clamped;
+   * `/cost` and telemetry must reflect the truth.
+   */
+  onChildUsage?: (taskId: string, role: import('./subagents/types').SubagentRole, usage: import('./subagents/types').SubtaskUsage, modelLabel?: string) => void;
 }
 
 /** @deprecated Use AgentChatControllerOptions. Chat execution is renderer-independent. */
@@ -1508,6 +1522,13 @@ export class AgentChatController {
               }
             }
           },
+          // R6: wire live permission state so the subagent policy gate can
+          // prevent background delegation while the user is deciding a tool
+          // permission. Injected by AgentRuntimeController via chatOptions.
+          hasPendingPermission: this.controllerOptions.hasPendingPermission,
+          // R6: wire child usage callback so CostTracker records subagent
+          // token consumption. Injected by AgentRuntimeController via chatOptions.
+          onChildUsage: this.controllerOptions.onChildUsage,
         })
       : null;
     const subtaskTool = subagentBundle?.tool ?? null;

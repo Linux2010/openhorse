@@ -61,21 +61,35 @@ export type GuardVerdict = GuardApproval | GuardRejection;
  * find a path that exists, then resolve its realpath. Symlink escapes in
  * an existing ancestor are caught because realpath resolves them.
  */
-function nearestExistingAncestorRealpath(p: string): string {
+function nearestExistingAncestorRealpath(p: string): string | undefined {
   let current = p;
   for (let i = 0; i < 64; i++) {
     if (existsSync(current)) {
       try {
         return realpathSync(current);
-      } catch {
-        return current;
+      } catch (err) {
+        // Distinguish ENOENT (path disappeared between existsSync and realpathSync)
+        // from permission/I/O errors. ENOENT: continue walking up. Others: fail.
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code === 'ENOENT') {
+          // Path vanished between existsSync and realpathSync (TOCTOU).
+          // Continue walking up to find an existing ancestor.
+          const parent = resolve(current, '..');
+          if (parent === current) return undefined;
+          current = parent;
+          continue;
+        }
+        // EACCES, EIO, etc: cannot resolve realpath — treat as unresolvable.
+        // Returning undefined signals to the caller that containment cannot be
+        // verified, and the path should be rejected.
+        return undefined;
       }
     }
     const parent = resolve(current, '..');
-    if (parent === current) return parent; // filesystem root
+    if (parent === current) return undefined; // filesystem root, no existing ancestor
     current = parent;
   }
-  return current;
+  return undefined; // loop exhausted, no existing ancestor found
 }
 
 /** True if `candidate` is `ancestor` or inside it (both realpaths). */
@@ -107,6 +121,12 @@ function checkContainment(
   const resolved = resolve(rootReal, rawPath);
   const ancestorReal = nearestExistingAncestorRealpath(resolved);
 
+  // If no existing ancestor could be resolved (e.g. EACCES on realpathSync),
+  // containment cannot be verified — reject the path.
+  if (ancestorReal === undefined) {
+    return { contained: false, reason: `cannot verify path containment: ${rawPath}` };
+  }
+
   // Boundary 1: must be inside root.
   if (!isInsideOrEqual(ancestorReal, rootReal)) {
     return { contained: false, reason: `path escapes project root: ${rawPath}` };
@@ -126,7 +146,7 @@ function checkContainment(
         // check containment against the scope realpath.
         const targetResolved = resolve(rootReal, rawPath);
         const targetAncestor = nearestExistingAncestorRealpath(targetResolved);
-        return isInsideOrEqual(targetAncestor, s);
+        return targetAncestor !== undefined && isInsideOrEqual(targetAncestor, s);
       });
       if (!targetInScope) {
         return { contained: false, reason: `path outside packet scope: ${rawPath}` };
@@ -184,9 +204,12 @@ export function evaluateToolCall(
   options: GuardOptions,
 ): GuardVerdict {
   const rootReal = nearestExistingAncestorRealpath(options.rootCwd);
+  if (rootReal === undefined) {
+    return { ok: false, tool, reason: 'cannot resolve project root realpath' };
+  }
   const scopeReals = (options.scopePaths ?? []).map(p =>
     nearestExistingAncestorRealpath(resolve(rootReal, p)),
-  );
+  ).filter((s): s is string => s !== undefined);
 
   const pathArgs = extractPathArgs(tool, args);
   for (const path of pathArgs) {
