@@ -28,6 +28,12 @@ import { parseToolResultEnvelope } from '../framework/tool-serializer';
 import { storeArtifact, truncateForContext } from '../core/tool-artifacts';
 import { createCheckpoint, shouldCreateMultiFileCheckpoint } from '../core/checkpoint';
 import { resolveSkillsForTurn, hasMatchingSkill } from '../skills';
+import {
+  createSubagentBundleForTurn,
+  deriveRootLlmConfig,
+  type RuntimeSubtaskEvent,
+  type SubagentTurnBundle,
+} from './subagents';
 import { buildReferencedFilesPrompt } from '../services/file-context';
 import { refreshProjectInstructions } from '../services/prompt-context';
 import { formatBytes } from '../services/format';
@@ -655,7 +661,7 @@ export function sessionMessagesToTranscriptEntries(sessionId: string): Transcrip
     }
 
     if (message.role === 'assistant') {
-      if (message.content.trim()) {
+      if (message.content?.trim()) {
         entries.push({ id: `${idBase}-assistant`, role: 'assistant', content: message.content });
       }
       for (const summary of sessionToolCallSummaries(message)) {
@@ -1327,6 +1333,74 @@ export class AgentChatController {
     };
   }
 
+  /**
+   * Forward a subagent lifecycle event to the runtime event sink and session
+   * trace. Renderers consume the same event across terminal/Ink/TUI; this is
+   * the only place a subtask event touches the root loop.
+   */
+  private handleSubtaskEvent(event: RuntimeSubtaskEvent, sessionId: string | undefined, turnId: number | string): void {
+    // Emit the renderer-independent runtime event first so all renderers
+    // (terminal/Ink/TUI) consume the same lifecycle through one protocol.
+    this.events.subtaskEvent?.(event);
+    const stateToTraceType: Partial<Record<RuntimeSubtaskEvent['state'], SessionTraceEvent['type']>> = {
+      queued: 'subtask_requested',
+      running: 'subtask_started',
+      completed: 'subtask_completed',
+      failed: 'subtask_failed',
+      cancelled: 'subtask_cancelled',
+      rejected: 'subtask_rejected',
+      timed_out: 'subtask_timed_out',
+    };
+    if (sessionId) {
+      const traceType = stateToTraceType[event.state];
+      if (traceType) {
+        recordTraceEvent(this.events, sessionId, {
+          turnId: String(turnId),
+          type: traceType,
+          name: `${event.role}:${event.taskId}`,
+          argsSummary: event.objective.slice(0, 160),
+        });
+      }
+    }
+    // Surface start/complete/fail/cancel summaries in the transcript so all
+    // renderers show subtask progress without renderer-local logic.
+    if (event.state === 'running') {
+      this.events.append({
+        role: 'system',
+        content: `▸ subtask ${event.role} started: ${event.objective.slice(0, 120)}`,
+      });
+    } else if (event.state === 'completed' || event.state === 'failed' || event.state === 'cancelled' || event.state === 'timed_out' || event.state === 'rejected') {
+      const summary = event.summary ? ` — ${event.summary.slice(0, 200)}` : '';
+      this.events.append({
+        role: 'system',
+        content: `◂ subtask ${event.role} ${event.state}${summary}`,
+      });
+    }
+  }
+
+  /**
+   * Fold reconciled child aggregate usage into the root turn's loop stats so
+   * `/cost` and loop-budget accounting reflect subagent cost. Child model
+   * requests and tool calls are added to the root counters; a note records the
+   * subagent contribution so it is distinguishable from root work.
+   */
+  private foldSubagentUsage(stats: LoopStats, bundle: SubagentTurnBundle | null): LoopStats {
+    if (!bundle) return stats;
+    const usage = bundle.getAggregateUsage();
+    if (usage.modelRequests === 0 && usage.toolCalls === 0) return stats;
+    const subtaskCount = bundle.getSubtaskCount();
+    const subagentSuffix = `subagents: ${usage.modelRequests} req/${usage.toolCalls} calls across ${subtaskCount} task(s)`;
+    return {
+      ...stats,
+      llmRequests: (stats.llmRequests ?? 0) + usage.modelRequests,
+      toolCalls: (stats.toolCalls ?? 0) + usage.toolCalls,
+      readOnlyToolCalls: (stats.readOnlyToolCalls ?? 0) + usage.toolCalls,
+      continuationHint: stats.continuationHint
+        ? `${stats.continuationHint} (${subagentSuffix})`
+        : subagentSuffix,
+    };
+  }
+
   private async runChat(
     input: string,
     options: { abortSignal?: AbortSignal; turnId?: number | string } = {}
@@ -1399,11 +1473,51 @@ export class AgentChatController {
       );
     }
 
+    const subagentConfig = this.runtime.config.subagents;
+    // The subtask capability is a root-level tool. It is exposed on normal
+    // turns, but respects an active skill scope: when a skill restricts the
+    // tool set, subtask is not appended (the skill owns the scope).
+    const projectPath = activeSession?.projectPath;
+    const subagentBundle: SubagentTurnBundle | null = subagentConfig && subagentConfig.mode !== 'off' && this.runtime.llm && !skillResolution.toolScopeActive
+      ? createSubagentBundleForTurn({
+          config: subagentConfig,
+          cwd: this.runtime.cwd,
+          rootLlmConfig: deriveRootLlmConfig(this.runtime.config),
+          modelLabel: this.runtime.llm.getModel(),
+          rootObjectiveSummary: harness.toJSON()?.rootObjective ?? input,
+          abortSignal,
+          onSubtaskEvent: (event) => {
+            this.handleSubtaskEvent(event, sessionId, turnId);
+          },
+          onSubtaskResult: (result, batchId) => {
+            if (!projectPath || result.status !== 'completed') return;
+            const json = JSON.stringify(result);
+            const artifact = storeArtifact(projectPath, `subtask_${result.role}`, json, Buffer.byteLength(json, 'utf8'));
+            if (artifact) {
+              // Record a trace event linking the subtask to its artifact for
+              // /artifacts and /trace discoverability.
+              if (sessionId) {
+                recordTraceEvent(this.events, sessionId, {
+                  turnId: String(turnId),
+                  type: 'subtask_completed',
+                  name: `${result.role}:${result.id}`,
+                  argsSummary: result.summary.slice(0, 200),
+                  argsArtifactId: artifact.id,
+                  argsBytes: artifact.outputBytes,
+                });
+              }
+            }
+          },
+        })
+      : null;
+    const subtaskTool = subagentBundle?.tool ?? null;
+    const turnTools = subtaskTool ? [...skillResolution.tools, subtaskTool] : skillResolution.tools;
+
     const promptCtx: PromptContext = {
       cwd: this.runtime.cwd,
       platform: process.platform,
       nodeVersion: process.version,
-      tools: skillResolution.tools,
+      tools: turnTools,
       memoryContent: snapshot.memoryContent,
       skillsContent: snapshot.skillsContent,
       projectInstructionsContent: snapshot.projectInstructionsContent,
@@ -1436,7 +1550,19 @@ export class AgentChatController {
     };
 
     const toolExecutor = async (name: string, args: Record<string, unknown>, signal?: AbortSignal) => {
-      if (!skillResolution.tools.some(tool => tool.name === name)) {
+      // The runtime-bound `subtask` tool is not in the global TOOLS registry;
+      // dispatch it directly so it reaches the Supervisor closure.
+      if (name === 'subtask' && subtaskTool) {
+        const result = await subtaskTool.execute(args, {
+          cwd: this.runtime.cwd,
+          config: { name: this.runtime.config.name, mode: this.runtime.config.mode },
+          abortSignal: signal,
+          sessionId,
+          turnId,
+        });
+        return JSON.stringify(result);
+      }
+      if (!turnTools.some(tool => tool.name === name)) {
         return JSON.stringify({
           success: false,
           error: skillResolution.toolScopeActive
@@ -1467,7 +1593,7 @@ export class AgentChatController {
     try {
       for await (const event of query({
         messages,
-        tools: skillResolution.tools,
+        tools: turnTools,
         toolExecutor,
         llm: this.runtime.llm,
         streamCallbacks,
@@ -1855,7 +1981,7 @@ export class AgentChatController {
       }
 
       if (pendingCompleteStats) {
-        this.setLoopStats(pendingCompleteStats);
+        this.setLoopStats(this.foldSubagentUsage(pendingCompleteStats, subagentBundle));
       }
 
       if (finalContent) {
@@ -1867,6 +1993,14 @@ export class AgentChatController {
       }
 
       if (finalUsage) {
+        // Fold subagent token usage into /cost accounting.
+        if (subagentBundle) {
+          const subUsage = subagentBundle.getAggregateUsage();
+          finalUsage = {
+            promptTokens: finalUsage.promptTokens + subUsage.promptTokens,
+            completionTokens: finalUsage.completionTokens + subUsage.completionTokens,
+          };
+        }
         this.runtime.store.setTokenUsage(finalUsage);
       }
 

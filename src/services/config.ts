@@ -25,8 +25,17 @@ import {
   type SkillsConfig,
   type AgentLoopConfig,
   type AgentLoopBudgetConfig,
+  type SubagentUserConfig,
+  type SubagentMode,
+  type SubagentRole,
 } from './global-config';
 import { delimiter } from 'path';
+import {
+  DEFAULT_SUBAGENT_CONFIG,
+  SUBAGENT_LIMITS,
+  type SubagentConfig,
+} from '../runtime/subagents/types';
+import { clampSubagentConfig } from '../runtime/subagents/policy';
 
 export type {
   ToolConfirmationPolicy,
@@ -37,6 +46,9 @@ export type {
   SkillsConfig,
   AgentLoopConfig,
   AgentLoopBudgetConfig,
+  SubagentUserConfig,
+  SubagentMode,
+  SubagentRole,
 };
 
 export const STABLE_UI_RENDERER: UIRenderer = 'terminal';
@@ -72,6 +84,8 @@ export interface OpenHorseCLIConfig {
   skills?: SkillsConfig;
   /** Agent loop guardrail configuration. */
   agentLoop?: AgentLoopConfig;
+  /** Resolved subagent runtime configuration (v0.2.20 beta). */
+  subagents?: SubagentConfig;
 
   // ---- Agent 内部参数 (不由用户配置) ----
   /** 实例名称 */
@@ -240,6 +254,41 @@ function loadAgentLoopConfig(
   return Object.keys(budget).length > 0 ? { budget } : undefined;
 }
 
+function parseSubagentMode(value: unknown): SubagentMode | undefined {
+  return value === 'off' || value === 'explicit' || value === 'auto' ? value : undefined;
+}
+
+function loadSubagentConfig(
+  globalConfig: GlobalConfig,
+  overrides: Partial<OpenHorseCLIConfig>,
+): SubagentConfig {
+  const merged: SubagentUserConfig = {
+    ...globalConfig.subagents,
+    ...overrides.subagents,
+  };
+
+  const envMode = parseSubagentMode(process.env.OPENHORSE_SUBAGENTS);
+  if (envMode) merged.mode = envMode;
+
+  const envMaxParallel = parsePositiveInt(process.env.OPENHORSE_SUBAGENT_MAX_PARALLEL);
+  if (envMaxParallel) merged.maxParallel = envMaxParallel;
+
+  const resolved: SubagentConfig = {
+    mode: merged.mode ?? DEFAULT_SUBAGENT_CONFIG.mode,
+    maxParallel: merged.maxParallel ?? DEFAULT_SUBAGENT_CONFIG.maxParallel,
+    maxTasksPerTurn: merged.maxTasksPerTurn ?? DEFAULT_SUBAGENT_CONFIG.maxTasksPerTurn,
+    maxTurnsPerTask: merged.maxTurnsPerTask ?? DEFAULT_SUBAGENT_CONFIG.maxTurnsPerTask,
+    maxModelRequestsPerTask: merged.maxModelRequestsPerTask ?? DEFAULT_SUBAGENT_CONFIG.maxModelRequestsPerTask,
+    maxModelRequestsPerTurn: merged.maxModelRequestsPerTurn ?? DEFAULT_SUBAGENT_CONFIG.maxModelRequestsPerTurn,
+    maxToolCallsPerTask: merged.maxToolCallsPerTask ?? DEFAULT_SUBAGENT_CONFIG.maxToolCallsPerTask,
+    timeoutMs: merged.timeoutMs ?? DEFAULT_SUBAGENT_CONFIG.timeoutMs,
+    roles: merged.roles && merged.roles.length > 0 ? merged.roles : DEFAULT_SUBAGENT_CONFIG.roles,
+  };
+
+  // Clamp to enforced bounds so a misconfigured openhorse.json cannot weaken limits.
+  return clampSubagentConfig(resolved);
+}
+
 // ============================================================================
 // 加载配置
 // ============================================================================
@@ -283,6 +332,7 @@ export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHor
     ui: loadUIConfig(globalConfig, overrides),
     skills: loadSkillsConfig(globalConfig, overrides),
     agentLoop: loadAgentLoopConfig(globalConfig, overrides),
+    subagents: loadSubagentConfig(globalConfig, overrides),
 
     // Agent 内部参数
     name:
