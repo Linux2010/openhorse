@@ -8,13 +8,13 @@
  * Memory is project-scoped: each project has its own memory directory.
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, unlinkSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, mkdirSync, unlinkSync } from 'fs';
 import { join, basename } from 'path';
 import { createHash } from 'crypto';
 import type { MemoryEntry, MemoryType } from './types';
 import { getConfigHome, getLegacyProjectMemoryDir, getProjectMemoryDir } from '../services/config-dir';
 import { atomicWriteFileSync } from '../services/atomic-write';
-import { getVectorStore, type SearchResult } from './vector-store';  // Issue #32 #3.8
+import { getVectorStore } from './vector-store';  // Issue #32 #3.8
 
 // Re-export types for convenience
 export type { MemoryEntry, MemoryType } from './types';
@@ -295,7 +295,7 @@ export function updateMemoryIndex(projectPath?: string): void {
   }
 
   // Issue #32 修复：每次迭代重新计算 content
-  let content = lines.join('\n');
+  const content = lines.join('\n');
   if (content.length > MAX_ENTRYPOINT_BYTES) {
     while (lines.join('\n').length > MAX_ENTRYPOINT_BYTES && lines.length > 10) {
       lines.pop();

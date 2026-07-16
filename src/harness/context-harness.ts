@@ -141,7 +141,7 @@ export class ContextHarness {
 
   recordAssistantResponse(response: LLMResponse): void {
     if (this.config.enabled === false) return;
-    if (response.content.trim()) {
+    if (response.content?.trim()) {
       this.ledger.recordAssistantDecision(response.content);
     }
     this.refreshCapsule();
@@ -241,9 +241,15 @@ export class ContextHarness {
       this.refreshCapsule();
     }
 
+    // Block completion at most once per intent cycle. When the task moves
+    // forward (canComplete becomes true), the counter resets for next time.
     if (!result.canComplete && mode === 'block' && this.completionBlockCount < 1) {
       this.completionBlockCount++;
       return result;
+    }
+
+    if (result.canComplete) {
+      this.completionBlockCount = 0;
     }
 
     return { ...result, canComplete: true };

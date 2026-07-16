@@ -64,6 +64,8 @@ function normalizeEvent(event: AgentRuntimeEvent): string {
       return `trace:${event.event.turnId}:${event.event.type}`;
     case 'harness_diagnostics_updated':
       return `harness:${event.diagnostics.taskEpoch ?? '?'}:${event.diagnostics.evidenceSize}:${event.diagnostics.turnSummaryCount}`;
+    case 'subtask_event':
+      return `subtask:${event.event.state}:${event.event.role}:${event.event.taskId}`;
     case 'session_picker_requested':
       return `session_picker:${event.request.title}:${event.request.sessions.length}`;
     case 'edit_preview_requested':

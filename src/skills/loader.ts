@@ -185,7 +185,7 @@ function normalizeFilesystemPath(input: string): string {
 /**
  * Scan a directory for skills
  */
-export function scanSkillsDirectory(dirPath: string, type: SkillSource['type']): SkillDefinition[] {
+export function scanSkillsDirectory(dirPath: string, _type: SkillSource['type']): SkillDefinition[] {
   const normalizedDirPath = normalizeFilesystemPath(dirPath);
   if (!existsSync(normalizedDirPath)) {
     return [];

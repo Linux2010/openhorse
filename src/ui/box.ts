@@ -21,14 +21,12 @@ const DIM = chalk.dim;
 const GREEN = chalk.green;
 const RED = chalk.red;
 const YELLOW = chalk.yellow;
-const CYAN = chalk.cyan;
 
 // Single line for separators
 const SEP_LINE = '─';
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 // 使用终端控制码清除整行，避免宽字符（中文）残留
-const CLEAR_LINE = '\x1b[2K\r';
 
 // ============================================================================
 // Header Box
@@ -135,13 +133,6 @@ export function renderFooterBar(contextFile?: string, effort?: string): string {
   return `  ${shortcuts}${' '.repeat(spacing)}${rightSide}`;
 }
 
-/**
- * Truncate string from right side, adding ... if truncated
- */
-function truncateRight(str: string, maxLen: number): string {
-  if (str.length <= maxLen) return str;
-  return str.slice(0, maxLen - 3) + '...';
-}
 
 /**
  * Truncate string from left side, adding ... if truncated

@@ -11,6 +11,8 @@ import {
   createFilePickerState,
   createPermissionDecisionPickerState,
   getFileMentionQuery,
+  subtaskEventToTimelineEntry,
+  type SubtaskTimelineEntry,
 } from '../../runtime/ui-view-model';
 import { addToInputHistory, getInputHistory } from '../../services/global-config';
 import { formatBytes } from '../../services/format';
@@ -34,7 +36,7 @@ import {
   staticTranscriptEntries,
   transcriptReducer,
 } from '../runtime/transcript-state';
-import type { OpenHorseUiRuntime, SessionPickerRequest, ToolPermissionRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink, EditPreviewRequest, RuntimeSessionRestoredEvent } from '../types';
+import type { OpenHorseUiRuntime, SessionPickerRequest, ToolPermissionRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink, EditPreviewRequest, RuntimeSubtaskEvent } from '../types';
 
 type Overlay =
   | { type: 'commands'; selectedIndex: number }
@@ -163,6 +165,8 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
   const { layoutWidth, maxLiveTranscriptItems, maxOverlayItems, maxPromptRows } = layout;
   const [processing, setProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
+  // R8: typed subagent timeline, keyed by taskId (last write wins).
+  const [, setSubtaskTimeline] = useState<SubtaskTimelineEntry[]>([]);
   const [exiting, setExiting] = useState(false);
   const [history, setHistory] = useState(() => getInputHistory());
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -228,6 +232,15 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
           content: `Resumed session ${shortId} · restored ${event.restoredMessages}${total} messages`,
           errorLayer: undefined,
         },
+      });
+    },
+    // R8: consume the typed subagent event into the shared timeline. Keyed by
+    // taskId so state advances queued -> running -> terminal without duplicates.
+    subtaskEvent: (event: RuntimeSubtaskEvent) => {
+      const entry = subtaskEventToTimelineEntry(event);
+      setSubtaskTimeline(prev => {
+        const without = prev.filter(e => e.taskId !== entry.taskId);
+        return [...without, entry];
       });
     },
   }), [append, finalize, remove, stdout, update]);

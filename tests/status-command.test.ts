@@ -114,7 +114,7 @@ describe('/status context diagnostics', () => {
     const rendered = stripAnsi(logs.join('\n'));
 
     expect(result.success).toBe(true);
-    expect(rendered).toContain('Renderer   ink beta');
+    expect(rendered).toContain('Renderer   ink deprecated');
     expect(rendered).toContain('text-pickers, legacy-progress, legacy-meta, compact-spacing, abort-notice');
   });
 

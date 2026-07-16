@@ -100,6 +100,9 @@ function stripLegacyUsageFields(): void {
     totalCost: _totalCost,
     ...config
   } = parsed as Record<string, unknown>;
+  void _totalSessions;
+  void _totalTokens;
+  void _totalCost;
 
   writeFileSync(path, JSON.stringify(config, null, 2), { mode: 0o600 });
 }

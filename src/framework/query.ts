@@ -16,14 +16,13 @@ import type { PermissionMode } from '../commands/types';
 import type { CostTracker } from '../core/cost-tracker';
 import type { ToolConfirmationPolicy } from '../services/config';
 import { toOpenAITools } from './tool';
-import { createStrategyTracker, type StrategyTracker, type StrategyResult } from '../core/strategy-tracker';
+import { createStrategyTracker, type StrategyTracker } from '../core/strategy-tracker';
 import { getAutoCompact } from '../services/compact/auto-compact';
 import type { ContextHarness } from '../harness';
 import type { PromptAssemblyStats } from '../harness/types';
 import {
   prepareToolCalls,
   executeToolCalls,
-  type PreparedToolCall,
   type ExecutedToolCall,
   type ToolPermissionDecision,
 } from './tool-scheduler';
@@ -36,13 +35,6 @@ function isAborted(signal?: AbortSignal): boolean {
   return signal?.aborted === true;
 }
 
-function cancelledEvent(llm: LLMService): QueryEvent {
-  return {
-    type: 'complete',
-    content: 'Operation cancelled.',
-    model: llm.getModel(),
-  };
-}
 
 function cancelledCompleteEvent(llm: LLMService, stats: LoopStats): Extract<QueryEvent, { type: 'complete' }> {
   return {

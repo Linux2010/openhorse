@@ -8,7 +8,7 @@
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import type { Message } from '../llm';
-import { generateSessionSummaryPrompt } from './prompts';
+
 
 // ============================================================================
 // 类型定义
@@ -223,7 +223,7 @@ export class SessionMemory {
   private extractEntry(
     name: string,
     args: Record<string, unknown>,
-    result: string
+    _result: string
   ): SessionMemoryEntry {
     const entry: SessionMemoryEntry = {
       timestamp: Date.now(),

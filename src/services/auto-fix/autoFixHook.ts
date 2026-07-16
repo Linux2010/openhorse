@@ -99,8 +99,9 @@ function matchesPattern(path: string, pattern?: string): boolean {
   }
 
   if (pattern.includes('*')) {
-    // 简化处理
-    const regex = new RegExp(pattern.replace(/\*/g, '.*'));
+    // Escape all regex special chars, then replace glob wildcard.
+    const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escaped.replace(/\*/g, '.*'));
     return regex.test(path);
   }
 

@@ -7,7 +7,7 @@
  * 3. 每次 API 调用使用实际 token 数
  */
 
-import type { LLMService } from './llm';
+
 
 export interface ModelContextInfo {
   id: string;
@@ -116,10 +116,15 @@ export async function discoverModelContexts(
       const id = String(m.id || '');
       const contextWindow = (m.context_window ?? m.max_context_length) as number | undefined;
       if (contextWindow && id) {
+        const valid = typeof contextWindow === 'number' && Number.isFinite(contextWindow) && contextWindow > 0
+          ? contextWindow
+          : (typeof contextWindow === 'string' && Number.isFinite(Number(contextWindow)) && Number(contextWindow) > 0
+            ? Number(contextWindow) : undefined);
+        if (!valid) continue;
         const info: ModelContextInfo = {
           id,
           label: id,
-          contextWindow: Number(contextWindow),
+          contextWindow: valid,
           discovered: true,
         };
         registerDiscoveredModel(info);

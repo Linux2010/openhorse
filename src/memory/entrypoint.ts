@@ -97,7 +97,7 @@ export function truncateIfNeeded(content: string): TruncatedContent {
   }
 
   // Step 2: 按字节截断
-  let currentContent = lines.join('\n');
+  const currentContent = lines.join('\n');
   if (currentContent.length > MAX_ENTRYPOINT_BYTES) {
     while (lines.join('\n').length > MAX_ENTRYPOINT_BYTES && lines.length > 10) {
       lines.pop();

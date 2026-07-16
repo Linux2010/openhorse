@@ -32,7 +32,7 @@ export interface FileCompletionState {
   selectedIndex: number;
 }
 
-let state: FileCompletionState = {
+const state: FileCompletionState = {
   visible: false,
   query: '',
   baseInput: '',

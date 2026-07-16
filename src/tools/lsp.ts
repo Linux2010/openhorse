@@ -47,7 +47,7 @@ interface LspHover {
 class LspClient extends EventEmitter {
   private process: ChildProcess | null = null;
   private requestId: number = 0;
-  private pendingRequests: Map<number, { resolve: Function; reject: Function; timer: NodeJS.Timeout }> = new Map();
+  private pendingRequests: Map<number, { resolve: (...args: unknown[]) => unknown; reject: (...args: unknown[]) => unknown; timer: NodeJS.Timeout }> = new Map();
   private buffer: string = '';
   private initialized: boolean = false;
   private lspCommand: { cmd: string; args: string[] } | null = null;

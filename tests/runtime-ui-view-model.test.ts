@@ -670,7 +670,7 @@ describe('runtime UI view model', () => {
 
   it('creates renderer-neutral status snapshots with capability labels', () => {
     expect(rendererStatus('terminal')).toBe('stable');
-    expect(rendererStatus('ink')).toBe('beta');
+    expect(rendererStatus('ink')).toBe('deprecated');
     expect(rendererStatus('tui')).toBe('beta');
     expect(rendererStatus('print')).toBe('non-interactive');
     expect(rendererStatus('third-party')).toBe('custom');

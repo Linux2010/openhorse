@@ -240,6 +240,9 @@ export class SessionManager {
     this.heartbeatTimer = setInterval(() => {
       this.updateActivity();
     }, this.config.heartbeatInterval);
+    if (this.heartbeatTimer && typeof (this.heartbeatTimer as any).unref === 'function') {
+      (this.heartbeatTimer as any).unref();
+    }
   }
 
   /**

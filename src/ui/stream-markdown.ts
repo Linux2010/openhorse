@@ -17,9 +17,6 @@ const MAGENTA = chalk.magenta;
 /**
  * 去除 ANSI 颜色码
  */
-function stripAnsi(str: string): string {
-  return str.replace(/\x1b\[[0-9;]*m/g, '');
-}
 
 // ============================================================================
 // 类型定义

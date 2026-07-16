@@ -6,7 +6,7 @@
 
 import { execFile } from 'child_process';
 import type { AutoFixConfig, AutoFixTrigger } from './autoFixConfig';
-import { DEFAULT_AUTOFIX_CONFIG, detectAutoFixConfig } from './autoFixConfig';
+import { detectAutoFixConfig } from './autoFixConfig';
 
 // ============================================================================
 // 类型定义
@@ -54,7 +54,7 @@ export class AutoFixRunner {
   /**
    * 运行 AutoFix
    */
-  async run(context: AutoFixContext): Promise<AutoFixResult> {
+  async run(_context: AutoFixContext): Promise<AutoFixResult> {
     if (!this.config.enabled) {
       return {
         success: true,
@@ -115,7 +115,7 @@ export class AutoFixRunner {
   /**
    * 快速检查（仅 lint）
    */
-  async quickCheck(files: string[]): Promise<{ passed: boolean; errors: AutoFixError[] }> {
+  async quickCheck(_files: string[]): Promise<{ passed: boolean; errors: AutoFixError[] }> {
     if (!this.config.lintCommand) {
       return { passed: true, errors: [] };
     }

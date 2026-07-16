@@ -7,7 +7,6 @@
 import chalk from 'chalk';
 
 const ACCENT = chalk.hex('#00D4AA');
-const BRAND = chalk.hex('#FF6B35');
 const DIM = chalk.dim;
 const SUCCESS = chalk.green;
 const WARN = chalk.yellow;

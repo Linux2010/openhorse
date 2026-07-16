@@ -4,6 +4,10 @@ import type { LoopStats } from '../framework';
 import type { LLMService } from '../services/llm';
 import type { OpenHorseCLIConfig } from '../services/config';
 import type { SessionMeta, SessionTraceEvent } from '../services/session-storage';
+import type { RuntimeSubtaskEvent } from './subagents/types';
+
+/** Re-export so the runtime event protocol can reference subtask events. */
+export type { RuntimeSubtaskEvent } from './subagents/types';
 
 export type TranscriptRole = 'user' | 'assistant' | 'tool' | 'system' | 'command' | 'error' | 'status';
 
@@ -216,5 +220,7 @@ export interface UiEventSink {
   loopStatsUpdated?: (stats: LoopStats) => void;
   traceEventRecorded?: (event: SessionTraceEvent) => void;
   harnessDiagnosticsUpdated?: (diagnostics: RuntimeHarnessDiagnostics) => void;
+  /** Subagent lifecycle event (queued/running/completed/...). Renderer-independent. */
+  subtaskEvent?: (event: RuntimeSubtaskEvent) => void;
   setProcessing: (processing: boolean) => void;
 }

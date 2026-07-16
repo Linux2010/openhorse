@@ -42,15 +42,9 @@ import {
   getConfig,
   reset,
 } from '../src/sdk/init';
-import {
-  initGlobalState,
-  getGlobalState,
-  ensureGlobalState,
-  resetGlobalState,
-  addCost,
-  recordToolCall,
-  getStateSummary,
-} from '../src/core/state';
+
+// core/state.ts was deleted in v0.2.22 (dead code — zero imports across src/).
+// The test cases that exercised its functions are removed.
 
 // ============================================================================
 // Token Security Tests
@@ -272,50 +266,4 @@ describe('v0.1.11: SDK Entry Points', () => {
 // State Management Tests
 // ============================================================================
 
-describe('v0.1.11: Bootstrap State Management', () => {
-  beforeEach(() => {
-    resetGlobalState();
-  });
-
-  test('initGlobalState creates state', () => {
-    const state = initGlobalState('/test/project', 'test-session');
-    expect(state.projectRoot).toBe('/test/project');
-    expect(state.sessionId).toBe('test-session');
-    expect(state.totalCostUSD).toBe(0);
-  });
-
-  test('getGlobalState returns null before init', () => {
-    resetGlobalState();
-    expect(getGlobalState()).toBeNull();
-  });
-
-  test('ensureGlobalState initializes if needed', () => {
-    const state = ensureGlobalState();
-    expect(state).not.toBeNull();
-    expect(state.projectRoot).toBeDefined();
-  });
-
-  test('addCost accumulates costs', () => {
-    const state = initGlobalState('/test');
-    addCost('claude-opus', 1000, 0.05);
-    addCost('claude-opus', 500, 0.025);
-
-    expect(state.totalCostUSD).toBeCloseTo(0.075);
-    expect(state.modelUsage.get('claude-opus')?.tokens).toBe(1500);
-  });
-
-  test('recordToolCall increments count', () => {
-    const state = initGlobalState('/test');
-    recordToolCall();
-    recordToolCall();
-    expect(state.toolCallCount).toBe(2);
-  });
-
-  test('getStateSummary returns formatted string', () => {
-    initGlobalState('/test/project', 'test-session');
-    const summary = getStateSummary();
-    expect(summary).toContain('Project:');
-    expect(summary).toContain('Session:');
-    expect(summary).toContain('Cost:');
-  });
-});
+// core/state.ts tests were removed in v0.2.22 — the module was dead code.

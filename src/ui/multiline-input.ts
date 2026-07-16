@@ -7,7 +7,6 @@
 
 import chalk from 'chalk';
 
-const ACCENT = chalk.hex('#00D4AA');
 const DIM = chalk.dim;
 
 // ============================================================================
@@ -19,7 +18,7 @@ export interface MultilineState {
   lines: string[];
 }
 
-let state: MultilineState = {
+const state: MultilineState = {
   active: false,
   lines: [],
 };

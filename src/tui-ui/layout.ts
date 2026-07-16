@@ -270,7 +270,7 @@ function wrapCells(value: string, width: number): string[] {
   let current = '';
   let currentWidth = 0;
 
-  for (const char of Array.from(value)) {
+  for (const char of graphemeIterate(value)) {
     const charWidth = Math.max(0, stringWidth(char));
     if (currentWidth > 0 && currentWidth + charWidth > width) {
       rows.push(current);
@@ -289,11 +289,24 @@ function truncateCells(value: string, width: number): string {
   if (width <= 0) return '';
   let output = '';
   let used = 0;
-  for (const char of Array.from(value)) {
+  for (const char of graphemeIterate(value)) {
     const charWidth = Math.max(0, stringWidth(char));
     if (used + charWidth > width) break;
     output += char;
     used += charWidth;
   }
   return output;
+}
+
+/** Iterate by grapheme cluster (not code point) to preserve ZWJ emoji etc. */
+function* graphemeIterate(text: string): Generator<string> {
+  const Segmenter = (Intl as any).Segmenter;
+  if (Segmenter) {
+    const segmenter = new Segmenter(undefined, { granularity: 'grapheme' });
+    for (const part of segmenter.segment(text) as Iterable<{ segment: string }>) {
+      yield part.segment;
+    }
+  } else {
+    yield* Array.from(text);
+  }
 }

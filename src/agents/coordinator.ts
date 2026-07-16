@@ -5,7 +5,7 @@
  * 与 Fork/Worker Pool 模式配合使用。
  */
 
-import type { Task, TaskResult } from '../core/agent';
+import type { Task } from '../core/agent';
 import type { ForkResult } from './fork';
 import { getAgentRouter, classifyTask } from './router';
 import { getWorkerPool, type WorkerPool } from './worker-pool';

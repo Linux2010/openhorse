@@ -9,7 +9,7 @@
  * See docs/roadmap/v0.1.4-plus.md Part 7 for the decision rationale.
  */
 
-import type { BaseAgent } from '../core/agent';
+
 import type { Task } from '../core/agent';
 
 // ============================================================================

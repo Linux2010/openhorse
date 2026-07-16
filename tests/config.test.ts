@@ -4,6 +4,8 @@ import {
   getConfigErrors,
   getConfigSummary,
   isBetaUIRenderer,
+  isRecommendedBetaUIRenderer,
+  isDeprecatedUIRenderer,
   isInteractiveUIRenderer,
   isSupportedUIRenderer,
   resolveUIRenderer,
@@ -254,7 +256,7 @@ describe('loadConfig', () => {
 });
 
 describe('UI renderer helpers', () => {
-  test('defines terminal as stable and ink/tui as explicit beta renderers', () => {
+  test('defines terminal as stable, tui as recommended beta, ink as deprecated beta', () => {
     expect(SUPPORTED_UI_RENDERERS).toEqual(['terminal', 'tui', 'ink']);
     expect(resolveUIRenderer('stable')).toBe('terminal');
     expect(resolveUIRenderer('terminal')).toBe('terminal');
@@ -270,6 +272,10 @@ describe('UI renderer helpers', () => {
     expect(isBetaUIRenderer('ink')).toBe(true);
     expect(isBetaUIRenderer('tui')).toBe(true);
     expect(isBetaUIRenderer('terminal')).toBe(false);
+    expect(isRecommendedBetaUIRenderer('tui')).toBe(true);
+    expect(isRecommendedBetaUIRenderer('ink')).toBe(false);
+    expect(isDeprecatedUIRenderer('ink')).toBe(true);
+    expect(isDeprecatedUIRenderer('tui')).toBe(false);
     expect(isSupportedUIRenderer('print')).toBe(false);
   });
 });

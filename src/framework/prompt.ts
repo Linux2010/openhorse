@@ -131,6 +131,21 @@ Batched tool strategy:
       return ctx.referencedFilesContent;
     },
   },
+  {
+    name: 'subagents',
+    dynamic: true,
+    render: (ctx) => {
+      // Only render when the runtime-bound `subtask` tool is exposed this turn.
+      if (!ctx.tools.some(t => t.name === 'subtask')) return '';
+      return `Subagent capability:
+- You may call the \`subtask\` tool to delegate 1-3 independent, READ-ONLY investigations to subagents and receive structured conclusions (summary, findings with evidence, files, suggested commands, verification steps, risks).
+- Use it ONLY when the work genuinely splits into independent investigations: researching two+ unrelated modules, reviewing a diff AND checking test gaps in parallel, separating repo-fact retrieval from external-doc retrieval, or investigating independent failure root causes.
+- Do NOT use subtask for: single-file reads, one grep, simple Q&A, serial step-by-step work, or anything requiring edits or command execution. Subagents cannot edit, write, run shell, commit, push, publish, or create further subagents.
+- Each packet needs a bounded objective that can produce a verifiable conclusion, a reason it is independently delegable, and an optional in-project scope. Scope paths are canonicalized and cannot escape the project root.
+- Subagents share your turn budget and provider rate limits; the runtime reserves and reconciles their usage. Prefer fewer, well-scoped packets over many vague ones.
+- After results return, synthesize the structured findings yourself, keep edit/verify authority, and continue the task. Do not re-delegate the same scope.`;
+    },
+  },
 ];
 
 // ============================================================================

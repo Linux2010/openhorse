@@ -58,8 +58,8 @@ function showCliHelp(): void {
   console.log('  openhorse --help      Show this help message');
   console.log('  openhorse --version   Show version');
   console.log('  openhorse --ui terminal  Start the stable native terminal UI explicitly');
-  console.log('  openhorse --ui tui    Start the experimental renderer-owned TUI');
-  console.log('  openhorse --ui ink    Start the experimental Ink/React UI');
+  console.log('  openhorse --ui tui    Start the recommended beta TUI renderer');
+  console.log('  openhorse --ui ink    Start the deprecated Ink/React UI');
   console.log();
   console.log(ACCENT('Options:'));
   console.log('  -h, --help     Show help');
@@ -68,7 +68,7 @@ function showCliHelp(): void {
   console.log(`  --ui <mode>    UI renderer: ${SUPPORTED_UI_RENDERERS.join(', ')}`);
   console.log('  --output-format <text|json>  Print-mode output format');
   console.log();
-  console.log(DIM('terminal is the stable default. tui and ink are beta; print is experimental.'));
+  console.log(DIM('terminal is the stable default. tui is recommended beta; ink is deprecated beta; print is experimental.'));
   console.log();
 }
 

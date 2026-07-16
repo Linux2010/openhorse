@@ -394,31 +394,6 @@ function observeTerminalOutput(
   return { cursor, promptTopRow };
 }
 
-function consumeEscapeForCursor(text: string, index: number, cursor: CursorPosition, columns: number): number {
-  if (index + 1 >= text.length) return index + 1;
-  const marker = text[index + 1];
-
-  if (marker === '[') {
-    let end = index + 2;
-    while (end < text.length && !('@' <= text[end] && text[end] <= '~')) {
-      end += 1;
-    }
-    if (end >= text.length) return text.length;
-    applyCsiToCursor(text.slice(index + 2, end), text[end], cursor, columns);
-    return end + 1;
-  }
-
-  if (marker === ']') {
-    const endBel = text.indexOf('\x07', index + 2);
-    const endSt = text.indexOf('\x1b\\', index + 2);
-    const candidates = [endBel, endSt].filter(position => position >= 0);
-    if (candidates.length === 0) return text.length;
-    const end = Math.min(...candidates);
-    return end + (end === endSt ? 2 : 1);
-  }
-
-  return Math.min(text.length, index + 2);
-}
 
 function consumeEscapeForObservation(
   text: string,

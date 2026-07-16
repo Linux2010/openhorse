@@ -160,6 +160,10 @@ export function restoreCheckpoint(
     return { restored: [], error: 'Checkpoint metadata corrupted' };
   }
 
+  if (!Array.isArray(meta.files)) {
+    return { restored: [], error: 'Checkpoint metadata missing files array' };
+  }
+
   const restored: string[] = [];
   for (const file of meta.files) {
     const target = resolveCheckpointTarget(projectPath, file.path);

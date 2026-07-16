@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import stringWidth from 'string-width';
-import { parseInput } from '../commands/parser';
+
 import { AgentRuntimeController, type AgentRuntimeInput } from '../runtime/agent-runtime-controller';
 import { emitToUiEventSink, type AgentRuntimeEventSink } from '../runtime/agent-runtime-protocol';
 import { resolveUiRendererCapabilities } from '../runtime/ui-events';
@@ -12,8 +12,10 @@ import {
   movePickerPageOffset,
   permissionRiskDisplayValue,
   permissionScopeDisplayValue,
+  subtaskEventToTimelineEntry,
   type SessionPickerItem,
   sessionPickerTitle,
+  type SubtaskTimelineEntry,
 } from '../runtime/ui-view-model';
 import { formatBytes } from '../services/format';
 import { redactTraceText } from '../services/redaction';
@@ -24,10 +26,10 @@ import type {
   EditPreviewRequest,
   OpenHorseUiRuntime,
   RuntimeSessionRestoredEvent,
+  RuntimeSubtaskEvent,
   SessionPickerRequest,
   TranscriptAppendEntry,
   TranscriptEntry,
-  TranscriptRole,
   ToolPermissionRequest,
   UiEventSink,
 } from '../runtime/ui-events';
@@ -152,15 +154,7 @@ function formatTranscriptEntry(entry: TranscriptEntry): string {
   }
 }
 
-export type TerminalErrorLayer =
-  | 'renderer'
-  | 'runtime'
-  | 'provider'
-  | 'tool'
-  | 'session'
-  | 'memory'
-  | 'MCP'
-  | 'skills';
+export type TerminalErrorLayer = import('../runtime/ui-events').ErrorLayer;
 
 const TERMINAL_ERROR_LAYERS: TerminalErrorLayer[] = [
   'renderer',
@@ -169,8 +163,9 @@ const TERMINAL_ERROR_LAYERS: TerminalErrorLayer[] = [
   'tool',
   'session',
   'memory',
-  'MCP',
+  'mcp',
   'skills',
+  'unknown',
 ];
 
 export function formatTerminalErrorMessage(message: string, explicitLayer?: import('../runtime/ui-events').ErrorLayer): string {
@@ -196,7 +191,7 @@ function hasErrorLayerPrefix(message: string): boolean {
 export function inferTerminalErrorLayer(message: string): TerminalErrorLayer {
   const lower = message.toLowerCase();
 
-  if (/\bmcp\b/u.test(lower)) return 'MCP';
+  if (/\bmcp\b/u.test(lower)) return 'MCP' as TerminalErrorLayer;
   if (/\b(skill|skills)\b/u.test(lower)) return 'skills';
   if (/\b(memory|vector store|recall|forget)\b/u.test(lower)) return 'memory';
   if (/\b(session|resume|compact)\b/u.test(lower)) return 'session';
@@ -416,6 +411,13 @@ export class TerminalEventSink implements UiEventSink {
   private pickerOffset = 0;
   private pendingEditPreview: EditPreviewRequest | null = null;
   private lastStatusMessage = '';
+  /**
+   * R8: typed subagent timeline, keyed by taskId. The chat-controller's
+   * transcript summary drives the visible terminal output (so we do not
+   * double-print); this map is the structured source for parity tests and
+   * future timeline rendering.
+   */
+  private readonly subtaskTimeline = new Map<string, SubtaskTimelineEntry>();
 
   constructor(
     private readonly runtime: OpenHorseUiRuntime,
@@ -643,6 +645,20 @@ export class TerminalEventSink implements UiEventSink {
 
     this.pendingAssistantOutput.set(entry.id, pending);
   }
+
+  /**
+   * R8: consume the typed subagent event into the shared timeline view-model.
+   * Does not print (the chat-controller transcript summary already drives
+   * visible terminal output); this is the structured source for parity.
+   */
+  subtaskEvent(event: RuntimeSubtaskEvent): void {
+    this.subtaskTimeline.set(event.taskId, subtaskEventToTimelineEntry(event));
+  }
+
+  /** R8: read-only access to the typed subagent timeline (for parity tests). */
+  getSubtaskTimeline(): SubtaskTimelineEntry[] {
+    return Array.from(this.subtaskTimeline.values());
+  }
 }
 
 export function renderTerminalBanner(runtime: OpenHorseUiRuntime): string {
@@ -734,10 +750,6 @@ export function formatTerminalPermissionPrompt(request: ToolPermissionRequest, c
 
   const baseBudget = Math.max(1, budget - optionWidth - 2);
   return `${truncateTerminalText(stripTrailingNewlines(base), baseBudget)} ${options} `;
-}
-
-function isExitInput(input: string): boolean {
-  return ['/exit', '/quit', '/q'].includes(input.trim());
 }
 
 export function parseEditInput(input: string): { isEdit: boolean; initialContent: string } {

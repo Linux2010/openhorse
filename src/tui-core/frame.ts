@@ -1,4 +1,5 @@
 import stringWidth from 'string-width';
+import { DEFAULT_STYLE, normalizeStyle, styleKey, type TuiStyle } from './style';
 
 export interface TuiCursor {
   row: number;
@@ -9,6 +10,8 @@ export interface TuiCursor {
 export interface TuiCell {
   char: string;
   width: 0 | 1 | 2;
+  /** Normalized style. Defaults to DEFAULT_STYLE (shared immutable). */
+  style: TuiStyle;
 }
 
 export interface TuiFrame {
@@ -34,9 +37,10 @@ export function createTuiFrame(width: number, height: number): TuiFrame {
   };
 }
 
-export function writeFrameText(frame: TuiFrame, row: number, column: number, text: string): void {
+export function writeFrameText(frame: TuiFrame, row: number, column: number, text: string, style: TuiStyle = DEFAULT_STYLE): void {
   let y = clamp(row, 0, frame.height - 1);
   let x = clamp(column, 0, frame.width - 1);
+  const normalizedStyle = style === DEFAULT_STYLE ? DEFAULT_STYLE : normalizeStyle(style);
 
   for (const char of segmentText(text)) {
     if (char === '\n') {
@@ -54,9 +58,10 @@ export function writeFrameText(frame: TuiFrame, row: number, column: number, tex
       if (y >= frame.height) break;
     }
 
-    frame.rows[y][x] = { char, width };
+    frame.rows[y][x] = { char, width, style: normalizedStyle };
     if (width === 2 && x + 1 < frame.width) {
-      frame.rows[y][x + 1] = { char: '', width: 0 };
+      // Continuation cell inherits style but does not output the char.
+      frame.rows[y][x + 1] = { char: '', width: 0, style: normalizedStyle };
     }
     x += width;
   }
@@ -84,12 +89,10 @@ export function diffTuiFrames(previous: TuiFrame | null, next: TuiFrame): TuiFra
     };
   }
 
-  const previousRows = renderFrameRows(previous);
-  const nextRows = renderFrameRows(next);
+  // Compare char + width + style key per cell so style-only changes are detected.
   const changedRows: number[] = [];
-
-  for (let index = 0; index < nextRows.length; index += 1) {
-    if (previousRows[index] !== nextRows[index]) {
+  for (let index = 0; index < next.height; index += 1) {
+    if (rowsDifferent(previous.rows[index], next.rows[index])) {
       changedRows.push(index);
     }
   }
@@ -103,8 +106,19 @@ export function diffTuiFrames(previous: TuiFrame | null, next: TuiFrame): TuiFra
   };
 }
 
+function rowsDifferent(prev: TuiCell[], next: TuiCell[]): boolean {
+  if (prev.length !== next.length) return true;
+  for (let i = 0; i < prev.length; i++) {
+    const a = prev[i];
+    const b = next[i];
+    if (a.char !== b.char || a.width !== b.width) return true;
+    if (styleKey(a.style) !== styleKey(b.style)) return true;
+  }
+  return false;
+}
+
 function createEmptyRow(width: number): TuiCell[] {
-  return Array.from({ length: width }, () => ({ char: ' ', width: 1 as const }));
+  return Array.from({ length: width }, () => ({ char: ' ', width: 1 as const, style: DEFAULT_STYLE }));
 }
 
 function charWidth(char: string): 0 | 1 | 2 {
@@ -127,4 +141,43 @@ function getSegmenter(): { segment: (text: string) => Iterable<{ segment: string
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+// ============================================================================
+// Styled row rendering
+// ============================================================================
+
+/**
+ * Render a single frame row into styled spans by merging consecutive cells
+ * with the same style key. Continuation cells (width 0) are skipped.
+ * The encoder emits SGR per span and SGR0 at row end.
+ */
+export function renderStyledFrameRow(cells: TuiCell[]): { text: string; style: TuiStyle }[] {
+  const spans: { text: string; style: TuiStyle }[] = [];
+  let currentText = '';
+  let currentKey: string | null = null;
+  let currentStyle: TuiStyle = DEFAULT_STYLE;
+
+  for (const cell of cells) {
+    if (cell.width === 0) continue; // continuation cell
+    const key = styleKey(cell.style);
+    if (currentKey === null) {
+      currentKey = key;
+      currentStyle = cell.style;
+      currentText = cell.char;
+    } else if (key === currentKey) {
+      currentText += cell.char;
+    } else {
+      spans.push({ text: currentText, style: currentStyle });
+      currentKey = key;
+      currentStyle = cell.style;
+      currentText = cell.char;
+    }
+  }
+
+  if (currentKey !== null) {
+    spans.push({ text: currentText, style: currentStyle });
+  }
+
+  return spans.length > 0 ? spans : [{ text: '', style: DEFAULT_STYLE }];
 }

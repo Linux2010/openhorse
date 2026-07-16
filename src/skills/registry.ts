@@ -61,7 +61,7 @@ export class SkillsRegistry {
   }
 
   /** Execute skill (generate prompt) */
-  executeSkill(name: string, context: SkillContext): SkillResult {
+  executeSkill(name: string, _context: SkillContext): SkillResult {
     const skill = this.loader.getSkill(name);
 
     if (!skill) {

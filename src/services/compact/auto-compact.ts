@@ -7,7 +7,7 @@
 
 import type { Message } from '../llm';
 import type { LLMService } from '../llm';
-import { compactMessages, type CompactOptions } from './compact';
+import { compactMessages } from './compact';
 import { getModelContextWindow, resolveModelContext, AUTO_COMPACT_THRESHOLD } from '../model-context';
 import type { ContextCapsule, HarnessState } from '../../harness';
 import { estimateMessagesTokens } from '../../utils/token-estimate';
@@ -187,12 +187,12 @@ export class AutoCompact {
   private getMessagesFingerprint(messages: Message[]): string {
     const first = messages[0];
     const last = messages[messages.length - 1];
-    const totalChars = messages.reduce((sum, message) => sum + message.content.length, 0);
+    const totalChars = messages.reduce((sum, message) => sum + (message.content?.length ?? 0), 0);
     return [
       messages.length,
       totalChars,
-      first ? `${first.role}:${first.content.length}` : 'none',
-      last ? `${last.role}:${last.content.length}` : 'none',
+      first ? `${first.role}:${first.content?.length ?? 0}` : 'none',
+      last ? `${last.role}:${last.content?.length ?? 0}` : 'none',
     ].join(':');
   }
 

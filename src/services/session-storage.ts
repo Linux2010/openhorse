@@ -148,7 +148,15 @@ export type SessionTraceEventType =
   | 'verification_result'
   | 'verification_summary'
   | 'aborted'
-  | 'error';
+  | 'error'
+  | 'subtask_requested'
+  | 'subtask_started'
+  | 'subtask_completed'
+  | 'subtask_failed'
+  | 'subtask_cancelled'
+  | 'subtask_rejected'
+  | 'subtask_timed_out'
+  | 'subtask_artifact_stored';
 
 export interface SessionTraceEvent {
   sessionId: string;
@@ -332,6 +340,21 @@ export type SessionLookupResult =
 // Project helpers
 // ============================================================================
 
+const MAX_CACHE_SIZE = 256;
+
+/**
+ * Evict the oldest entries when a Map exceeds MAX_CACHE_SIZE.
+ * Simple LRU approximation: delete the first (oldest) entries until
+ * the map is within bounds. Called after each insertion.
+ */
+function evictOldest<K, V>(map: Map<K, V>, maxSize: number): void {
+  while (map.size > maxSize) {
+    const firstKey = map.keys().next().value;
+    if (firstKey !== undefined) map.delete(firstKey);
+    else break;
+  }
+}
+
 const resolvedProjectPathCache = new Map<string, string>();
 const gitBranchCache = new Map<string, string | undefined>();
 
@@ -358,6 +381,7 @@ export function resolveProjectPath(cwd: string = process.cwd()): string {
       if (root) {
         resolvedPath = realpathSync(root);
         resolvedProjectPathCache.set(absolute, resolvedPath);
+        evictOldest(resolvedProjectPathCache, MAX_CACHE_SIZE);
         return resolvedPath;
       }
     } catch {
@@ -372,6 +396,7 @@ export function resolveProjectPath(cwd: string = process.cwd()): string {
   }
 
   resolvedProjectPathCache.set(absolute, resolvedPath);
+  evictOldest(resolvedProjectPathCache, MAX_CACHE_SIZE);
   return resolvedPath;
 }
 
@@ -386,6 +411,7 @@ function getGitBranch(projectPath: string): string | undefined {
 
   if (!existsSync(projectPath)) {
     gitBranchCache.set(projectPath, undefined);
+    evictOldest(gitBranchCache, MAX_CACHE_SIZE);
     return undefined;
   }
 
@@ -396,9 +422,11 @@ function getGitBranch(projectPath: string): string | undefined {
     }).trim();
     const value = branch || undefined;
     gitBranchCache.set(projectPath, value);
+    evictOldest(gitBranchCache, MAX_CACHE_SIZE);
     return value;
   } catch {
     gitBranchCache.set(projectPath, undefined);
+    evictOldest(gitBranchCache, MAX_CACHE_SIZE);
     return undefined;
   }
 }
@@ -433,10 +461,17 @@ function parseSessionMetaFile(path: string): SessionMeta | null {
   try {
     const content = readFileSync(path, 'utf-8');
     const parsed = JSON.parse(content) as Partial<SessionMeta>;
-    if (typeof parsed.id !== 'string' || !parsed.id) return null;
-    if (typeof parsed.projectPath !== 'string' || !parsed.projectPath) return null;
+    if (typeof parsed.id !== 'string' || !parsed.id) {
+      console.warn(`[session-storage] meta file missing valid id: ${path}`);
+      return null;
+    }
+    if (typeof parsed.projectPath !== 'string' || !parsed.projectPath) {
+      console.warn(`[session-storage] meta file missing valid projectPath: ${path}`);
+      return null;
+    }
     return parsed as SessionMeta;
-  } catch {
+  } catch (err) {
+    console.warn(`[session-storage] failed to parse meta file ${path}: ${err instanceof Error ? err.message : err}`);
     return null;
   }
 }
@@ -800,7 +835,15 @@ export function readHistory(limit?: number): HistoryEntry[] {
   try {
     const content = readFileSync(path, 'utf-8');
     const lines = content.trim().split('\n').filter(Boolean);
-    const entries = lines.map(line => JSON.parse(line) as HistoryEntry);
+    // Parse each line individually — skip corrupted lines instead of losing all history.
+    const entries: HistoryEntry[] = [];
+    for (const line of lines) {
+      try {
+        entries.push(JSON.parse(line) as HistoryEntry);
+      } catch {
+        // Skip corrupted line, preserve remaining valid entries.
+      }
+    }
 
     // 从最新开始
     const reversed = entries.reverse();

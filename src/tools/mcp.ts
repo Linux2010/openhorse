@@ -47,7 +47,7 @@ interface MCPClientState {
   process: ChildProcess | null;
   tools: MCPToolDefinition[];
   connected: boolean;
-  pendingRequests: Map<string, { resolve: Function; reject: Function; timer: NodeJS.Timeout }>;
+  pendingRequests: Map<string, { resolve: (...args: unknown[]) => unknown; reject: (...args: unknown[]) => unknown; timer: NodeJS.Timeout }>;
   buffer: string;
 }
 

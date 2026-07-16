@@ -71,6 +71,7 @@ export interface MemoryQuery {
 // ============================================================================
 
 export class MemoryStore extends EventEmitter {
+  private static readonly MAX_LONG_TERM = 10000;
   private working: MemoryEntry[] = [];
   private shortTerm: MemoryEntry[] = [];
   private longTerm: Map<string, MemoryEntry> = new Map();
@@ -296,6 +297,13 @@ export class MemoryStore extends EventEmitter {
       const evicted = this.shortTerm.shift();
       if (evicted && this.config.autoPromoteToLongTerm) {
         this.longTerm.set(evicted.id, evicted);
+        // Bound long-term memory to prevent unbounded growth.
+        if (this.longTerm.size > MemoryStore.MAX_LONG_TERM) {
+          const oldest = [...this.longTerm.entries()]
+            .sort((a, b) => a[1].lastAccessedAt - b[1].lastAccessedAt)
+            .shift();
+          if (oldest) this.longTerm.delete(oldest[0]);
+        }
         this.emit('evict', { from: 'short-term' as MemoryTier, id: evicted.id });
       }
     }
