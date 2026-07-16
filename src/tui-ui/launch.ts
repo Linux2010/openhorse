@@ -162,9 +162,16 @@ export async function launchTuiUI(
     } catch { /* best effort */ }
 
     // Attempt full cleanup (may partially fail — that's ok).
-    void cleanup().then(() => {
-      finishLaunch();
-    });
+    // Ensure finishLaunch() runs on both success and rejection so the error
+    // path always completes and no unhandled promise rejection escapes.
+    void cleanup()
+      .catch(() => {
+        // Cleanup failure must not mask the original renderer error.
+        emergencyRestore();
+      })
+      .finally(() => {
+        finishLaunch();
+      });
   };
 
   const consumeSessionPickerSelection = (inputValue: string): string | AgentRuntimeInput => {
