@@ -146,7 +146,7 @@ function cacheSet(url: string, data: CacheEntry['data']): void {
   fetchCache.set(url, { ts: Date.now(), data });
 }
 
-function isPreapprovedHost(hostname: string, pathname: string): boolean {
+function isPreapprovedHost(hostname: string, _pathname: string): boolean {
   return PREAPPROVED_HOSTS.some(host => hostname === host || hostname.endsWith('.' + host));
 }
 
@@ -211,7 +211,7 @@ interface FetchResult {
   errorType?: string;     // 错误类型
 }
 
-async function fetchUrl(url: string, maxRedirects: number = 5): Promise<FetchResult> {
+async function fetchUrl(url: string, _maxRedirects: number = 5): Promise<FetchResult> {
   const cached = cacheGet(url);
   if (cached) return { ...cached, url };
 
@@ -369,7 +369,7 @@ Before using this tool, check if the URL points to an authenticated service (e.g
       return { success: false, output: '', error: `Invalid URL: ${url}` };
     }
 
-    const { content, code, contentType, url: finalUrl, redirects, errorType } = await fetchUrl(url);
+    const { content, code, url: finalUrl, redirects, errorType } = await fetchUrl(url);
 
     // Issue #20 修复：返回结构化结果
     // Issue #32 #3.7: SSRF 和 Content-Length 错误处理

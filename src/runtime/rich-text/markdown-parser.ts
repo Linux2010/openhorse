@@ -184,7 +184,7 @@ function parseInlineTokens(tokens: Token[], depth: number): RichTextSpan[] {
   return spans.length > 0 ? spans : [];
 }
 
-function inlineTokenToSpan(token: Token, depth: number): RichTextSpan | null {
+function inlineTokenToSpan(token: Token, _depth: number): RichTextSpan | null {
   switch (token.type) {
     case 'text':
       return { text: extractTokenText(token) };

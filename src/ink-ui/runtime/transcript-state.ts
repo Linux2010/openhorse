@@ -32,6 +32,7 @@ export function transcriptReducer(state: TranscriptState, action: TranscriptActi
   switch (action.type) {
     case 'append': {
       const { live: _live, ...entry } = action.entry;
+      void _live;
       return commitStaticPrefix({
         ...state,
         entries: [
@@ -109,5 +110,6 @@ function withCommittedPrefix(state: TranscriptState): TranscriptState {
 
 function stripTranscriptRecord(entry: TranscriptRecord): TranscriptEntry {
   const { finalized: _finalized, ...transcriptEntry } = entry;
+  void _finalized;
   return transcriptEntry;
 }

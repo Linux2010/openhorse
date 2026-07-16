@@ -9,7 +9,7 @@ import {
   getProjectMemoryDir,
   getProjectSessionsDir,
 } from './config-dir';
-import { isBetaUIRenderer, isDeprecatedUIRenderer, isRecommendedBetaUIRenderer, isConfigured, type OpenHorseCLIConfig } from './config';
+import { isDeprecatedUIRenderer, isRecommendedBetaUIRenderer, isConfigured, type OpenHorseCLIConfig } from './config';
 import { getMcpConfigPath, mcpManager } from '../tools/mcp';
 import { getRuntimeTools } from '../tools';
 import { loadProjectInstructionFiles } from './project-instructions';

@@ -25,10 +25,10 @@ import { AgentRunner } from '../services/agent-runner';
 import { isBetaUIRenderer, isConfigured } from '../services/config';
 import { createSpinner, toolLine } from '../ui/box';
 import { createStreamRenderer, type StreamMarkdownRenderer } from '../ui/stream-markdown';
-import { showProgress, hideProgress, showToolProgress } from '../ui/progress';
+import { hideProgress, showToolProgress } from '../ui/progress';
 import { formatBytes } from '../services/format';
-import { query, getSystemPrompt, resetToolState, getToolState, type LoopStats, type QueryEvent, type PromptContext } from '../framework';
-import { executeTool, getRuntimeTools, getToolNames } from '../tools';
+import { query, getSystemPrompt, resetToolState, getToolState, type LoopStats, type PromptContext } from '../framework';
+import { executeTool, getRuntimeTools } from '../tools';
 import { mcpManager } from '../tools/mcp';
 import type { Message, StreamCallbacks } from '../services/llm';
 import {
@@ -305,23 +305,6 @@ function isAbortError(error: unknown, abortSignal?: AbortSignal): boolean {
 // 工具参数摘要
 // ============================================================================
 
-function compactToolArgs(args: Record<string, unknown>): string {
-  if (typeof args.path === 'string') {
-    return args.path.length > 48 ? args.path.slice(0, 45) + '...' : args.path;
-  }
-  if (typeof args.command === 'string') {
-    return args.command.length > 48 ? args.command.slice(0, 45) + '...' : args.command;
-  }
-  if (typeof args.pattern === 'string') {
-    return args.pattern.length > 48 ? args.pattern.slice(0, 45) + '...' : args.pattern;
-  }
-  for (const val of Object.values(args)) {
-    if (typeof val === 'string') {
-      return val.length > 48 ? val.slice(0, 45) + '...' : val;
-    }
-  }
-  return '';
-}
 
 // ============================================================================
 // 命令实现
@@ -1184,7 +1167,7 @@ function showMemory(ctx: CommandContext): CommandResult {
   return { success: true };
 }
 
-async function handleMemoryReindex(ctx: CommandContext): Promise<CommandResult> {
+async function handleMemoryReindex(_ctx: CommandContext): Promise<CommandResult> {
   const { isSemanticEnabled, getSemanticSearchService } = require('../memory/semantic-search');
 
   if (!isSemanticEnabled()) {
@@ -1621,7 +1604,7 @@ function handleMode(ctx: CommandContext, args: string): CommandResult {
 }
 
 function handleTask(ctx: CommandContext, args: string): CommandResult {
-  const [sub, ...rest] = args.trim().split(/\s+/);
+  const [sub] = args.trim().split(/\s+/);
 
   if (sub === 'list' || sub === 'ls') {
     if (!taskManager) {
@@ -2130,7 +2113,7 @@ function handleCost(ctx: CommandContext): CommandResult {
   return { success: true };
 }
 
-function handleSkills(ctx: CommandContext): CommandResult {
+function handleSkills(_ctx: CommandContext): CommandResult {
   console.log();
   console.log(HEADER('Loaded Skills'));
   console.log(DIM('─'.repeat(40)));
@@ -2232,7 +2215,7 @@ function handleSkill(args: string): CommandResult {
   };
 }
 
-function handleMcp(ctx: CommandContext): CommandResult {
+function handleMcp(_ctx: CommandContext): CommandResult {
   console.log();
   console.log(HEADER('MCP Servers'));
   console.log(DIM('─'.repeat(40)));

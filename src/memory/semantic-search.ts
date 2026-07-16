@@ -6,7 +6,7 @@
 
 import { getVectorStore, type SearchResult, type VectorStoreConfig } from './vector-store';
 import { loadAllMemories, saveMemory, type MemoryEntry, type MemoryType } from './storage';
-import { getMemoryDir } from './storage';
+
 
 // ============================================================================
 // Types

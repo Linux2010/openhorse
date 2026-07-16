@@ -1503,7 +1503,7 @@ export class AgentChatController {
           onSubtaskEvent: (event) => {
             this.handleSubtaskEvent(event, sessionId, turnId);
           },
-          onSubtaskResult: (result, batchId) => {
+          onSubtaskResult: (result, _batchId) => {
             if (!projectPath || result.status !== 'completed') return;
             const json = JSON.stringify(result);
             const artifact = storeArtifact(projectPath, `subtask_${result.role}`, json, Buffer.byteLength(json, 'utf8'));

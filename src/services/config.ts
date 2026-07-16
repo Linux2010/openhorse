@@ -32,7 +32,6 @@ import {
 import { delimiter } from 'path';
 import {
   DEFAULT_SUBAGENT_CONFIG,
-  SUBAGENT_LIMITS,
   type SubagentConfig,
 } from '../runtime/subagents/types';
 import { clampSubagentConfig } from '../runtime/subagents/policy';

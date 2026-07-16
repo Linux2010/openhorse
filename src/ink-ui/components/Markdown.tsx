@@ -244,7 +244,7 @@ export function markdownBlockTypes(markdown: string): string[] {
   return (marked.lexer(markdown) as Token[]).map(token => token.type);
 }
 
-export function Markdown({ children, width = 80, dimColor = false }: MarkdownProps): JSX.Element {
+export function Markdown({ children, width = 80 }: MarkdownProps): JSX.Element {
   let tokens: Token[];
   try {
     tokens = marked.lexer(children) as Token[];

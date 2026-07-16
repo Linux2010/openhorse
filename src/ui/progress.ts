@@ -10,7 +10,6 @@ import chalk from 'chalk';
 const DIM = chalk.dim;
 const ACCENT = chalk.hex('#00D4AA');
 
-let lastProgressMessage = '';
 let progressActive = false;
 
 /**
@@ -27,7 +26,6 @@ export function showProgress(message: string): void {
   }
 
   process.stdout.write(`\x1b[2K\r${DIM('⏳')} ${ACCENT(message)}`);
-  lastProgressMessage = message;
   progressActive = true;
 }
 
@@ -39,7 +37,6 @@ export function hideProgress(): void {
   if (progressActive) {
     process.stdout.write('\x1b[2K\r');
     progressActive = false;
-    lastProgressMessage = '';
   }
 }
 

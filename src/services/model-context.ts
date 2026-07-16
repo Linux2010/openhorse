@@ -7,7 +7,7 @@
  * 3. 每次 API 调用使用实际 token 数
  */
 
-import type { LLMService } from './llm';
+
 
 export interface ModelContextInfo {
   id: string;

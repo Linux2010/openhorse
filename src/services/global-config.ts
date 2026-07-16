@@ -169,6 +169,9 @@ function sanitizeGlobalConfig(config: GlobalConfig & LegacyUsageFields): GlobalC
     totalCost: _totalCost,
     ...rest
   } = config;
+  void _totalSessions;
+  void _totalTokens;
+  void _totalCost;
   const sanitized: GlobalConfig = { ...rest };
 
   // UI renderer is a runtime choice, not persisted global configuration.

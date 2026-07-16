@@ -10,7 +10,6 @@ const ACCENT = chalk.hex('#00D4AA');
 const DIM = chalk.dim;
 const SUCCESS = chalk.green;
 const ERROR = chalk.red;
-const WARN = chalk.yellow;
 
 // ============================================================================
 // 类型定义

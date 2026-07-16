@@ -8,7 +8,7 @@
 import type { Message } from '../services/llm';
 import type { OpenHorseTool } from '../framework/tool';
 import type { PermissionMode } from '../commands/types';
-import { query, type QueryEvent, type PromptContext, getSystemPrompt } from '../framework';
+import { query, type PromptContext, getSystemPrompt } from '../framework';
 import { TOOLS } from '../tools';
 
 // ============================================================================
@@ -70,7 +70,6 @@ export async function forkSubagent(options: ForkOptions): Promise<ForkResult> {
   } = options;
 
   const startTime = Date.now();
-  const forkId = `fork-${String(Date.now()).slice(-6)}`;
 
   // 构建子 Agent 的消息历史
   let messages: Message[];

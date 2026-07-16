@@ -7,12 +7,12 @@
 
 import { EventEmitter } from 'eventemitter3';
 import { v4 as uuidv4 } from 'uuid';
-import { BaseAgent, AgentConfig, Task, TaskResult, AgentStatus } from './core/agent';
+import { BaseAgent, AgentConfig, Task, TaskResult } from './core/agent';
 import { Brain, BrainConfig } from './core/brain';
 import { LeaderAgent } from './agents/leader';
 import { CoderAgent } from './agents/coder';
 import { SafetyChecker, SafetyPolicy } from './harness/safety';
-import { MemoryStore, MemoryStoreConfig } from './memory/store';
+import { MemoryStore } from './memory/store';
 
 // ============================================================================
 // 1. 配置类型定义
@@ -158,7 +158,7 @@ export class Harness extends EventEmitter {
   }
 
   /** 执行后验证 — 验证结果是否符合预期约束 */
-  postValidate(result: TaskResult, task: Task): HarnessVerdict {
+  postValidate(result: TaskResult, _task: Task): HarnessVerdict {
     if (!this.config.resultValidation) {
       return { passed: true, stage: 'post-exec' };
     }

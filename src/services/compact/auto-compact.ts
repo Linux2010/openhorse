@@ -7,7 +7,7 @@
 
 import type { Message } from '../llm';
 import type { LLMService } from '../llm';
-import { compactMessages, type CompactOptions } from './compact';
+import { compactMessages } from './compact';
 import { getModelContextWindow, resolveModelContext, AUTO_COMPACT_THRESHOLD } from '../model-context';
 import type { ContextCapsule, HarnessState } from '../../harness';
 import { estimateMessagesTokens } from '../../utils/token-estimate';

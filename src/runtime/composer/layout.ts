@@ -73,7 +73,6 @@ function splitByVisualWidthWithOffsets(text: string, maxWidth: number): Array<{ 
 
   for (const part of segmentGraphemes(text)) {
     const next = `${current}${part.segment}`;
-    const nextOffset = part.index + part.segment.length;
     if (current && stringWidth(next) > maxWidth) {
       chunks.push({ content: current, start: currentStart, end: part.index });
       current = part.segment;

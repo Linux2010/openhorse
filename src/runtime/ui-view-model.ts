@@ -8,8 +8,6 @@ import {
   type SessionPickerRequest,
   type StructuredToolActivity,
   type ToolPermissionRequest,
-  type RuntimeToolFinishedEvent,
-  type RuntimeToolStartedEvent,
   type TranscriptEntry,
   type TranscriptRole,
   type UiRendererCapabilities,

@@ -36,7 +36,7 @@ import {
   staticTranscriptEntries,
   transcriptReducer,
 } from '../runtime/transcript-state';
-import type { OpenHorseUiRuntime, SessionPickerRequest, ToolPermissionRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink, EditPreviewRequest, RuntimeSessionRestoredEvent, RuntimeSubtaskEvent } from '../types';
+import type { OpenHorseUiRuntime, SessionPickerRequest, ToolPermissionRequest, TranscriptAppendEntry, TranscriptEntry, UiEventSink, EditPreviewRequest, RuntimeSubtaskEvent } from '../types';
 
 type Overlay =
   | { type: 'commands'; selectedIndex: number }
@@ -166,7 +166,7 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
   const [processing, setProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   // R8: typed subagent timeline, keyed by taskId (last write wins).
-  const [subtaskTimeline, setSubtaskTimeline] = useState<SubtaskTimelineEntry[]>([]);
+  const [, setSubtaskTimeline] = useState<SubtaskTimelineEntry[]>([]);
   const [exiting, setExiting] = useState(false);
   const [history, setHistory] = useState(() => getInputHistory());
   const [historyIndex, setHistoryIndex] = useState(-1);

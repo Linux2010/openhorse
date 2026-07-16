@@ -1,5 +1,5 @@
 import stringWidth from 'string-width';
-import { DEFAULT_STYLE, normalizeStyle, styleKey, stylesEqual, type TuiStyle } from './style';
+import { DEFAULT_STYLE, normalizeStyle, styleKey, type TuiStyle } from './style';
 
 export interface TuiCursor {
   row: number;

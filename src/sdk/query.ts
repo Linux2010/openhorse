@@ -5,7 +5,7 @@
  */
 
 import type { SDKQueryOptions, SDKQueryResponse, SDKMessage } from './types';
-import { getConfig, isInitialized } from './init';
+import { isInitialized } from './init';
 
 /**
  * 执行查询
@@ -17,7 +17,6 @@ export async function query(options: SDKQueryOptions): Promise<SDKQueryResponse>
     throw new Error('SDK not initialized. Call init() first.');
   }
 
-  const config = getConfig()!;
 
   // Simple mock implementation for SDK entry points
   // Real implementation would call the framework query function

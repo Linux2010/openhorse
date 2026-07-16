@@ -56,7 +56,6 @@ export async function summaryGenerator(
   const userTopics: string[] = [];
   const toolsUsed: string[] = [];
   const filesModified: string[] = [];
-  const keyDecisions: string[] = [];
 
   for (const msg of messages) {
     if (msg.role === 'user' && msg.content) {

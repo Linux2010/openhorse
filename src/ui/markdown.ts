@@ -9,7 +9,7 @@
 
 import chalk from 'chalk';
 import { marked } from 'marked';
-// @ts-ignore - marked-terminal 没有 TypeScript 类型定义
+// @ts-expect-error - marked-terminal 没有 TypeScript 类型定义
 import TerminalRenderer from 'marked-terminal';
 
 // ============================================================================
@@ -24,7 +24,6 @@ const DIM = chalk.dim;
 const BOLD = chalk.bold;
 const ITALIC = chalk.italic;
 const CYAN = chalk.cyan;
-const GRAY = chalk.hex('#6B7280');
 
 const DEFAULT_MAX_WIDTH = 80;
 

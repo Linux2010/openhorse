@@ -63,13 +63,11 @@ export function setInputStatusText(statusText: string): void {
 // ============================================================================
 
 let terminalWidth = process.stdout.columns || 80;
-let terminalHeight = process.stdout.rows || 24;
 
 // 监听终端大小变化
 if (process.stdout.isTTY) {
   process.stdout.on('resize', () => {
     terminalWidth = process.stdout.columns || 80;
-    terminalHeight = process.stdout.rows || 24;
     // 如果面板可见，重新渲染
     if (state.visible) {
       render();
@@ -90,7 +88,7 @@ export interface CommandPanelState {
   totalMatches: number;
 }
 
-let state: CommandPanelState = {
+const state: CommandPanelState = {
   visible: false,
   selectedIndex: 0,
   filter: '',

@@ -119,6 +119,7 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
   switch (action.type) {
     case 'appendTranscript': {
       const { live: _live, ...entry } = action.entry;
+      void _live;
       return commitStaticTranscriptPrefix({
         ...state,
         transcriptScrollOffset: 0,
@@ -457,6 +458,8 @@ function recomputeStaticTranscriptPrefix(state: TuiUiState): TuiUiState {
 
 function stripRecord(entry: TuiTranscriptRecord): TranscriptEntry {
   const { finalized: _finalized, revision: _revision, ...rest } = entry;
+  void _finalized;
+  void _revision;
   return rest;
 }
 

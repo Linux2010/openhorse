@@ -4,7 +4,7 @@
  * Build system prompt sections for memory system.
  */
 
-import type { MemoryEntry } from './types';
+
 import { loadAllMemories, loadMemoryIndex } from './storage';
 import { MEMORY_TYPES_SECTION, MEMORY_EXCLUSIONS_SECTION, MEMORY_FRONTMATTER_EXAMPLE } from './types';
 

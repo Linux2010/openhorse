@@ -12,7 +12,6 @@ import {
   type RichTextBlock,
   type RichTextSpan,
   type RichTextDocument,
-  type RichTextStyleToken,
   type RichTextThemeResolver,
   type DiffLine,
 } from './types';
@@ -100,9 +99,9 @@ function layoutParagraph(spans: RichTextSpan[], width: number, style: TuiStyle, 
   // then reconstruct spans per row preserving style boundaries.
   const charStyles: TuiStyle[] = [];
   for (const span of styledSpans) {
-    for (const char of Array.from(span.text)) {
+    Array.from(span.text).forEach(() => {
       charStyles.push(span.style);
-    }
+    });
   }
 
   const lines = fullText.split('\n');

@@ -6,7 +6,7 @@
  */
 
 import { existsSync, readFileSync } from 'fs';
-import { getMemoryPath, getExistingMemoryPaths, MemoryType } from './config-dir';
+import { getMemoryPath, MemoryType } from './config-dir';
 
 // ============================================================================
 // 类型定义

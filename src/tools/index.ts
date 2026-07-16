@@ -10,9 +10,9 @@
  * 使用 buildTool() 工厂模式。
  */
 
-import { execFile, spawn } from 'child_process';
+import { spawn } from 'child_process';
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, createReadStream } from 'fs';
-import { join, resolve, relative, extname } from 'path';
+import { join, resolve, relative } from 'path';
 import { createInterface } from 'readline';
 import { buildTool, type OpenHorseTool, type ToolResult, type ToolContext } from '../framework/tool';
 import { setToolState } from '../framework/tool-state';
@@ -31,7 +31,7 @@ import {
   type MemoryType,
 } from '../memory';
 import { getSemanticSearchService, isSemanticEnabled } from '../memory/semantic-search';
-import { readSessionMessages, loadSessionMeta, listSessions, type SessionMessage } from '../services/session-storage';
+import { readSessionMessages, loadSessionMeta, listSessions } from '../services/session-storage';
 import { WEB_TOOLS } from './web';
 import { MCP_TOOLS, mcpManager } from './mcp';
 import { TODO_TOOLS } from './todo';
@@ -41,10 +41,6 @@ import { lspTools } from './lsp';
 import {
   assessCommandSecurity,
   isReadOnlyCommand,
-  checkDangerousCommand,
-  wrapForSandbox,
-  type SandboxOptions,
-  DEFAULT_SANDBOX_OPTIONS,
 } from './bash_security';
 
 const BATCH_READ_ALLOWED_TOOLS = new Set(['git_status', 'list_files', 'glob', 'grep', 'read_file']);
@@ -166,7 +162,7 @@ export const TOOLS: OpenHorseTool[] = [
       return writeFileSync_(path, content, context.cwd);
     },
     isDestructive: () => true,
-    checkPermissions: (args, context) => {
+    checkPermissions: (_args, _context) => {
       // Destructive operation - ask for confirmation in default mode
       return { behavior: 'ask', reason: 'Write operation may modify existing files' };
     },
@@ -253,7 +249,7 @@ export const TOOLS: OpenHorseTool[] = [
       const cmd = (args.command as string) || '';
       return /(rm\s+-rf|mkfs|dd\s)/.test(cmd);
     },
-    checkPermissions: (args, context) => {
+    checkPermissions: (args, _context) => {
       const cmd = (args.command as string) || '';
 
       // Use the bash_security module for comprehensive checks
@@ -369,7 +365,7 @@ export const TOOLS: OpenHorseTool[] = [
       );
     },
     isDestructive: () => true,
-    checkPermissions: (args, context) => {
+    checkPermissions: (_args, _context) => {
       return { behavior: 'ask', reason: 'Edit operation modifies file contents' };
     },
     userFacingName: (args) => `Edit ${args.path as string}`,
@@ -1580,7 +1576,6 @@ async function grep_(
           } else {
             // Check glob filter if provided
             if (globPattern) {
-              const ext = extname(entry.name);
               if (!matchGlobSimple(entry.name, globPattern)) continue;
             }
             files.push(fullPath);

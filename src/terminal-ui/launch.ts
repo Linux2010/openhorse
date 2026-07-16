@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import stringWidth from 'string-width';
-import { parseInput } from '../commands/parser';
+
 import { AgentRuntimeController, type AgentRuntimeInput } from '../runtime/agent-runtime-controller';
 import { emitToUiEventSink, type AgentRuntimeEventSink } from '../runtime/agent-runtime-protocol';
 import { resolveUiRendererCapabilities } from '../runtime/ui-events';
@@ -30,7 +30,6 @@ import type {
   SessionPickerRequest,
   TranscriptAppendEntry,
   TranscriptEntry,
-  TranscriptRole,
   ToolPermissionRequest,
   UiEventSink,
 } from '../runtime/ui-events';
@@ -751,10 +750,6 @@ export function formatTerminalPermissionPrompt(request: ToolPermissionRequest, c
 
   const baseBudget = Math.max(1, budget - optionWidth - 2);
   return `${truncateTerminalText(stripTrailingNewlines(base), baseBudget)} ${options} `;
-}
-
-function isExitInput(input: string): boolean {
-  return ['/exit', '/quit', '/q'].includes(input.trim());
 }
 
 export function parseEditInput(input: string): { isEdit: boolean; initialContent: string } {
