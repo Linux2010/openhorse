@@ -10,6 +10,7 @@ import { formatBytes } from '../services/format';
 import {
   liveTuiTranscriptEntries,
   staticTuiTranscriptEntries,
+  pendingCommitEntries,
   type TuiUiState,
 } from './state';
 
@@ -17,6 +18,18 @@ export interface TuiLayoutOptions {
   width: number;
   height: number;
   maxTranscriptRows?: number;
+}
+
+/**
+ * Options for the live-region-only layout (renderTuiLiveFrame).
+ * This function produces a frame for the inline surface's live region only,
+ * containing: live transcript entries, overlay, status, and prompt.
+ * Committed (static) transcript entries are handled by surface.commit() separately.
+ */
+export interface TuiLiveLayoutOptions {
+  width: number;
+  /** Height of the live region (typically terminal height minus committed scrollback). */
+  height: number;
 }
 
 const MIN_WIDTH = 24;
@@ -42,16 +55,56 @@ export function renderTuiUiFrame(state: TuiUiState, options: TuiLayoutOptions): 
   return frame;
 }
 
+/**
+ * Render the live-region frame for InlineTerminalSurface.
+ *
+ * This frame contains ONLY the ephemeral content that sits at the bottom of
+ * the terminal: live (uncommitted) transcript entries, overlay (if active),
+ * status bar, and prompt. Committed transcript entries are written to
+ * scrollback by surface.commit() and are NOT included in this frame.
+ *
+ * The frame height should be sized to fill the terminal viewport minus the
+ * committed scrollback rows that have already been pushed above the live
+ * region.
+ */
+export function renderTuiLiveFrame(state: TuiUiState, options: TuiLiveLayoutOptions): TuiFrame {
+  const width = Math.max(MIN_WIDTH, Math.floor(options.width));
+  const height = Math.max(MIN_HEIGHT, Math.floor(options.height));
+  const frame = createTuiFrame(width, height);
+
+  const promptTop = height - PROMPT_TOP_ROWS;
+  const statusRow = promptTop - 1;
+  const liveTranscriptRows = Math.max(0, statusRow);
+
+  // Only render LIVE (uncommitted) transcript entries.
+  renderLiveTranscript(frame, state, liveTranscriptRows);
+  renderStatus(frame, state, statusRow);
+  renderPrompt(frame, state, promptTop);
+  renderOverlay(frame, state, liveTranscriptRows);
+
+  const cursorColumn = promptCursorColumn(state.prompt.value, state.prompt.cursor, width);
+  setFrameCursor(frame, promptTop + 1, cursorColumn, true);
+  return frame;
+}
+
+/** Render only live (uncommitted) transcript entries into the frame. */
+function renderLiveTranscript(frame: TuiFrame, state: TuiUiState, maxRows: number): void {
+  const entries = liveTuiTranscriptEntries(state);
+  const lines = entries.flatMap(entry => formatTranscriptEntry(entry, frame.width));
+  const visible = lines.slice(Math.max(0, lines.length - maxRows));
+
+  visible.forEach((line, index) => {
+    writeFrameText(frame, index, 0, line);
+  });
+}
+
 function renderTranscript(frame: TuiFrame, state: TuiUiState, maxRows: number): void {
   const entries = [
     ...staticTuiTranscriptEntries(state),
     ...liveTuiTranscriptEntries(state),
   ];
   const lines = entries.flatMap(entry => formatTranscriptEntry(entry, frame.width));
-  const maxOffset = Math.max(0, lines.length - maxRows);
-  const scrollOffset = Math.min(Math.max(0, state.transcriptScrollOffset), maxOffset);
-  const start = Math.max(0, lines.length - maxRows - scrollOffset);
-  const visible = lines.slice(start, start + maxRows);
+  const visible = lines.slice(Math.max(0, lines.length - maxRows));
 
   visible.forEach((line, index) => {
     writeFrameText(frame, index, 0, line);
@@ -71,9 +124,15 @@ function renderStatus(frame: TuiFrame, state: TuiUiState, row: number): void {
 
 function renderPrompt(frame: TuiFrame, state: TuiUiState, top: number): void {
   const width = frame.width;
+  // The prompt is a fixed single-line frame row. A multiline paste can put
+  // raw newlines into prompt.value; emitting them would move the terminal
+  // cursor mid-frame and corrupt the whole live region. Render newlines as a
+  // safe visible marker so the frame stays intact (the real value, including
+  // newlines, is preserved in state for submission).
+  const displayValue = state.prompt.value.replace(/[\r\n]/g, '⏎');
   writeFrameText(frame, top, 0, `┌${'─'.repeat(width - 2)}┐`);
   writeFrameText(frame, top + 1, 0, '│ ');
-  writeFrameText(frame, top + 1, 2, truncateCells(`› ${state.prompt.value}`, width - 4));
+  writeFrameText(frame, top + 1, 2, truncateCells(`› ${displayValue}`, width - 4));
   writeFrameText(frame, top + 1, width - 1, '│');
   writeFrameText(frame, top + 2, 0, `└${'─'.repeat(width - 2)}┘`);
 }

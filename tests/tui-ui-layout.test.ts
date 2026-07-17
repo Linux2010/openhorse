@@ -159,25 +159,6 @@ describe('tui-ui layout', () => {
     expect(rows.join('\n')).not.toContain('line-0');
   });
 
-  it('can render older transcript rows when scrolled back', () => {
-    const actions: TuiUiAction[] = [];
-    for (let index = 0; index < 8; index += 1) {
-      actions.push({
-        type: 'appendTranscript',
-        entry: { id: `m${index}`, role: 'assistant', content: `line-${index}` },
-      });
-    }
-    actions.push({ type: 'scrollTranscript', delta: 4 });
-
-    const frame = renderTuiUiFrame(reduce(actions), { width: 24, height: 8, maxTranscriptRows: 3 });
-    const rows = renderFrameRows(frame);
-
-    expect(rows[0]).toContain('line-1');
-    expect(rows[1]).toContain('line-2');
-    expect(rows[2]).toContain('line-3');
-    expect(rows.join('\n')).not.toContain('line-7');
-  });
-
   it('renders tool timeline transcript rows without disturbing status or prompt', () => {
     const state = reduce([
       {

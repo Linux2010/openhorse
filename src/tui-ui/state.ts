@@ -21,6 +21,17 @@ import type { TuiPickerItem } from './pickers';
 /** Maximum subtask timeline entries (bounded for long-session safety). */
 const MAX_SUBTASK_TIMELINE = 100;
 
+/**
+ * How many of the most-recent restored transcript entries to keep LIVE
+ * (rendered in the visible live region) after /resume, instead of committing
+ * all of them to scrollback at once. This keeps the screen from going blank
+ * after resume (recent context stays visible) while older history remains
+ * scrollable above. The live tail is clipped to the live-region height at
+ * render time, and entries are committed to scrollback incrementally as later
+ * turns finalize, so live memory stays bounded.
+ */
+const RESUME_LIVE_TAIL = 50;
+
 export type TuiPromptState = Pick<PromptState, 'value' | 'cursor'>;
 
 export interface TuiTranscriptRecord extends TranscriptEntry {
@@ -60,7 +71,6 @@ export interface TuiUiState {
   queuedTranscriptCount: number;
   committedTranscriptCount: number;
   transcriptGeneration: number;
-  transcriptScrollOffset: number;
   prompt: TuiPromptState;
   statusMessage: string;
   /** Structured status (v0.2.21 slice 5). */
@@ -76,7 +86,6 @@ export type TuiUiAction =
   | { type: 'removeTranscript'; id: string }
   | { type: 'replaceTranscript'; entries: TranscriptEntry[] }
   | { type: 'clearTranscript' }
-  | { type: 'scrollTranscript'; delta: number }
   | { type: 'setPrompt'; value: string; cursor?: number }
   | { type: 'setStatus'; message: string }
   | { type: 'setStatusSnapshot'; snapshot: StatusSnapshot; phase?: TuiStatusState['phase']; message?: string }
@@ -101,7 +110,6 @@ export const initialTuiUiState: TuiUiState = {
   queuedTranscriptCount: 0,
   committedTranscriptCount: 0,
   transcriptGeneration: 0,
-  transcriptScrollOffset: 0,
   prompt: { value: '', cursor: 0 },
   statusMessage: '',
   statusState: {
@@ -122,7 +130,6 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
       void _live;
       return commitStaticTranscriptPrefix({
         ...state,
-        transcriptScrollOffset: 0,
         transcript: [
           ...state.transcript,
           {
@@ -137,7 +144,6 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
     case 'updateTranscript':
       return {
         ...state,
-        transcriptScrollOffset: 0,
         transcript: state.transcript.map(entry => (
           entry.id === action.id
             ? { ...entry, ...action.patch, revision: entry.revision + 1 }
@@ -148,7 +154,6 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
     case 'finalizeTranscript':
       return commitStaticTranscriptPrefix({
         ...state,
-        transcriptScrollOffset: 0,
         transcript: state.transcript.map(entry => (
           entry.id === action.id
             ? { ...entry, ...action.patch, finalized: true }
@@ -159,20 +164,28 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
     case 'removeTranscript':
       return recomputeStaticTranscriptPrefix({
         ...state,
-        transcriptScrollOffset: 0,
         transcript: state.transcript.filter(entry => entry.id !== action.id),
       });
 
-    case 'replaceTranscript':
+    case 'replaceTranscript': {
+      // Keep the most-recent tail LIVE (rendered in the visible live region) so
+      // the screen is not blank after /resume, while older entries are
+      // finalized and committed to scrollback (scroll up to review them).
+      const liveTail = Math.min(action.entries.length, RESUME_LIVE_TAIL);
+      const splitIndex = action.entries.length - liveTail;
       return {
         ...state,
-        transcript: action.entries.map(entry => ({ ...entry, finalized: true, revision: 1 })),
-        committableTranscriptCount: action.entries.length,
+        transcript: action.entries.map((entry, index) => ({
+          ...entry,
+          finalized: index < splitIndex,
+          revision: 1,
+        })),
+        committableTranscriptCount: splitIndex,
         queuedTranscriptCount: 0,
         committedTranscriptCount: 0,
         transcriptGeneration: state.transcriptGeneration + 1,
-        transcriptScrollOffset: 0,
       };
+    }
 
     case 'clearTranscript':
       return {
@@ -182,17 +195,6 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
         queuedTranscriptCount: 0,
         committedTranscriptCount: 0,
         transcriptGeneration: state.transcriptGeneration + 1,
-        transcriptScrollOffset: 0,
-      };
-
-    case 'scrollTranscript':
-      return {
-        ...state,
-        transcriptScrollOffset: clampNumber(
-          state.transcriptScrollOffset + action.delta,
-          0,
-          Number.MAX_SAFE_INTEGER
-        ),
       };
 
     case 'setPrompt':

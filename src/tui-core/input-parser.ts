@@ -234,6 +234,17 @@ export function isLikelyUnbracketedMultilinePaste(value: string): boolean {
     return false;
   }
 
+  // Interactive control characters (Ctrl+U kill-line, Ctrl+C, Ctrl+W, etc.)
+  // never appear in genuine pasted text. If present, the chunk is coalesced
+  // keystroke input (e.g. "cmd\rtext\r") rather than a multi-line paste, and
+  // must be parsed as sequential keystrokes so each Enter submits separately.
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) {
+      return false;
+    }
+  }
+
   const normalized = normalizePastedText(value);
   if (!normalized.includes('\n')) return false;
 

@@ -2,7 +2,6 @@ import stringWidth from 'string-width';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { moveTo } from '../src/tui-core/terminal-writer';
 import { TuiRunner } from '../src/tui-ui/runner';
 import { makeToolStartedEvent, makeToolFinishedEvent, resetToolEventSequence } from './test-helpers';
 import type { SessionMeta } from '../src/services/session-storage';
@@ -32,13 +31,12 @@ describe('tui-ui runner', () => {
     runner.feedInput(bytes.subarray(5));
 
     expect(runner.getState().prompt.value).toBe('开源小？事收到');
-    const frame = runner.getLastFrame();
-    expect(frame?.cursor).toEqual({
+    const frame = runner.renderFullFrame();
+    expect(frame.cursor).toEqual({
       row: 8,
       column: 4 + stringWidth('开源小？事收到'),
       visible: true,
     });
-    expect(runner.getLastRenderResult()?.output).toContain(moveTo(8, 4 + stringWidth('开源小？事收到')));
   });
 
   it('maps macOS DEL to backspace and removes the previous grapheme', () => {
@@ -49,7 +47,7 @@ describe('tui-ui runner', () => {
     runner.feedInput(Buffer.from('\x7f'));
 
     expect(runner.getState().prompt.value).toBe('开源小？事收');
-    expect(runner.getLastFrame()?.cursor.column).toBe(4 + stringWidth('开源小？事收'));
+    expect(runner.renderFullFrame().cursor.column).toBe(4 + stringWidth('开源小？事收'));
   });
 
   it('submits once, clears the prompt, and parks the cursor at prompt start', () => {
@@ -69,7 +67,7 @@ describe('tui-ui runner', () => {
 
     expect(submitted).toEqual(['hello']);
     expect(runner.getState().prompt).toEqual({ value: '', cursor: 0 });
-    expect(runner.getLastFrame()?.cursor).toEqual({ row: 7, column: 4, visible: true });
+    expect(runner.renderFullFrame().cursor).toEqual({ row: 7, column: 4, visible: true });
   });
 
   it('keeps unbracketed multiline paste as one prompt value instead of submitting per line', () => {
@@ -105,9 +103,10 @@ describe('tui-ui runner', () => {
     runner.events.update(liveId, { content: 'done' });
     runner.events.finalize(liveId);
 
-    const visible = runner.getVisibleRows().join('\n');
-    expect(visible).toContain('done');
-    expect(visible).toContain('model=glm-5 session=abcd');
+    const visible = runner.renderFullFrame();
+    const rows = visible.rows.map(row => row.map(cell => cell.width === 0 ? '' : cell.char).join('')).join('\n');
+    expect(rows).toContain('done');
+    expect(rows).toContain('model=glm-5 session=abcd');
     expect(runner.getState().transcript.map(entry => [entry.id, entry.finalized])).toEqual([[liveId, true]]);
   });
 
@@ -145,10 +144,11 @@ describe('tui-ui runner', () => {
     });
     runner.events.finalize(assistantId);
 
-    const visible = runner.getVisibleRows().join('\n');
-    expect(visible).toContain('✓ read_file src/index.ts (12ms)');
-    expect(visible).toContain('Done.');
-    expect(visible.indexOf('✓ read_file')).toBeLessThan(visible.indexOf('Done.'));
+    const fullFrame = runner.renderFullFrame();
+    const rows = fullFrame.rows.map(row => row.map(cell => cell.width === 0 ? '' : cell.char).join('')).join('\n');
+    expect(rows).toContain('✓ read_file src/index.ts (12ms)');
+    expect(rows).toContain('Done.');
+    expect(rows.indexOf('✓ read_file')).toBeLessThan(rows.indexOf('Done.'));
     expect(runner.getState().runtimeToolEvents).toEqual([
       { type: 'started', callId: 'call-1', name: 'read_file', args: { path: 'src/index.ts' }, sequence: 1 },
       {
@@ -234,7 +234,7 @@ describe('tui-ui runner', () => {
     expect(runner.getState().overlay).toBeNull();
   });
 
-  it('resets the writer on resize so stale wide rows are fully redrawn', () => {
+  it('resizes the live frame on resize', () => {
     const { output } = createOutput();
     const runner = new TuiRunner({ output, width: 30, height: 8 });
 
@@ -242,24 +242,6 @@ describe('tui-ui runner', () => {
     runner.resize(44, 12);
 
     expect(runner.getLastFrame()).toMatchObject({ width: 44, height: 12 });
-    expect(runner.getLastRenderResult()?.diff.changedRows).toHaveLength(12);
-  });
-
-  it('uses PageUp/PageDown for transcript scrollback when no picker owns those keys', () => {
-    const { output } = createOutput();
-    const runner = new TuiRunner({ output, width: 32, height: 9 });
-
-    for (let index = 0; index < 10; index += 1) {
-      runner.events.append({ role: 'assistant', content: `history-${index}` });
-    }
-
-    expect(runner.getVisibleRows().join('\n')).toContain('history-9');
-    runner.feedInput(Buffer.from('\x1b[5~'));
-    expect(runner.getState().transcriptScrollOffset).toBeGreaterThan(0);
-    expect(runner.getVisibleRows().join('\n')).toContain('history-1');
-    runner.feedInput(Buffer.from('\x1b[6~'));
-    expect(runner.getState().transcriptScrollOffset).toBe(0);
-    expect(runner.getVisibleRows().join('\n')).toContain('history-9');
   });
 
   it('opens the slash command overlay and completes with Tab', () => {
@@ -269,7 +251,9 @@ describe('tui-ui runner', () => {
     runner.feedInput(Buffer.from('/sta'));
 
     expect(runner.getState().overlay).toMatchObject({ type: 'commands' });
-    expect(runner.getVisibleRows().join('\n')).toContain('Commands "sta"');
+    const frame = runner.renderFullFrame();
+    const rows = frame.rows.map(row => row.map(cell => cell.width === 0 ? '' : cell.char).join('')).join('\n');
+    expect(rows).toContain('Commands "sta"');
 
     runner.feedInput(Buffer.from('\t'));
 
@@ -303,7 +287,9 @@ describe('tui-ui runner', () => {
 
     expect(runner.getState().prompt.value).toBe('');
     expect(runner.getState().overlay).toEqual({ type: 'shortcuts' });
-    expect(runner.getVisibleRows().join('\n')).toContain('Shortcuts');
+    const shortcutFrame = runner.renderFullFrame();
+    const shortcutRows = shortcutFrame.rows.map(row => row.map(cell => cell.width === 0 ? '' : cell.char).join('')).join('\n');
+    expect(shortcutRows).toContain('Shortcuts');
   });
 
   it('opens the file picker and completes the active @ token', () => {
@@ -317,7 +303,9 @@ describe('tui-ui runner', () => {
       runner.feedInput(Buffer.from('open @src/c'));
 
       expect(runner.getState().overlay).toMatchObject({ type: 'files' });
-      expect(runner.getVisibleRows().join('\n')).toContain('file src/cli.ts');
+      const fileFrame = runner.renderFullFrame();
+      const fileRows = fileFrame.rows.map(row => row.map(cell => cell.width === 0 ? '' : cell.char).join('')).join('\n');
+      expect(fileRows).toContain('file src/cli.ts');
 
       runner.feedInput(Buffer.from('\t'));
 
@@ -337,13 +325,14 @@ describe('tui-ui runner', () => {
     runner.feedInput(Buffer.from(long));
     // State must hold full value
     expect(runner.getState().prompt.value).toBe(long);
-    // Viewport must truncate without breaking the frame
-    const visible = runner.getVisibleRows().join('\n');
+    // Render full frame and check viewport truncation
+    const frame = runner.renderFullFrame();
+    const rows = frame.rows.map(row => row.map(cell => cell.width === 0 ? '' : cell.char).join(''));
     // Prompt box borders are intact
-    expect(visible).toContain('┌');
-    expect(visible).toContain('└');
+    expect(rows.join('\n')).toContain('┌');
+    expect(rows.join('\n')).toContain('└');
     // Status row is still present
-    expect(visible).toContain('ready');
+    expect(rows.join('\n')).toContain('ready');
   });
 
   it('does not leak paste content past submit', () => {
@@ -382,11 +371,12 @@ describe('tui-ui runner', () => {
     const runner = new TuiRunner({ output, width: 40, height: 8 });
     runner.events.setStatus('model=gpt-4o  ctx=85%');
     runner.feedInput(Buffer.from('This is a relatively long prompt that should not break the status line at all'));
-    const visible = runner.getVisibleRows().join('\n');
-    expect(visible).toContain('model=gpt-4o');
-    expect(visible).toContain('┌');
-    expect(visible).toContain('│ ›');
-    expect(visible).toContain('└');
+    const frame = runner.renderFullFrame();
+    const rows = frame.rows.map(row => row.map(cell => cell.width === 0 ? '' : cell.char).join('')).join('\n');
+    expect(rows).toContain('model=gpt-4o');
+    expect(rows).toContain('┌');
+    expect(rows).toContain('│ ›');
+    expect(rows).toContain('└');
   });
 
   // --- 切片4: overlay / picker integrity ---

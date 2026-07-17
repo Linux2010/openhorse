@@ -2737,22 +2737,16 @@ function handleResume(ctx: CommandContext, args: string): CommandResult {
 function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boolean): CommandResult {
   const resumed = resumeSession(session.id) ?? session;
 
-  console.log();
-  console.log(HEADER(isLast ? 'Resuming last session' : `Resuming session ${resumed.id.slice(0, 8)}`));
-  console.log(DIM(`  ID: ${resumed.id}`));
-  console.log(DIM(`  Model: ${resumed.model}`));
-  console.log(DIM(`  Project: ${resumed.projectPath}`));
-  console.log(DIM(`  Started: ${new Date(resumed.startTime).toLocaleString()}`));
+  // Swap in the resumed session's transcript BEFORE emitting any command output,
+  // so the output is appended after the history rather than wiped by the
+  // transcript replacement below.
   ctx.setSession?.(resumed);
 
-  // Load history and show summary
+  // Load history and notify runtime/TUI consumers.
   const history = loadSessionHistory(resumed.id);
+  const summary = history.length > 0 ? generateHistorySummary(history) : '';
   if (history.length > 0) {
-    const summary = generateHistorySummary(history);
     const eventSummary = generateRestoredSessionEventSummary(history);
-    console.log(DIM(`  Summary: ${summary}`));
-    console.log();
-
     ctx.store.setState({ conversationHistory: history });
     ctx.store.setState({ harnessState: loadSessionHarnessState(resumed.id) ?? resumed.harnessState });
     resetToolState();
@@ -2764,10 +2758,7 @@ function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boole
       messageCount: resumed.messageCount,
       summary: eventSummary,
     });
-    console.log(SUCCESS(`✔ Restored ${history.length} messages`));
   } else {
-    console.log();
-    console.log(DIM('  No messages in session'));
     ctx.sessionRestored?.({
       sessionId: resumed.id,
       projectPath: resumed.projectPath,
@@ -2777,7 +2768,43 @@ function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boole
     });
   }
 
-  console.log();
+  // Emit the resume summary. In TUI (inline-surface) mode, route through the
+  // command-output sink instead of raw console.log: a bare console.log writes
+  // directly to stdout and desyncs the surface's cursor tracking, leaving the
+  // live region mis-positioned (blank lower screen, content stuck at top).
+  // Plain text is used so no raw ANSI escapes leak into the TUI frame.
+  const bannerLines: string[] = [
+    isLast ? 'Resuming last session' : `Resuming session ${resumed.id.slice(0, 8)}`,
+    `  ID: ${resumed.id}`,
+    `  Model: ${resumed.model}`,
+    `  Project: ${resumed.projectPath}`,
+    `  Started: ${new Date(resumed.startTime).toLocaleString()}`,
+  ];
+  if (history.length > 0) {
+    bannerLines.push(`  Summary: ${summary}`);
+    bannerLines.push(`✔ Restored ${history.length} messages`);
+  } else {
+    bannerLines.push('  No messages in session');
+  }
+
+  if (ctx.uiRenderer === 'tui') {
+    for (const line of bannerLines) ctx.writeLine?.(line);
+  } else {
+    console.log();
+    console.log(HEADER(bannerLines[0]));
+    console.log(DIM(bannerLines[1]));
+    console.log(DIM(bannerLines[2]));
+    console.log(DIM(bannerLines[3]));
+    console.log(DIM(bannerLines[4]));
+    if (history.length > 0) {
+      console.log(DIM(bannerLines[5]));
+      console.log(SUCCESS(bannerLines[6]));
+    } else {
+      console.log(DIM(bannerLines[5]));
+    }
+    console.log();
+  }
+
   return { success: true };
 }
 

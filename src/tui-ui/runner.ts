@@ -6,11 +6,16 @@ import {
   type TuiInputEvent,
   type TuiKey,
 } from '../tui-core/input-parser';
-import { TuiTerminalWriter, type TuiTerminalRenderResult } from '../tui-core/terminal-writer';
 import type { UiEventSink } from '../runtime/ui-events';
 import { getCommands } from '../commands';
-import { renderTuiUiFrame } from './layout';
+import { renderTuiLiveFrame, renderTuiUiFrame } from './layout';
 import { getFileQuery, visibleCommandItems, visibleFileItems, type TuiPickerItem } from './pickers';
+import {
+  InlineTerminalSurface,
+  type CommittedEntry,
+  type LiveFrameProvider,
+  type TranscriptCommitBatch,
+} from './inline-surface';
 import {
   createTuiRenderScheduler,
   type TuiRenderScheduler,
@@ -19,10 +24,14 @@ import {
 import {
   createTuiUiEventSink,
   initialTuiUiState,
+  markTranscriptQueued,
+  markTranscriptCommitted,
+  pendingCommitEntries,
   tuiUiReducer,
   type TuiUiAction,
   type TuiUiState,
 } from './state';
+import type { TranscriptEntry } from '../runtime/ui-events';
 
 /** Actions that should use 'stream' priority (FPS-capped). */
 const STREAM_ACTIONS: ReadonlySet<string> = new Set([
@@ -44,42 +53,39 @@ export interface TuiRunnerOptions {
   onPermissionDecision?: (requestId: string, approved: boolean) => void | Promise<void>;
   /** Inject scheduler deps for testing (fake timers). */
   schedulerDeps?: Partial<TuiRenderSchedulerDeps>;
-  /** Disable scheduler for backward-compat synchronous tests (default: true). */
-  noScheduler?: boolean;
+  /** Inline surface for committed scrollback + live region rendering. */
+  surface?: InlineTerminalSurface;
 }
 
 export interface TuiRunnerCounters {
   layoutCount: number;
   paintCount: number;
   changedRows: number;
+  commitCount: number;
 }
 
 export class TuiRunner {
   readonly events: UiEventSink;
   private readonly parser = new TuiInputParser();
-  private readonly writer: TuiTerminalWriter;
-  private readonly scheduler: TuiRenderScheduler | null;
+  private readonly scheduler: TuiRenderScheduler;
+  private readonly surface: InlineTerminalSurface | null;
   private state: TuiUiState = initialTuiUiState;
   private width: number;
   private height: number;
   private lastFrame: TuiFrame | null = null;
-  private lastRenderResult: TuiTerminalRenderResult | null = null;
-  readonly counters: TuiRunnerCounters = { layoutCount: 0, paintCount: 0, changedRows: 0 };
+  readonly counters: TuiRunnerCounters = { layoutCount: 0, paintCount: 0, changedRows: 0, commitCount: 0 };
 
   constructor(private readonly options: TuiRunnerOptions) {
     this.width = options.width;
     this.height = options.height;
-    this.writer = new TuiTerminalWriter(options.output);
-    if (options.noScheduler !== false) {
-      this.scheduler = null;
-    } else {
-      this.scheduler = createTuiRenderScheduler(
-        () => this.render(),
-        options.schedulerDeps,
-      );
-    }
+    this.surface = options.surface ?? null;
+    this.scheduler = createTuiRenderScheduler(
+      () => this.renderLive(),
+      options.schedulerDeps,
+    );
     this.events = createTuiUiEventSink(action => this.dispatch(action));
-    this.render();
+    // Initial render: paint the live region immediately.
+    this.renderLive();
   }
 
   getState(): TuiUiState {
@@ -90,34 +96,36 @@ export class TuiRunner {
     return this.lastFrame;
   }
 
-  getLastRenderResult(): TuiTerminalRenderResult | null {
-    return this.lastRenderResult;
-  }
-
   getVisibleRows(): string[] {
     return this.lastFrame ? renderFrameRows(this.lastFrame) : [];
+  }
+
+  /** Get the scheduler for external lifecycle management (flush, stop). */
+  getScheduler(): TuiRenderScheduler {
+    return this.scheduler;
   }
 
   resize(width: number, height: number): void {
     this.width = width;
     this.height = height;
-    this.writer.reset();
-    if (this.scheduler) {
-      this.scheduler.request('immediate');
-      this.scheduler.flush();
-    } else {
-      this.render();
+    if (this.surface) {
+      // Surface resize is async (serialized FIFO); fire-and-forget is safe
+      // because subsequent renders go through the surface queue too.
+      void this.surface.resize(width, height, () => this.getLiveFrame());
     }
+    this.scheduler.request('immediate');
+    this.scheduler.flush();
   }
 
   dispatch(action: TuiUiAction): void {
+    const prevState = this.state;
     this.state = tuiUiReducer(this.state, action);
-    if (this.scheduler) {
-      const priority = STREAM_ACTIONS.has(action.type) ? 'stream' : 'immediate';
-      this.scheduler.request(priority);
-    } else {
-      this.render();
-    }
+
+    // Check if any transcript entries became committable (finalized).
+    this.tryCommit(prevState);
+
+    const priority = STREAM_ACTIONS.has(action.type) ? 'stream' : 'immediate';
+    this.scheduler.request(priority);
   }
 
   feedInput(chunk: Buffer | string): TuiInputEvent[] {
@@ -135,18 +143,148 @@ export class TuiRunner {
     return events;
   }
 
-  render(): TuiTerminalRenderResult {
+  /**
+   * Render the full frame (legacy path for tests without surface).
+   * Uses renderTuiUiFrame which includes both static and live transcript.
+   */
+  renderFullFrame(): TuiFrame {
     this.counters.layoutCount += 1;
     const frame = renderTuiUiFrame(this.state, {
       width: this.width,
       height: this.height,
     });
-    const result = this.writer.render(frame);
     this.lastFrame = frame;
-    this.lastRenderResult = result;
     this.counters.paintCount += 1;
-    this.counters.changedRows += result.diff.changedRows.length;
-    return result;
+    return frame;
+  }
+
+  /**
+   * Render the live region via InlineTerminalSurface.
+   * When surface is available, only ephemeral content (live transcript, overlay,
+   * status, prompt) is painted into the live region.
+   * When no surface (test mode), renders the full frame including committed
+   * transcript so tests can inspect complete content via getLastFrame().
+   */
+  private renderLive(): void {
+    this.counters.layoutCount += 1;
+    if (this.surface) {
+      // Production path: render only the live region for inline surface.
+      const frame = this.getLiveFrame();
+      this.lastFrame = frame;
+      this.counters.paintCount += 1;
+      // Surface renderLive is async (serialized FIFO), but for production use
+      // we fire-and-forget because the next render will also go through the queue.
+      void this.surface.renderLive(frame);
+    } else {
+      // Test path (no surface): render the full frame so getLastFrame() /
+      // getVisibleRows() return complete content including committed transcript.
+      const frame = renderTuiUiFrame(this.state, {
+        width: this.width,
+        height: this.height,
+      });
+      this.lastFrame = frame;
+      this.counters.paintCount += 1;
+    }
+  }
+
+  /** Build the live-region frame from current state.
+   *  With an inline surface, the frame height is the live band height
+   *  (bottom ~75% of the terminal) so committed history scrolls into native
+   *  scrollback above the band. Without a surface (test mode), render the full
+   *  height minus one row so tests can inspect complete content. */
+  private getLiveFrame(): TuiFrame {
+    const height = this.surface ? this.surface.getLiveBandRows() : this.height - 1;
+    return renderTuiLiveFrame(this.state, {
+      width: this.width,
+      height,
+    });
+  }
+
+  /**
+   * Try to commit any newly-finalized transcript entries to scrollback.
+   * Called after each dispatch. Only commits entries that are committable
+   * but not yet queued.
+   */
+  private tryCommit(prevState: TuiUiState): void {
+    if (!this.surface) return;
+
+    const prevCommittable = prevState.committableTranscriptCount;
+    const currCommittable = this.state.committableTranscriptCount;
+
+    if (currCommittable <= prevCommittable) return;
+    if (currCommittable <= this.state.queuedTranscriptCount) return;
+
+    // Gather entries to commit: from queued boundary to new committable boundary.
+    const entriesToCommit = pendingCommitEntries(this.state);
+    if (entriesToCommit.length === 0) return;
+
+    // Advance the queued boundary so we don't double-commit.
+    this.state = markTranscriptQueued(this.state, entriesToCommit.length);
+
+    // Build the commit batch.
+    const committedEntries: CommittedEntry[] = entriesToCommit.map(entry => ({
+      displayKey: entry.id,
+      rows: this.layoutTranscriptEntry(entry),
+    }));
+
+    const batch: TranscriptCommitBatch = {
+      generation: this.state.transcriptGeneration,
+      reason: 'finalize',
+      entries: committedEntries,
+    };
+
+    // The LiveFrameProvider ensures the live frame is rebuilt after commit
+    // with the latest state (where committed entries are no longer in the
+    // live region).
+    const getLatestLiveFrame: LiveFrameProvider = () => {
+      // Advance the committed boundary after the surface has written.
+      this.state = markTranscriptCommitted(this.state, entriesToCommit.length);
+      this.counters.commitCount += 1;
+      return this.getLiveFrame();
+    };
+
+    // Surface commit is async (serialized FIFO). Fire-and-forget: the
+    // commit's internal getLatestLiveFrame already rebuilds the live region,
+    // so no additional scheduler paint is needed here.
+    void this.surface.commit(batch, getLatestLiveFrame);
+  }
+
+  /** Layout a single transcript entry into styled rows for surface commit. */
+  private layoutTranscriptEntry(entry: TranscriptEntry): { text: string; style?: import('../tui-core/style').TuiStyle }[][] {
+    // For now, use simple text rows. The TranscriptLayoutCache will be
+    // integrated in P1-3 to avoid re-laying-out committed entries on resize.
+    const prefix = transcriptPrefix(entry);
+    const lines = entry.content.split('\n');
+    const rows: { text: string; style?: import('../tui-core/style').TuiStyle }[][] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const text = `${i === 0 ? prefix : '  '}${lines[i]}`;
+      // Wrap to terminal width; each wrapped segment becomes a row.
+      for (const segment of this.wrapToRows(text)) {
+        rows.push([{ text: segment }]);
+      }
+    }
+    return rows;
+  }
+
+  /** Wrap text to rows respecting terminal width. */
+  private wrapToRows(text: string): string[] {
+    const width = this.width;
+    if (width <= 0) return [''];
+    const rows: string[] = [];
+    let current = '';
+    let currentWidth = 0;
+    for (const char of graphemeIterate(text)) {
+      const charWidth = Math.max(0, stringWidthFn(char));
+      if (currentWidth > 0 && currentWidth + charWidth > width) {
+        rows.push(current);
+        current = '';
+        currentWidth = 0;
+      }
+      current += char;
+      currentWidth += charWidth;
+    }
+    rows.push(current);
+    return rows;
   }
 
   private applyInputEvent(event: TuiInputEvent): void {
@@ -352,12 +490,8 @@ export class TuiRunner {
         return;
       case 'up':
       case 'down':
-        return;
-      case 'pageup':
-        this.dispatch({ type: 'scrollTranscript', delta: Math.max(1, this.height - 5) });
-        return;
-      case 'pagedown':
-        this.dispatch({ type: 'scrollTranscript', delta: -Math.max(1, this.height - 5) });
+        // Inline surface uses shell native scrollback; no manual scroll.
+        // These keys will be wired to InputHistory in P0-2.
         return;
     }
   }
@@ -443,6 +577,47 @@ export class TuiRunner {
     if (overlay?.type !== 'permission') return;
     this.dispatch({ type: 'closeOverlay' });
     void this.options.onPermissionDecision?.(overlay.request.id, approved);
+  }
+}
+
+function transcriptPrefix(entry: TranscriptEntry): string {
+  switch (entry.role) {
+    case 'user':
+      return '› ';
+    case 'tool':
+      return '• ';
+    case 'error':
+      return '! ';
+    case 'command':
+      return '/ ';
+    case 'status':
+      return '= ';
+    case 'assistant':
+    case 'system':
+    default:
+      return '';
+  }
+}
+
+// Lazy-import stringWidth to avoid top-level ESM side effects in test bundles.
+let _stringWidth: ((str: string) => number) | null = null;
+function stringWidthFn(str: string): number {
+  if (_stringWidth === null) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    _stringWidth = require('string-width') as (str: string) => number;
+  }
+  return _stringWidth!(str);
+}
+
+function* graphemeIterate(text: string): Generator<string> {
+  const Segmenter = (Intl as any).Segmenter;
+  if (Segmenter) {
+    const segmenter = new Segmenter(undefined, { granularity: 'grapheme' });
+    for (const part of segmenter.segment(text) as Iterable<{ segment: string }>) {
+      yield part.segment;
+    }
+  } else {
+    yield* Array.from(text);
   }
 }
 

@@ -4,10 +4,8 @@ import { createStatusSnapshot } from '../runtime/ui-view-model';
 import { TuiRunner } from './runner';
 import { InlineTerminalSurface } from './inline-surface';
 
-const ENABLE_BRACKETED_PASTE = '\x1b[?2004h';
 const DISABLE_BRACKETED_PASTE = '\x1b[?2004l';
 const SHOW_CURSOR = '\x1b[?25h';
-const HIDE_CURSOR = '\x1b[?25l';
 const ENABLE_AUTOWRAP = '\x1b[?7h';
 
 export interface TuiLaunchOptions {
@@ -29,6 +27,7 @@ export async function launchTuiUI(
   let runner!: TuiRunner;
   let controller!: AgentRuntimeController;
   let surface!: InlineTerminalSurface;
+  let systemId: string | null = null;
   let stopping = false;
   let settled = false;
   let resolveLaunch: (() => void) | null = null;
@@ -104,6 +103,20 @@ export async function launchTuiUI(
         }
       } catch { /* best effort */ }
       try { input.pause(); } catch { /* best effort */ }
+
+      // Stop scheduler before surface cleanup (prevents pending renders).
+      if (runner) {
+        try {
+          runner.getScheduler().stop();
+        } catch { /* best effort */ }
+      }
+
+      // Flush surface queue to ensure all pending writes complete.
+      if (surface) {
+        try {
+          await surface.flush();
+        } catch { /* best effort */ }
+      }
 
       // Unmount surface (clears ephemeral live region only).
       if (surface) {
@@ -207,6 +220,13 @@ export async function launchTuiUI(
   };
 
   const submit = (rawInput: string): void => {
+    // Finalize the initial system message so it can be committed to scrollback
+    // and the commit boundary can advance past it.
+    if (systemId !== null) {
+      runner.events.finalize(systemId);
+      systemId = null; // Only finalize once.
+    }
+
     const selectedInput = consumeSessionPickerSelection(rawInput);
     const runtimeInput: AgentRuntimeInput = typeof selectedInput === 'string'
       ? { type: 'submit', text: selectedInput.trim(), source: 'composer' }
@@ -286,7 +306,8 @@ export async function launchTuiUI(
     // Using `await` here causes test hangs because the test FakeTTY output
     // doesn't trigger the async drain loop in the same way.
     void surface.mount(width, height);
-    output.write(`${ENABLE_BRACKETED_PASTE}${HIDE_CURSOR}`);
+    // surface.mount() enables bracketed paste and hides cursor; no need for
+    // redundant output.write of those sequences.
     runner = new TuiRunner({
       output,
       width,
@@ -302,6 +323,7 @@ export async function launchTuiUI(
           source: 'keyboard',
         });
       },
+      surface,
     });
     const dispatchStatusSnapshot = (phase: 'ready' | 'running'): string => {
       const snapshot = createStatusSnapshot({
@@ -313,7 +335,7 @@ export async function launchTuiUI(
         tokens: tokensFromRuntime(runtime),
       });
       runner.dispatch({ type: 'setStatusSnapshot', snapshot, phase });
-      return statusSnapshotString(runtime, phase);
+      return statusSnapshotString(runtime);
     };
     controller = new AgentRuntimeController({
       runtime,
@@ -324,11 +346,15 @@ export async function launchTuiUI(
       runningStatus: () => dispatchStatusSnapshot('running'),
       readyStatus: () => dispatchStatusSnapshot('ready'),
     });
-    runner.events.append({
+    // The initial system message stays live (not finalized) so it's visible
+    // in the live region rather than scrolling off into shell scrollback.
+    // It's finalized when the user submits their first input.
+    const systemId = runner.events.append({
       role: 'system',
       content: `OPENHORSE v${runtime.version}\nProject ${runtime.cwd}\n/ commands   @ files   ? shortcuts   Ctrl+C twice exits`,
+      live: true,
     });
-    runner.events.setStatus(statusSnapshotString(runtime, 'ready'));
+    runner.events.setStatus(statusSnapshotString(runtime));
     dispatchStatusSnapshot('ready');
 
     input.resume();
@@ -357,14 +383,14 @@ function tokensFromRuntime(rt: OpenHorseUiRuntime): { input?: number; output?: n
   return { input: usage.promptTokens, output: usage.completionTokens };
 }
 
-function statusSnapshotString(rt: OpenHorseUiRuntime, left: string): string {
+function statusSnapshotString(rt: OpenHorseUiRuntime): string {
   const snapshot = rt.store.getSnapshot();
   const session = rt.getSession()?.id.slice(0, 8) ?? 'none';
   const tokens = snapshot.tokenUsage
     ? `${((snapshot.tokenUsage.promptTokens + snapshot.tokenUsage.completionTokens) / 1000).toFixed(1)}K`
     : '0.0K';
   const cost = snapshot.costTracker.getSessionStats().totalCost;
-  return `${left}   model=${snapshot.currentModel || rt.config.model}  session=${session}  tokens=${tokens}  cost=$${cost.toFixed(4)}`;
+  return `model=${snapshot.currentModel || rt.config.model}  session=${session}  tokens=${tokens}  cost=$${cost.toFixed(4)}`;
 }
 
 function readTtyDimensions(output: NodeJS.WriteStream): { width: number; height: number } {

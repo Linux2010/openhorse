@@ -173,22 +173,6 @@ describe('tui-ui state', () => {
     expect(state.overlay).toMatchObject({ type: 'commands', selectedIndex: 1 });
   });
 
-  it('keeps transcript scrollback as state and snaps to bottom on new output', () => {
-    const scrolled = reduce([
-      { type: 'appendTranscript', entry: { id: 'm1', role: 'assistant', content: 'one' } },
-      { type: 'appendTranscript', entry: { id: 'm2', role: 'assistant', content: 'two' } },
-      { type: 'scrollTranscript', delta: 10 },
-    ]);
-
-    expect(scrolled.transcriptScrollOffset).toBe(10);
-
-    const withNewOutput = tuiUiReducer(scrolled, {
-      type: 'appendTranscript',
-      entry: { id: 'm3', role: 'assistant', content: 'three' },
-    });
-    expect(withNewOutput.transcriptScrollOffset).toBe(0);
-  });
-
   it('adapts the existing UiEventSink contract to pure state actions', () => {
     let state = initialTuiUiState;
     const sink = createTuiUiEventSink(

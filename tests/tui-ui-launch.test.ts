@@ -106,7 +106,12 @@ describe('tui-ui launch', () => {
 
     const launch = launchTuiUI(runtime, { input: input as any, output: output as any });
     input.emit('data', Buffer.from('开源小？事收到', 'utf8'));
+    // Let the typed-state render flush before the next keystroke so the
+    // pre-backspace prompt state is emitted to the stream.
+    await tick();
+    await tick();
     input.emit('data', Buffer.from('\x7f'));
+    await tick();
     await tick();
     input.emit('data', Buffer.from('\x15/exit\r'));
     await launch;

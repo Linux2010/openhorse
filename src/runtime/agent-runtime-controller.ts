@@ -164,6 +164,8 @@ export class AgentRuntimeController {
       return { type: 'revision_requested' };
     }
 
+
+
     this.activeRun = this.runTurn(submitted)
       .catch(error => {
         this.handleRunLoopError(error);

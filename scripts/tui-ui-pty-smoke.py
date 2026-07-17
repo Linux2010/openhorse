@@ -204,6 +204,20 @@ def assert_ordered(haystack: str, needles: list[str]) -> None:
         cursor = index + len(needle)
 
 
+def assert_rendered(needle: str, label: str, collected: list[bytes]) -> None:
+    """Assert content was rendered to the terminal at some point.
+
+    Transcript entries that get committed to scrollback scroll out of the
+    simplified 24-row terminal model's visible window, but they remain in the
+    authoritative raw output stream (exactly what a real PTY received, and what
+    a user could scroll back to see). Check the raw stream, not just the
+    visible 24 rows.
+    """
+    plain = strip_ansi(b"".join(collected).decode("utf-8", errors="replace"))
+    if needle not in plain:
+        raise AssertionError(f"{label}: expected rendered content {needle!r} not found in terminal output")
+
+
 def prompt_frame_rows(visible: str) -> tuple[list[int], list[int], list[int]]:
     lines = visible.splitlines()
     top_rows = [
@@ -386,6 +400,25 @@ def seed_resume_sessions(config_dir: str, repo: Path) -> list[str]:
         session_id = str(uuid.uuid4())
         session_ids.append(session_id)
         updated_at = base_time - index * 1000
+        # The third fixture (index 2) carries a LONG history so the smoke test
+        # exercises the v0.2.21-fix1 /resume blank-page regression: after
+        # resume the most-recent tail must stay visible in the live region
+        # (not scrolled into scrollback leaving a blank page).
+        if index == 2:
+            messages = [
+                {
+                    "role": "user",
+                    "content": f"long-resume-{i:03d}",
+                    "timestamp": updated_at - (60 - i) * 1000,
+                }
+                for i in range(60)
+            ]
+        else:
+            messages = [{
+                "role": "user",
+                "content": f"resume fixture {index + 1} content",
+                "timestamp": updated_at,
+            }]
         meta = {
             "id": session_id,
             "projectPath": str(project_path),
@@ -396,20 +429,18 @@ def seed_resume_sessions(config_dir: str, repo: Path) -> list[str]:
             "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(updated_at / 1000)),
             "updatedAt": updated_at,
             "updatedAtIso": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(updated_at / 1000)),
-            "messageCount": 1,
-            "historySizeBytes": 0,
+            "messageCount": len(messages),
+            "historySizeBytes": sum(len(json.dumps(m)) for m in messages),
             "tokenCount": 0,
             "cost": 0,
             "name": f"resume fixture {index + 1}",
             "taskSummary": f"resume fixture {index + 1}",
         }
-        message = {
-            "role": "user",
-            "content": f"resume fixture {index + 1} content",
-            "timestamp": updated_at,
-        }
         (sessions_dir / f"{session_id}.json").write_text(json.dumps(meta), encoding="utf-8")
-        (sessions_dir / f"{session_id}.jsonl").write_text(json.dumps(message) + "\n", encoding="utf-8")
+        (sessions_dir / f"{session_id}.jsonl").write_text(
+            "\n".join(json.dumps(message) for message in messages) + "\n",
+            encoding="utf-8",
+        )
 
     return session_ids
 
@@ -481,6 +512,47 @@ def main() -> int:
         consumed = len(raw)
         return "\n".join(model.lines())
 
+    def expect_prompt_frame(label: str, expected_input: str | None = None, timeout: float = 5.0) -> None:
+        """Poll the live screen until exactly one stable prompt frame is visible.
+
+        The renderer paints asynchronously (scheduler + inline-surface FIFO
+        queue + PTY delivery), so a single read can land mid-repaint. Wait for
+        the frame to settle instead of assuming synchronous completion.
+        """
+        deadline = time.time() + timeout
+        last_exc: Exception | None = None
+        while time.time() < deadline:
+            visible = sync_screen()
+            try:
+                assert_single_prompt_frame(visible, model, label, expected_input)
+                return
+            except AssertionError as exc:
+                last_exc = exc
+                time.sleep(0.05)
+        assert last_exc is not None
+        raise last_exc
+
+    def tab_complete(label: str, expect_substr: str, timeout: float = 3.0) -> None:
+        """Send Tab and poll until the picker completion text appears.
+
+        The picker opens and populates asynchronously; a single Tab + fixed
+        sleep can land before the completion is rendered. Poll instead so the
+        check only fails when completion genuinely never happens.
+        """
+        sync_screen()
+        time.sleep(0.1)
+        os.write(master, b"\t")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            visible = sync_screen()
+            if expect_substr in visible:
+                return
+            time.sleep(0.1)
+        visible = sync_screen()
+        raise AssertionError(
+            f"TUI {label} Tab completion did not update the prompt:\n{visible}"
+        )
+
     try:
         wait_for(master, output, "OPENHORSE v", timeout=20)
         wait_for(master, output, "/ commands", timeout=20)
@@ -491,13 +563,21 @@ def main() -> int:
         os.write(master, "开源小？事收到".encode("utf-8"))
         wait_for(master, output, "开源小？事收到", timeout=5)
         os.write(master, b"\x7f")
-        time.sleep(0.25)
-
-        visible = sync_screen()
-        compact_visible = visible.replace(" ", "")
-        if "开源小？事收到" in compact_visible or "开源小？事收" not in compact_visible:
+        # Backspace + re-render are async; poll until the prompt shows the
+        # truncated value and no longer the full string.
+        deadline = time.time() + 3.0
+        backspace_ok = False
+        while time.time() < deadline:
+            visible = sync_screen()
+            compact_visible = visible.replace(" ", "")
+            if "开源小？事收" in compact_visible and "开源小？事收到" not in compact_visible:
+                backspace_ok = True
+                break
+            time.sleep(0.1)
+        if not backspace_ok:
+            visible = sync_screen()
             raise AssertionError(f"TUI Backspace did not update the visible prompt:\n{visible}")
-        assert_single_prompt_frame(visible, model, "after CJK backspace", "开源小？事收")
+        expect_prompt_frame("after CJK backspace", "开源小？事收")
 
         # --- v0.2.19 completion: multiline paste ---
         os.write(master, b"\x15")  # Ctrl+U to clear
@@ -507,25 +587,17 @@ def main() -> int:
         bracketed = b"\x1b[200~" + paste_content + b"\x1b[201~"
         os.write(master, bracketed)
         time.sleep(0.3)
-        visible = sync_screen()
-        # Prompt frame must still be intact after paste
-        if "┌" not in visible or "└" not in visible:
-            raise AssertionError(f"TUI prompt frame broken after multiline paste:\n{visible}")
+        expect_prompt_frame("after multiline paste")
         # The paste should NOT auto-submit; prompt should hold the value
         # (We verify by checking the prompt frame is still showing input, not empty)
         # Now submit with Enter
         os.write(master, b"\r")
         wait_for(master, output, "Completed with mock-tui-stream", timeout=10)
-        visible = sync_screen()
-        assert_single_prompt_frame(visible, model, "after multiline paste submit")
+        expect_prompt_frame("after multiline paste submit")
 
         os.write(master, b"\x15/sta")
         wait_for(master, output, 'Commands "sta"', timeout=5)
-        os.write(master, b"\t")
-        time.sleep(0.25)
-        visible = sync_screen()
-        if "/status" not in visible:
-            raise AssertionError(f"TUI slash command Tab completion did not update the prompt:\n{visible}")
+        tab_complete("slash command", "/status")
 
         os.write(master, b"\x15?")
         wait_for(master, output, "Shortcuts", timeout=5)
@@ -536,21 +608,34 @@ def main() -> int:
         os.write(master, b"\x15@READ")
         wait_for(master, output, 'Files "READ"', timeout=5)
         wait_for(master, output, "README.md", timeout=5)
-        os.write(master, b"\t")
-        time.sleep(0.25)
-        visible = sync_screen()
-        if "@README.md" not in visible:
-            raise AssertionError(f"TUI file picker Tab completion did not update the prompt:\n{visible}")
+        tab_complete("file picker", "@README.md")
 
         os.write(master, b"\x15/resume\r")
         wait_for(master, output, "Sessions: Pick a Session", timeout=8)
         wait_for(master, output, "resume fixture 3", timeout=8)
         os.write(master, target_resume_session_id.encode("ascii") + b"\r")
         wait_for(master, output, "Restored", timeout=8)
-        wait_for(master, output, "resume fixture 3 content", timeout=8)
-        visible = sync_screen()
-        if "resume fixture 3 content" not in visible:
-            raise AssertionError(f"TUI did not restore the selected session into transcript:\n{visible}")
+        wait_for(master, output, "long-resume-059", timeout=8)
+        assert_rendered("long-resume-059", "TUI did not restore the selected session into transcript", output)
+
+        # v0.2.21-fix1 regression: after /resume with a long history the most
+        # recent restored content must be visible in the live region WITHOUT
+        # scrolling up (the screen must not be blank). Poll the visible screen
+        # because rendering settles asynchronously.
+        deadline = time.time() + 6.0
+        tail_visible = False
+        while time.time() < deadline:
+            visible = sync_screen()
+            if "long-resume-059" in visible:
+                tail_visible = True
+                break
+            time.sleep(0.1)
+        if not tail_visible:
+            visible = sync_screen()
+            raise AssertionError(
+                f"TUI /resume left a blank live region (tail not visible):\n{visible}"
+            )
+        expect_prompt_frame("after resume long history")
 
         os.write(master, b"\x15stream revise\r")
         wait_for(master, output, "first-response-part-1", timeout=8)
@@ -560,9 +645,7 @@ def main() -> int:
         wait_for(master, output, "Revision received. Interrupting current response", timeout=8)
         wait_for(master, output, "revision-final-response", timeout=10)
         wait_for(master, output, "Completed with mock-tui-stream", timeout=8)
-        visible = sync_screen()
-        if "revision-final-response" not in visible:
-            raise AssertionError(f"TUI did not keep the restarted response visible:\n{visible}")
+        assert_rendered("revision-final-response", "TUI did not keep the restarted response visible", output)
 
         tool_start = len(b"".join(output))
         os.write(master, b"tool order test\r")
@@ -577,39 +660,29 @@ def main() -> int:
             "list . (",
             "tool-final-response",
         ])
-        visible = sync_screen()
-        if "tool-final-response" not in visible:
-            os.write(master, b"\x1b[5~")
-            time.sleep(0.25)
-            visible = sync_screen()
-            if "tool-final-response" not in visible:
-                raise AssertionError(f"TUI did not keep the tool final response in scrollback:\n{visible}")
+        assert_rendered("tool-final-response", "TUI did not keep the tool final response in scrollback", output)
 
         # --- v0.2.19 切片5: rapid resize ---
         for new_rows, new_cols in [(30, 120), (12, 60), (24, 80), (8, 40)]:
             set_window_size(slave, rows=new_rows, cols=new_cols)
             time.sleep(0.35)
-            visible = sync_screen()
-            assert_single_prompt_frame(visible, model, f"after resize to {new_rows}x{new_cols}")
+            expect_prompt_frame(f"after resize to {new_rows}x{new_cols}")
 
         # Restore to standard size
         set_window_size(slave, rows=24, cols=100)
         time.sleep(0.35)
-        visible = sync_screen()
-        assert_single_prompt_frame(visible, model, "after restore to 24x100")
+        expect_prompt_frame("after restore to 24x100")
 
         # --- 窄宽 + 低高度验证 ---
         set_window_size(slave, rows=8, cols=30)
         time.sleep(0.35)
         visible = sync_screen()
         # Prompt frame must still be present at this minimal size
-        if "┌" not in visible or "└" not in visible:
-            raise AssertionError(f"TUI prompt frame missing at 8x30:\n{visible}")
+        expect_prompt_frame("after resize to 8x30")
         # Resize back to normal
         set_window_size(slave, rows=24, cols=100)
         time.sleep(0.35)
-        visible = sync_screen()
-        assert_single_prompt_frame(visible, model, "after restore from 8x30")
+        expect_prompt_frame("after restore from 8x30")
 
         # --- 长输出 scrollback ---
         long_output_start = len(b"".join(output))
@@ -622,11 +695,23 @@ def main() -> int:
             timeout=15,
             start_offset=long_output_start,
         )
+        # v0.2.21 native-scrollback: every committed line must remain in the
+        # authoritative raw stream (what a real PTY received and what a user can
+        # scroll back to see). The first line scrolls into native scrollback
+        # early; assert it is still present so history is not lost/overwritten.
+        long_output_plain = strip_ansi(
+            b"".join(output)[long_output_start:].decode("utf-8", errors="replace")
+        )
+        assert "line-0000" in long_output_plain, (
+            "TUI lost the earliest committed line - native scrollback not accumulating"
+        )
+        assert "line-0039" in long_output_plain, (
+            "TUI lost the latest committed line - native scrollback not accumulating"
+        )
         # Page-up to verify scrollback works with long output
         os.write(master, b"\x1b[5~")
         time.sleep(0.25)
-        visible = sync_screen()
-        assert_single_prompt_frame(visible, model, "after page-up scrollback in long output")
+        expect_prompt_frame("after page-up scrollback in long output")
 
         # --- Permission / exec tool smoke (may auto-allow due to exec ask=off) ---
         permission_start = len(b"".join(output))
@@ -649,8 +734,7 @@ def main() -> int:
             start_offset=permission_start,
         )
         # Permission/exec smoke passed — verify prompt frame still stable
-        visible = sync_screen()
-        assert_single_prompt_frame(visible, model, "after permission/exec test")
+        expect_prompt_frame("after permission/exec test")
 
         # --- Repeated interrupt / alternate screen restore ---
         for _ in range(4):

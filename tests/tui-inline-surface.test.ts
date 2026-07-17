@@ -109,19 +109,23 @@ describe('inline surface: commit', () => {
     expect(text).toMatch(/world\x1b\[0m\n/);
   });
 
-  it('clears live region before committing', async () => {
+  it('writes committed rows at the screen bottom so they scroll into native scrollback', async () => {
     const output = new MemoryOutput();
     const surface = new InlineTerminalSurface({ output });
     await surface.mount(80, 24);
-    // Render a live frame first to populate live region.
+    // Render a live frame first to anchor the band at the screen bottom.
     await surface.renderLive(makeFrame(40, 3, 'live content'));
     output.chunks = [];
     const batch = makeBatch([makeCommittedEntry('e1', [['committed']])]);
-    await surface.commit(batch, noLiveFrame);
+    // Provide a live frame so the band is repainted after the commit.
+    await surface.commit(batch, () => makeFrame(40, 3, 'live after'));
     const text = output.text();
-    // Live content should be cleared (EL2) before commit.
+    // The committed row is written and terminated by a hard newline so it
+    // scrolls into native scrollback (never relies on pending wrap).
+    expect(text).toMatch(/committed\x1b\[0m\n/);
+    // The committed row is followed by a live band repaint (EL2 clear).
     expect(text).toContain('\x1b[2K');
-    expect(text).toContain('committed');
+    expect(text).toContain('live after');
   });
 
   it('rebuilds live frame after commit using latest state', async () => {
@@ -132,6 +136,38 @@ describe('inline surface: commit', () => {
     const batch = makeBatch([makeCommittedEntry('e1', [['committed']])]);
     await surface.commit(batch, () => latestFrame);
     expect(output.text()).toContain('post-commit live');
+  });
+
+  it('accumulates incremental commits into native scrollback (each row scrolls)', async () => {
+    // Regression for the v0.2.21 native-scrollback bug: the old protocol wrote
+    // committed rows into the live region and immediately overwrote them with
+    // the live frame, so history never scrolled into scrollback. The fix writes
+    // each committed row at the screen bottom so its trailing \n scrolls it into
+    // scrollback, exactly like ordinary shell output.
+    const output = new MemoryOutput();
+    const surface = new InlineTerminalSurface({ output });
+    await surface.mount(80, 24);
+    // Anchor the band first.
+    await surface.renderLive(makeFrame(40, 3, 'anchor'));
+    output.chunks = [];
+
+    // Several incremental commits (small batches, like finalized turns).
+    await surface.commit(makeBatch([makeCommittedEntry('e1', [['turn-1-line-a'], ['turn-1-line-b']])]), noLiveFrame);
+    await surface.commit(makeBatch([makeCommittedEntry('e2', [['turn-2']])]), noLiveFrame);
+    await surface.commit(makeBatch([makeCommittedEntry('e3', [['turn-3']])]), noLiveFrame);
+
+    const text = output.text();
+    // Every committed row remains in the authoritative raw stream (what a real
+    // PTY received and what a user can scroll back to see)...
+    expect(text).toContain('turn-1-line-a');
+    expect(text).toContain('turn-1-line-b');
+    expect(text).toContain('turn-2');
+    expect(text).toContain('turn-3');
+    // ...and each is terminated by a hard newline (the scroll trigger).
+    const scrollRows = text.match(/[^\n]*\x1b\[0m\n/g) ?? [];
+    expect(scrollRows.length).toBeGreaterThanOrEqual(4);
+    // No forbidden sequences across the commit burst.
+    output.assertNoForbidden();
   });
 });
 
@@ -234,12 +270,16 @@ describe('inline surface: state', () => {
     expect(surface.safeContentWidth).toBe(79);
   });
 
-  it('liveRegionCapacity grows with ensureCapacity', async () => {
+  it('liveRegionCapacity equals the live band height after anchoring', async () => {
     const output = new MemoryOutput();
     const surface = new InlineTerminalSurface({ output });
     await surface.mount(80, 24);
+    // 24-row terminal -> band = round(24*0.75) = 18 rows.
+    expect(surface.getLiveBandRows()).toBe(18);
+    expect(surface.getState().liveBandRows).toBe(18);
     await surface.renderLive(makeFrame(40, 4, 'test'));
-    expect(surface.getState().liveRegionCapacity).toBeGreaterThan(0);
+    // Capacity is the fixed band height, not the full screen.
+    expect(surface.getState().liveRegionCapacity).toBe(18);
     expect(surface.getState().liveRegionCapacity).toBeLessThanOrEqual(23);
   });
 });
