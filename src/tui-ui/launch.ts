@@ -1,6 +1,15 @@
-import { AgentRuntimeController, type AgentRuntimeInput } from '../runtime/agent-runtime-controller';
-import { resolveUiRendererCapabilities, type OpenHorseUiRuntime, type SessionPickerRequest } from '../runtime/ui-events';
-import { createStatusSnapshot } from '../runtime/ui-view-model';
+import {
+  AgentRuntimeController,
+  type AgentRuntimeInput,
+} from '../runtime/agent-runtime-controller';
+import { format as formatConsoleMessage } from 'util';
+import {
+  resolveUiRendererCapabilities,
+  type OpenHorseUiRuntime,
+  type SessionPickerRequest,
+  type UiEventSink,
+} from '../runtime/ui-events';
+import { contextUsageStatusText, createStatusSnapshot } from '../runtime/ui-view-model';
 import { TuiRunner } from './runner';
 import { InlineTerminalSurface } from './inline-surface';
 
@@ -33,6 +42,7 @@ export async function launchTuiUI(
   let resolveLaunch: (() => void) | null = null;
   // Once guard: shared cleanup promise so concurrent stop calls share one execution.
   let cleanupPromise: Promise<void> | null = null;
+  let restoreConsole: (() => void) | null = null;
 
   const dimensions = () => {
     const size = readTtyDimensions(output);
@@ -58,13 +68,26 @@ export async function launchTuiUI(
       if (typeof input.setRawMode === 'function') {
         input.setRawMode(false);
       }
-    } catch { /* best effort */ }
+    } catch {
+      /* best effort */
+    }
     try {
       input.pause();
-    } catch { /* best effort */ }
+    } catch {
+      /* best effort */
+    }
     try {
       output.write(`${SHOW_CURSOR}${ENABLE_AUTOWRAP}${DISABLE_BRACKETED_PASTE}\n`);
-    } catch { /* best effort */ }
+    } catch {
+      /* best effort */
+    }
+  };
+
+  /** Route process-level rejection feedback through the owned TUI surface. */
+  const onUnhandledRejection = (reason: unknown): void => {
+    if (stopping) return;
+    const message = reason instanceof Error ? reason.message : String(reason);
+    runner.dispatch({ type: 'setStatus', message: `Unhandled rejection: ${message}` });
   };
 
   /**
@@ -82,18 +105,49 @@ export async function launchTuiUI(
         resizeDebounceTimer = null;
       }
       // Remove listeners first to prevent re-entrancy.
-      try { input.off('data', handleData); } catch { /* ok */ }
-      try { output.off('resize', handleResize); } catch { /* ok */ }
-      try { process.off('SIGWINCH', handleResize); } catch { /* ok */ }
-      try { process.off('SIGINT', handleSigint); } catch { /* ok */ }
-      try { process.off('SIGTERM', handleSigterm); } catch { /* ok */ }
-      try { process.off('SIGHUP', handleSighup); } catch { /* ok */ }
+      try {
+        input.off('data', handleData);
+      } catch {
+        /* ok */
+      }
+      try {
+        output.off('resize', handleResize);
+      } catch {
+        /* ok */
+      }
+      try {
+        process.off('SIGWINCH', handleResize);
+      } catch {
+        /* ok */
+      }
+      try {
+        process.off('SIGINT', handleSigint);
+      } catch {
+        /* ok */
+      }
+      try {
+        process.off('SIGTERM', handleSigterm);
+      } catch {
+        /* ok */
+      }
+      try {
+        process.off('SIGHUP', handleSighup);
+      } catch {
+        /* ok */
+      }
+      try {
+        process.off('unhandledRejection', onUnhandledRejection);
+      } catch {
+        /* ok */
+      }
 
       // Stop active turn (controller may not exist if init failed).
       if (controller) {
         try {
           await controller.stopActiveTurn();
-        } catch { /* best effort — don't block cleanup */ }
+        } catch {
+          /* best effort — don't block cleanup */
+        }
       }
 
       // Restore raw mode.
@@ -101,40 +155,59 @@ export async function launchTuiUI(
         if (typeof input.setRawMode === 'function') {
           input.setRawMode(false);
         }
-      } catch { /* best effort */ }
-      try { input.pause(); } catch { /* best effort */ }
+      } catch {
+        /* best effort */
+      }
+      try {
+        input.pause();
+      } catch {
+        /* best effort */
+      }
 
       // Stop scheduler before surface cleanup (prevents pending renders).
       if (runner) {
         try {
           runner.getScheduler().stop();
-        } catch { /* best effort */ }
+        } catch {
+          /* best effort */
+        }
       }
 
       // Flush surface queue to ensure all pending writes complete.
       if (surface) {
         try {
           await surface.flush();
-        } catch { /* best effort */ }
+        } catch {
+          /* best effort */
+        }
       }
 
       // Unmount surface (clears ephemeral live region only).
       if (surface) {
         try {
           await surface.unmount();
-        } catch { /* best effort */ }
+        } catch {
+          /* best effort */
+        }
       }
+
+      restoreConsole?.();
+      restoreConsole = null;
 
       // Restore terminal state: cursor, autowrap, bracketed paste.
       // NO alternate-screen exit, NO full clear, NO erasing committed scrollback.
       try {
         output.write(`${SHOW_CURSOR}${ENABLE_AUTOWRAP}${DISABLE_BRACKETED_PASTE}`);
-      } catch { /* best effort */ }
+      } catch {
+        /* best effort */
+      }
 
       // Runtime shutdown last; preserves original exit code/signal semantics.
       try {
         await runtime.shutdown();
-      } catch { /* best effort */ }
+      } catch {
+        /* best effort */
+      }
     })();
 
     return cleanupPromise;
@@ -172,7 +245,9 @@ export async function launchTuiUI(
     try {
       const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(`\nTUI renderer error: ${message}\n`);
-    } catch { /* best effort */ }
+    } catch {
+      /* best effort */
+    }
 
     // Attempt full cleanup (may partially fail — that's ok).
     // Ensure finishLaunch() runs on both success and rejection so the error
@@ -200,7 +275,12 @@ export async function launchTuiUI(
         runner.events.append({ role: 'error', content: 'No session selected.' });
         return '';
       }
-      return { type: 'select_session', sessionId: selected.id, allProjects: request.allProjects, source: 'picker' };
+      return {
+        type: 'select_session',
+        sessionId: selected.id,
+        allProjects: request.allProjects,
+        source: 'picker',
+      };
     }
 
     if (trimmed.startsWith('/')) return trimmed;
@@ -213,10 +293,20 @@ export async function launchTuiUI(
         runner.events.append({ role: 'error', content: `No session at index ${numeric[1]}.` });
         return '';
       }
-      return { type: 'select_session', sessionId: selected.id, allProjects: request.allProjects, source: 'picker' };
+      return {
+        type: 'select_session',
+        sessionId: selected.id,
+        allProjects: request.allProjects,
+        source: 'picker',
+      };
     }
 
-    return { type: 'select_session', sessionId: trimmed, allProjects: request.allProjects, source: 'picker' };
+    return {
+      type: 'select_session',
+      sessionId: trimmed,
+      allProjects: request.allProjects,
+      source: 'picker',
+    };
   };
 
   const submit = (rawInput: string): void => {
@@ -228,9 +318,10 @@ export async function launchTuiUI(
     }
 
     const selectedInput = consumeSessionPickerSelection(rawInput);
-    const runtimeInput: AgentRuntimeInput = typeof selectedInput === 'string'
-      ? { type: 'submit', text: selectedInput.trim(), source: 'composer' }
-      : selectedInput;
+    const runtimeInput: AgentRuntimeInput =
+      typeof selectedInput === 'string'
+        ? { type: 'submit', text: selectedInput.trim(), source: 'composer' }
+        : selectedInput;
     if (runtimeInput.type === 'submit' && !runtimeInput.text) return;
 
     const result = controller.handle(runtimeInput);
@@ -254,9 +345,10 @@ export async function launchTuiUI(
     // Visual feedback: show interrupt/exit-prompt warning in the status bar
     runner.dispatch({
       type: 'setStatus',
-      message: result.type === 'interrupted'
-        ? '⚠️ Interrupted — press Ctrl+C again to force exit'
-        : '⚠️ Press Ctrl+C again to exit',
+      message:
+        result.type === 'interrupted'
+          ? '⚠️ Interrupted — press Ctrl+C again to force exit'
+          : '⚠️ Press Ctrl+C again to exit',
     });
   };
 
@@ -271,6 +363,7 @@ export async function launchTuiUI(
 
   const handleResize = (): void => {
     if (stopping) return;
+    runner.beginResize(dimensions().width);
     if (resizeDebounceTimer !== null) {
       clearTimeout(resizeDebounceTimer);
     }
@@ -299,13 +392,10 @@ export async function launchTuiUI(
     // Primary-screen inline surface: no alternate screen (1049).
     const { width, height } = dimensions();
     surface = new InlineTerminalSurface({ output });
-    // Mount is serialized through the surface FIFO queue. In the real terminal,
-    // the queue drains synchronously for the first operation (no prior ops).
-    // Fire-and-forget is safe because subsequent output.write calls go through
-    // the same queue via surface.commit/renderLive, not directly.
-    // Using `await` here causes test hangs because the test FakeTTY output
-    // doesn't trigger the async drain loop in the same way.
-    void surface.mount(width, height);
+    // Mount enters the same serialized queue as subsequent paints. Start it
+    // synchronously so input listeners are installed in this turn; awaiting it
+    // here creates a window where early keystrokes are dropped.
+    void surface.mount(width, height).catch(error => failRenderer(error));
     // surface.mount() enables bracketed paste and hides cursor; no need for
     // redundant output.write of those sequences.
     runner = new TuiRunner({
@@ -324,13 +414,16 @@ export async function launchTuiUI(
         });
       },
       surface,
+      onSurfaceError: failRenderer,
     });
+    restoreConsole = installTuiConsoleBridge(runner.events, () => stopping);
     const dispatchStatusSnapshot = (phase: 'ready' | 'running'): string => {
+      const runtimeSnapshot = runtime.store.getSnapshot();
       const snapshot = createStatusSnapshot({
         renderer: 'tui',
-        model: runtime.store.getSnapshot().currentModel || runtime.config.model,
+        model: runtimeSnapshot.currentModel || runtime.config.model,
         sessionId: runtime.getSession()?.id,
-        costUsd: runtime.store.getSnapshot().costTracker.getSessionStats().totalCost,
+        context: runtimeSnapshot.contextUsage ?? undefined,
         runningState: phase,
         tokens: tokensFromRuntime(runtime),
       });
@@ -349,7 +442,7 @@ export async function launchTuiUI(
     // The initial system message stays live (not finalized) so it's visible
     // in the live region rather than scrolling off into shell scrollback.
     // It's finalized when the user submits their first input.
-    const systemId = runner.events.append({
+    systemId = runner.events.append({
       role: 'system',
       content: `OPENHORSE v${runtime.version}\nProject ${runtime.cwd}\n/ commands   @ files   ? shortcuts   Ctrl+C twice exits`,
       live: true,
@@ -367,6 +460,7 @@ export async function launchTuiUI(
     process.on('SIGINT', handleSigint);
     process.on('SIGTERM', handleSigterm);
     process.on('SIGHUP', handleSighup);
+    process.on('unhandledRejection', onUnhandledRejection);
 
     await new Promise<void>(resolve => {
       resolveLaunch = resolve;
@@ -377,26 +471,84 @@ export async function launchTuiUI(
   }
 }
 
-function tokensFromRuntime(rt: OpenHorseUiRuntime): { input?: number; output?: number } {
-  const usage = rt.store.getSnapshot().tokenUsage;
-  if (!usage) return {};
-  return { input: usage.promptTokens, output: usage.completionTokens };
+function installTuiConsoleBridge(events: UiEventSink, isStopping: () => boolean): () => void {
+  const originalLog = console.log;
+  const originalInfo = console.info;
+  const originalDebug = console.debug;
+  const originalWarn = console.warn;
+  const originalError = console.error;
+
+  const publish = (role: 'system' | 'error', args: unknown[]): void => {
+    if (isStopping()) return;
+    const content = stripTerminalControlSequences(formatConsoleMessage(...args)).trimEnd();
+    if (!content) return;
+    const id = events.append({ role, content });
+    events.finalize(id);
+  };
+  const log = (...args: unknown[]): void => publish('system', args);
+  const info = (...args: unknown[]): void => publish('system', args);
+  const debug = (...args: unknown[]): void => publish('system', args);
+  const warn = (...args: unknown[]): void => publish('system', args);
+  const error = (...args: unknown[]): void => publish('error', args);
+
+  console.log = log;
+  console.info = info;
+  console.debug = debug;
+  console.warn = warn;
+  console.error = error;
+
+  return () => {
+    console.log = originalLog;
+    console.info = originalInfo;
+    console.debug = originalDebug;
+    console.warn = originalWarn;
+    console.error = originalError;
+  };
 }
 
-function statusSnapshotString(rt: OpenHorseUiRuntime): string {
+function stripTerminalControlSequences(value: string): string {
+  return value
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
+}
+
+function tokensFromRuntime(rt: OpenHorseUiRuntime): {
+  input?: number;
+  output?: number;
+  contextPercent?: number;
+} {
+  const snapshot = rt.store.getSnapshot();
+  const usage = snapshot.tokenUsage;
+  return {
+    input: usage?.promptTokens,
+    output: usage?.completionTokens,
+    contextPercent: snapshot.contextUsage?.percent,
+  };
+}
+
+export function statusSnapshotString(rt: OpenHorseUiRuntime): string {
   const snapshot = rt.store.getSnapshot();
   const session = rt.getSession()?.id.slice(0, 8) ?? 'none';
   const tokens = snapshot.tokenUsage
     ? `${((snapshot.tokenUsage.promptTokens + snapshot.tokenUsage.completionTokens) / 1000).toFixed(1)}K`
     : '0.0K';
-  const cost = snapshot.costTracker.getSessionStats().totalCost;
-  return `model=${snapshot.currentModel || rt.config.model}  session=${session}  tokens=${tokens}  cost=$${cost.toFixed(4)}`;
+  const context = contextUsageStatusText(snapshot.contextUsage);
+  return [
+    `model=${snapshot.currentModel || rt.config.model}`,
+    context,
+    `session=${session}`,
+    `tokens=${tokens}`,
+  ]
+    .filter(Boolean)
+    .join('  ');
 }
 
 function readTtyDimensions(output: NodeJS.WriteStream): { width: number; height: number } {
-  const getWindowSize = (output as NodeJS.WriteStream & {
-    getWindowSize?: () => [number, number];
-  }).getWindowSize;
+  const getWindowSize = (
+    output as NodeJS.WriteStream & {
+      getWindowSize?: () => [number, number];
+    }
+  ).getWindowSize;
 
   if (typeof getWindowSize === 'function') {
     try {

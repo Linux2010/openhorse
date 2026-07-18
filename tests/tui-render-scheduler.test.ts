@@ -429,6 +429,14 @@ describe('TranscriptLayoutCache', () => {
     expect(cache.get('e1', 1, 0, 120)).toBeNull();
   });
 
+  it('invalidates on theme change', () => {
+    const cache = new TranscriptLayoutCache();
+    const rows = [[{ text: 'hello', style: {} }]];
+    cache.set('e1', 1, rows as any, 0, 80, 'dark');
+
+    expect(cache.get('e1', 1, 0, 80, 'light')).toBeNull();
+  });
+
   it('evicts oldest entry when at capacity', () => {
     const cache = new TranscriptLayoutCache();
     const rows = [[{ text: 'x', style: {} }]] as any;

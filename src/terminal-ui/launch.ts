@@ -1,7 +1,10 @@
 import chalk from 'chalk';
 import stringWidth from 'string-width';
 
-import { AgentRuntimeController, type AgentRuntimeInput } from '../runtime/agent-runtime-controller';
+import {
+  AgentRuntimeController,
+  type AgentRuntimeInput,
+} from '../runtime/agent-runtime-controller';
 import { emitToUiEventSink, type AgentRuntimeEventSink } from '../runtime/agent-runtime-protocol';
 import { resolveUiRendererCapabilities } from '../runtime/ui-events';
 import {
@@ -9,6 +12,7 @@ import {
   createRuntimeCapabilitySummary,
   createSessionRestoredView,
   createSessionPickerState,
+  contextUsageStatusText,
   movePickerPageOffset,
   permissionRiskDisplayValue,
   permissionScopeDisplayValue,
@@ -37,6 +41,7 @@ import type {
 const ACCENT = chalk.hex('#80E6E8');
 const DIM = chalk.hex('#567089');
 const ERROR = chalk.hex('#FF7A7A');
+const WARNING = chalk.hex('#F2C14E');
 const TOOL = chalk.hex('#7FA2B8');
 const BORDER = chalk.hex('#38556A');
 
@@ -55,10 +60,15 @@ function normalizePickerText(value: string): string {
 }
 
 function matchingSessionLabels(session: SessionPickerRequest['sessions'][number]): string[] {
-  return [session.name, session.taskSummary].filter((value): value is string => Boolean(value?.trim()));
+  return [session.name, session.taskSummary].filter((value): value is string =>
+    Boolean(value?.trim())
+  );
 }
 
-function findSessionsByText(input: string, sessions: SessionPickerRequest['sessions']): SessionPickerRequest['sessions'] {
+function findSessionsByText(
+  input: string,
+  sessions: SessionPickerRequest['sessions']
+): SessionPickerRequest['sessions'] {
   const query = normalizePickerText(input);
   if (!query) return [];
   const canMatchIdPrefix = query.length >= 4;
@@ -70,7 +80,10 @@ function findSessionsByText(input: string, sessions: SessionPickerRequest['sessi
   });
 }
 
-function findSessionsByExactLabel(input: string, sessions: SessionPickerRequest['sessions']): SessionPickerRequest['sessions'] {
+function findSessionsByExactLabel(
+  input: string,
+  sessions: SessionPickerRequest['sessions']
+): SessionPickerRequest['sessions'] {
   const query = normalizePickerText(input);
   if (!query) return [];
   return sessions.filter(session =>
@@ -123,7 +136,10 @@ export function resolveTerminalSessionPickerInput(
   }
 
   if (numeric) {
-    return { type: 'error', message: `No session at index ${numeric[1]} or id prefix "${trimmed}".` };
+    return {
+      type: 'error',
+      message: `No session at index ${numeric[1]} or id prefix "${trimmed}".`,
+    };
   }
 
   return {
@@ -168,7 +184,10 @@ const TERMINAL_ERROR_LAYERS: TerminalErrorLayer[] = [
   'unknown',
 ];
 
-export function formatTerminalErrorMessage(message: string, explicitLayer?: import('../runtime/ui-events').ErrorLayer): string {
+export function formatTerminalErrorMessage(
+  message: string,
+  explicitLayer?: import('../runtime/ui-events').ErrorLayer
+): string {
   const trimmed = message.trim();
   if (!trimmed) return trimmed;
   if (hasErrorLayerPrefix(trimmed)) return trimmed;
@@ -182,9 +201,11 @@ function hasErrorLayerPrefix(message: string): boolean {
   const lower = message.toLowerCase();
   return TERMINAL_ERROR_LAYERS.some(layer => {
     const label = layer.toLowerCase();
-    return lower.startsWith(`[${label}] `)
-      || lower.startsWith(`error [${label}]:`)
-      || lower.startsWith(`error: [${label}] `);
+    return (
+      lower.startsWith(`[${label}] `) ||
+      lower.startsWith(`error [${label}]:`) ||
+      lower.startsWith(`error: [${label}] `)
+    );
   });
 }
 
@@ -195,20 +216,21 @@ export function inferTerminalErrorLayer(message: string): TerminalErrorLayer {
   if (/\b(skill|skills)\b/u.test(lower)) return 'skills';
   if (/\b(memory|vector store|recall|forget)\b/u.test(lower)) return 'memory';
   if (/\b(session|resume|compact)\b/u.test(lower)) return 'session';
-  if (/\b(renderer|terminal|tty|prompt|resize|input editor|scrollback)\b/u.test(lower)) return 'renderer';
+  if (/\b(renderer|terminal|tty|prompt|resize|input editor|scrollback)\b/u.test(lower))
+    return 'renderer';
   if (
-    /\btool\b/u.test(lower)
-    || /\b(exec_command|read_file|write_file|edit_file|grep|glob|list_files)\b/u.test(lower)
-    || /command exited with code/u.test(lower)
-    || /path is a directory|not a file|enoent|eacces/u.test(lower)
+    /\btool\b/u.test(lower) ||
+    /\b(exec_command|read_file|write_file|edit_file|grep|glob|list_files)\b/u.test(lower) ||
+    /command exited with code/u.test(lower) ||
+    /path is a directory|not a file|enoent|eacces/u.test(lower)
   ) {
     return 'tool';
   }
   if (
-    /\b(provider|model|llm|api|quota|rate limit|rate_limit|provider_busy)\b/u.test(lower)
-    || /\b(openai|anthropic|dashscope|bailian|xunfei|glm|qwen)\b/u.test(lower)
-    || /\bstatus code\b/u.test(lower)
-    || /notEnoughCvError|engineInternalError/i.test(message)
+    /\b(provider|model|llm|api|quota|rate limit|rate_limit|provider_busy)\b/u.test(lower) ||
+    /\b(openai|anthropic|dashscope|bailian|xunfei|glm|qwen)\b/u.test(lower) ||
+    /\bstatus code\b/u.test(lower) ||
+    /notEnoughCvError|engineInternalError/i.test(message)
   ) {
     return 'provider';
   }
@@ -222,7 +244,7 @@ function shouldShowStatus(message: string): boolean {
 
 export function formatTerminalStatusMessage(
   message: string,
-  width = terminalContentWidth(120),
+  width = terminalContentWidth(120)
 ): string {
   return truncateTerminalText(message.replace(/\s+/g, ' ').trim(), Math.max(1, width));
 }
@@ -245,6 +267,18 @@ export function formatTerminalSessionRestored(event: RuntimeSessionRestoredEvent
 
   if (view.summary) {
     lines.push(fitLine('  Summary: ', redactTraceText(view.summary)));
+  }
+  if (view.summaryGeneratedAt) {
+    const origin = view.checkpointId ? 'compact checkpoint' : 'generated on resume';
+    lines.push(`  Generated: ${new Date(view.summaryGeneratedAt).toLocaleString()} (${origin})`);
+  }
+  if (typeof view.summaryCoveredMessages === 'number') {
+    lines.push(`  Covers: ${view.summaryCoveredMessages} source messages`);
+  }
+  if (typeof view.transcriptMessages === 'number') {
+    lines.push(
+      `✔ Restored ${view.restoredMessages} model-context messages / ${view.transcriptMessages} transcript messages`
+    );
   }
 
   return lines.join('\n');
@@ -293,9 +327,10 @@ export function truncateTerminalText(text: string, maxWidth: number): string {
 
 function bannerRow(content: string, width: number): string {
   const innerWidth = Math.max(0, width - 2);
-  const safeContent = visibleLength(content) > innerWidth
-    ? truncateTerminalText(content.replace(ANSI_PATTERN, ''), innerWidth)
-    : content;
+  const safeContent =
+    visibleLength(content) > innerWidth
+      ? truncateTerminalText(content.replace(ANSI_PATTERN, ''), innerWidth)
+      : content;
   const padding = ' '.repeat(Math.max(0, innerWidth - visibleLength(safeContent)));
   return `${BORDER('│')}${safeContent}${padding}${BORDER('│')}`;
 }
@@ -313,7 +348,7 @@ export function renderTerminalCapabilitySummary(runtime: OpenHorseUiRuntime): st
 
 export function formatTerminalSessionPickerItem(
   item: SessionPickerItem,
-  width = terminalContentWidth(120),
+  width = terminalContentWidth(120)
 ): string {
   const safeWidth = Math.max(1, width);
   const prefixPlain = `${String(item.globalIndex).padStart(2, ' ')}. ${item.shortId}  `;
@@ -338,14 +373,17 @@ export function formatTerminalSessionPickerItem(
     if (visibleLength(row) <= safeWidth) return row;
   }
 
-  return truncateTerminalText(`${String(item.globalIndex).padStart(2, ' ')}. ${item.shortId} ${item.title}`, safeWidth);
+  return truncateTerminalText(
+    `${String(item.globalIndex).padStart(2, ' ')}. ${item.shortId} ${item.title}`,
+    safeWidth
+  );
 }
 
 export function formatTerminalSessionPickerHeader(
   title: string,
   page: number,
   pageCount: number,
-  width = terminalContentWidth(120),
+  width = terminalContentWidth(120)
 ): string {
   const safeWidth = Math.max(1, width);
   const pageLabelPlain = ` page ${page}/${pageCount}`;
@@ -357,9 +395,10 @@ export function formatTerminalSessionPickerHeader(
 }
 
 function formatSessionPickerInstruction(width: number): string {
-  const text = width < 72
-    ? 'Select number/id, n/p page, empty cancels.'
-    : 'Type number/#number, session id prefix, unique title text, or /resume --last. Empty input cancels.';
+  const text =
+    width < 72
+      ? 'Select number/id, n/p page, empty cancels.'
+      : 'Type number/#number, session id prefix, unique title text, or /resume --last. Empty input cancels.';
   return truncateTerminalText(text, Math.max(1, width));
 }
 
@@ -369,18 +408,20 @@ function editPreviewKindLabel(request: EditPreviewRequest): string {
 
 export function formatTerminalEditPreviewHeader(
   request: EditPreviewRequest,
-  width = terminalContentWidth(120),
+  width = terminalContentWidth(120)
 ): string {
-  return ACCENT(truncateTerminalText(
-    `Edit Preview: ${request.path} (${editPreviewKindLabel(request)})`,
-    Math.max(1, width)
-  ));
+  return ACCENT(
+    truncateTerminalText(
+      `Edit Preview: ${request.path} (${editPreviewKindLabel(request)})`,
+      Math.max(1, width)
+    )
+  );
 }
 
 export function formatTerminalEditPreviewCandidate(
   candidate: EditPreviewRequest['candidates'][number],
   newString: string,
-  width = terminalContentWidth(120),
+  width = terminalContentWidth(120)
 ): string {
   const safeWidth = Math.max(1, width);
   const prefix = `  line ${String(candidate.line).padStart(3, ' ')}  `;
@@ -503,7 +544,9 @@ export class TerminalEventSink implements UiEventSink {
       this.writer.write(`${formatTerminalEditPreviewCandidate(c, request.newString, rowWidth)}\n`);
     });
     if (request.candidates.length > 10) {
-      this.writer.write(`${DIM(truncateTerminalText(`  ... ${request.candidates.length - 10} more candidates`, rowWidth))}\n`);
+      this.writer.write(
+        `${DIM(truncateTerminalText(`  ... ${request.candidates.length - 10} more candidates`, rowWidth))}\n`
+      );
     }
     this.writer.write(`${DIM(truncateTerminalText('Press Enter to dismiss.', rowWidth))}\n`);
   }
@@ -524,11 +567,12 @@ export class TerminalEventSink implements UiEventSink {
     const picker = this.pendingPicker;
     if (picker) {
       const navigation = normalizePickerText(input);
-      const direction = navigation === 'n' || navigation === 'next'
-        ? 1
-        : navigation === 'p' || navigation === 'prev' || navigation === 'previous'
-          ? -1
-          : 0;
+      const direction =
+        navigation === 'n' || navigation === 'next'
+          ? 1
+          : navigation === 'p' || navigation === 'prev' || navigation === 'previous'
+            ? -1
+            : 0;
       if (direction !== 0 && findSessionsByExactLabel(input, picker.sessions).length === 0) {
         this.moveSessionPickerPage(direction);
         return '';
@@ -548,7 +592,12 @@ export class TerminalEventSink implements UiEventSink {
         case 'selected':
           this.pendingPicker = null;
           this.pickerOffset = 0;
-          return { type: 'select_session', sessionId: selection.sessionId, allProjects: picker.allProjects, source: 'picker' };
+          return {
+            type: 'select_session',
+            sessionId: selection.sessionId,
+            allProjects: picker.allProjects,
+            source: 'picker',
+          };
         case 'error':
           this.writer.write(`${ERROR(selection.message)}\n`);
           return '';
@@ -576,7 +625,9 @@ export class TerminalEventSink implements UiEventSink {
     this.pickerOffset = state.visibleStart;
 
     const rowWidth = terminalContentWidth(120);
-    this.writer.write(`\n${formatTerminalSessionPickerHeader(state.title, state.page, state.pageCount, rowWidth)}\n`);
+    this.writer.write(
+      `\n${formatTerminalSessionPickerHeader(state.title, state.page, state.pageCount, rowWidth)}\n`
+    );
     this.writer.write(`${BORDER('─'.repeat(terminalContentWidth(80)))}\n`);
 
     if (state.visibleItems.length === 0) {
@@ -588,7 +639,9 @@ export class TerminalEventSink implements UiEventSink {
     });
 
     if (state.totalItems > state.visibleLimit) {
-      this.writer.write(`${DIM(truncateTerminalText(`Showing ${state.visibleStart + 1}-${state.visibleStart + state.visibleItems.length} of ${state.totalItems}. Type n/next or p/prev to page.`, rowWidth))}\n`);
+      this.writer.write(
+        `${DIM(truncateTerminalText(`Showing ${state.visibleStart + 1}-${state.visibleStart + state.visibleItems.length} of ${state.totalItems}. Type n/next or p/prev to page.`, rowWidth))}\n`
+      );
     }
     this.writer.write(`${DIM(formatSessionPickerInstruction(rowWidth))}\n`);
   }
@@ -599,7 +652,9 @@ export class TerminalEventSink implements UiEventSink {
     const state = createSessionPickerState(request, this.pickerOffset);
     const nextOffset = movePickerPageOffset(state, delta);
     if (nextOffset === this.pickerOffset) {
-      this.writer.write(`${DIM(delta > 0 ? 'Already at last session page.' : 'Already at first session page.')}\n`);
+      this.writer.write(
+        `${DIM(delta > 0 ? 'Already at last session page.' : 'Already at first session page.')}\n`
+      );
       return;
     }
     this.pickerOffset = nextOffset;
@@ -666,7 +721,10 @@ export function renderTerminalBanner(runtime: OpenHorseUiRuntime): string {
   const line = '─'.repeat(Math.max(0, width - 2));
   const firstLine = ` ${ACCENT.bold('OPENHORSE')} ${DIM(`v${runtime.version}`)} ${DIM('stable terminal UI')}`;
   const projectPrefix = ` ${DIM('Model')} ${ACCENT(runtime.config.model)}  ${DIM('Project')} `;
-  const project = truncateTerminalText(runtime.cwd, Math.max(10, width - 2 - visibleLength(projectPrefix)));
+  const project = truncateTerminalText(
+    runtime.cwd,
+    Math.max(10, width - 2 - visibleLength(projectPrefix))
+  );
   const session = runtime.getSession()?.id.slice(0, 8) ?? 'new';
   const renderer = runtime.config.ui?.renderer ?? 'terminal';
   const rendererLine = ` ${DIM('Session')} ${ACCENT(session)}  ${DIM('Renderer')} ${ACCENT(renderer)}`;
@@ -694,9 +752,17 @@ function printBanner(runtime: OpenHorseUiRuntime): void {
   process.stdout.write(renderTerminalBanner(runtime));
 }
 
-function promptText(runtime: OpenHorseUiRuntime): string {
+export function renderTerminalContextStatus(runtime: OpenHorseUiRuntime): string {
+  const usage = runtime.store.getSnapshot().contextUsage;
+  const status = contextUsageStatusText(usage);
+  if (!status) return '';
+  return usage && usage.percent >= usage.warningThresholdPercent ? WARNING(status) : DIM(status);
+}
+
+export function promptText(runtime: OpenHorseUiRuntime): string {
   const session = runtime.getSession()?.id.slice(0, 8) ?? 'new';
-  return `${DIM(`[${session}]`)} ${ACCENT('›')} `;
+  const context = renderTerminalContextStatus(runtime);
+  return `${DIM(`[${session}]`)}${context ? ` ${context}` : ''} ${ACCENT('›')} `;
 }
 
 function compactPermissionValue(value: string, maxWidth: number): string {
@@ -704,21 +770,30 @@ function compactPermissionValue(value: string, maxWidth: number): string {
   return truncateTerminalText(singleLine, Math.max(8, maxWidth));
 }
 
-function formatTerminalPermissionScope(state: ReturnType<typeof createPermissionPromptState>): string {
+function formatTerminalPermissionScope(
+  state: ReturnType<typeof createPermissionPromptState>
+): string {
   const width = terminalContentWidth(120);
   const maxScopeWidth = Math.max(24, Math.min(72, Math.floor(width * 0.35)));
   return compactPermissionValue(permissionScopeDisplayValue(state.scope), maxScopeWidth);
 }
 
-export function formatTerminalPermissionPrompt(request: ToolPermissionRequest, cwd: string): string {
+export function formatTerminalPermissionPrompt(
+  request: ToolPermissionRequest,
+  cwd: string
+): string {
   const state = createPermissionPromptState(request, cwd);
   const width = terminalContentWidth(120);
   const budget = Math.max(1, width);
   const base = `${ACCENT('?')} Allow tool ${ACCENT(state.toolName)}?`;
   const options = DIM(`[${state.options.approve} ${state.options.deny}]`);
   const scope = DIM(formatTerminalPermissionScope(state));
-  const cwdLabel = DIM(`cwd=${compactPermissionValue(state.cwd, Math.max(12, Math.min(48, Math.floor(width * 0.22))))}`);
-  const risk = DIM(`risk=${compactPermissionValue(permissionRiskDisplayValue(state.risk), Math.max(12, Math.min(48, Math.floor(width * 0.24))))}`);
+  const cwdLabel = DIM(
+    `cwd=${compactPermissionValue(state.cwd, Math.max(12, Math.min(48, Math.floor(width * 0.22))))}`
+  );
+  const risk = DIM(
+    `risk=${compactPermissionValue(permissionRiskDisplayValue(state.risk), Math.max(12, Math.min(48, Math.floor(width * 0.24))))}`
+  );
 
   const parts = [base, scope, cwdLabel, risk, options];
   while (parts.length > 3 && visibleLength(`${parts.join(' ')} `) > budget) {
@@ -745,7 +820,10 @@ export function formatTerminalPermissionPrompt(request: ToolPermissionRequest, c
 
   const optionWidth = visibleLength(options);
   if (budget <= optionWidth + 1) {
-    return truncateTerminalText(`${stripTrailingNewlines(base)} ${stripTrailingNewlines(options)} `, budget);
+    return truncateTerminalText(
+      `${stripTrailingNewlines(base)} ${stripTrailingNewlines(options)} `,
+      budget
+    );
   }
 
   const baseBudget = Math.max(1, budget - optionWidth - 2);
@@ -768,6 +846,7 @@ export function renderTerminalShortcuts(): string {
       `${ACCENT('Shortcuts')}`,
       `${BORDER('─'.repeat(Math.min(width, 32)))}`,
       `${DIM('Enter')} send  ${DIM('Tab')} complete`,
+      `${DIM('Ctrl+J')} newline`,
       `${DIM('Ctrl+C')} interrupt; twice exits`,
       `${DIM('/paste')} ${DIM('/edit')} ${DIM('/resume')}`,
       `${DIM('/last-tool')} ${DIM('/trace')}`,
@@ -780,6 +859,7 @@ export function renderTerminalShortcuts(): string {
       `${ACCENT('Shortcuts')}`,
       `${BORDER('─'.repeat(Math.min(width, 40)))}`,
       `${DIM('Enter')} send  ${DIM('Tab')} complete  ${DIM('↑/↓')} history`,
+      `${DIM('Alt+Enter/Ctrl+J')} newline`,
       `${DIM('Ctrl+U/W')} edit  ${DIM('Ctrl+C')} interrupt; twice exits`,
       `${DIM('/paste')} multiline  ${DIM('/edit')} editor  ${DIM('/resume')} sessions`,
       `${DIM('/last-tool')} tool detail  ${DIM('/trace')} timeline`,
@@ -791,6 +871,7 @@ export function renderTerminalShortcuts(): string {
     `${ACCENT('Terminal shortcuts')}`,
     `${BORDER('─'.repeat(48))}`,
     `${DIM('Enter')}      send current input`,
+    `${DIM('Alt+Enter')}  insert newline (${DIM('Ctrl+J')} also works)`,
     `${DIM('Tab')}        complete slash command or @file mention`,
     `${DIM('↑/↓')}        navigate local input history`,
     `${DIM('Ctrl+U')}     clear current input`,
@@ -832,7 +913,9 @@ export class TerminalInputComposer {
     if (!this.mode && ['/paste', '/multi', '/multiline'].includes(trimmed)) {
       this.mode = 'paste';
       this.lines.length = 0;
-      return { notice: DIM('Multiline input: paste or type lines, finish with /end, cancel with /cancel.') };
+      return {
+        notice: DIM('Multiline input: paste or type lines, finish with /end, cancel with /cancel.'),
+      };
     }
 
     if (this.mode === 'paste') {
@@ -843,7 +926,9 @@ export class TerminalInputComposer {
       if (trimmed === '/end') {
         const submitted = this.lines.join('\n').trimEnd();
         this.reset();
-        return submitted ? { input: submitted } : { cancelled: true, notice: DIM('Multiline input was empty.') };
+        return submitted
+          ? { input: submitted }
+          : { cancelled: true, notice: DIM('Multiline input was empty.') };
       }
       this.lines.push(input);
       return {};
@@ -950,27 +1035,28 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
 
       confirmingTool = true;
 
-      void editor.ask(
-        formatTerminalPermissionPrompt(event.request, runtime.cwd),
-        event.request.abortSignal
-      ).then(answer => {
-        agentController.handle({
-          type: 'permission_decision',
-          requestId: event.request.id,
-          approved: /^y(es)?$/i.test(answer.trim()),
-          source: 'keyboard',
+      void editor
+        .ask(formatTerminalPermissionPrompt(event.request, runtime.cwd), event.request.abortSignal)
+        .then(answer => {
+          agentController.handle({
+            type: 'permission_decision',
+            requestId: event.request.id,
+            approved: /^y(es)?$/i.test(answer.trim()),
+            source: 'keyboard',
+          });
+        })
+        .catch(() => {
+          agentController.handle({
+            type: 'permission_decision',
+            requestId: event.request.id,
+            approved: false,
+            source: 'programmatic',
+          });
+        })
+        .finally(() => {
+          confirmingTool = false;
+          prompt();
         });
-      }).catch(() => {
-        agentController.handle({
-          type: 'permission_decision',
-          requestId: event.request.id,
-          approved: false,
-          source: 'programmatic',
-        });
-      }).finally(() => {
-        confirmingTool = false;
-        prompt();
-      });
       return undefined;
     },
   };
@@ -1023,10 +1109,7 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
   const handleInput = (rawInput: string): void => {
     if (stopping) return;
 
-    const answer = applyTerminalTabCompletion(
-      normalizeTerminalAnswer(rawInput),
-      runtime.cwd
-    );
+    const answer = applyTerminalTabCompletion(normalizeTerminalAnswer(rawInput), runtime.cwd);
     const submitted = answer.trim();
 
     if (agentController.hasActiveTurn()) {
@@ -1078,7 +1161,11 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
         const result = openExternalEditor({ initialContent: edit.initialContent });
         if (!stopping) editor.start();
         if (result.error) {
-          events.append({ role: 'error', content: `Editor failed: ${result.error}`, errorLayer: 'renderer' });
+          events.append({
+            role: 'error',
+            content: `Editor failed: ${result.error}`,
+            errorLayer: 'renderer',
+          });
           prompt();
           return;
         }
@@ -1126,7 +1213,9 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
   };
 
   try {
-    process.stdout.write(`${DIM('Ready. Stable terminal editor is enabled for CJK input, Backspace, multiline paste, and live revision. /paste and /edit are available for long input.')}\n`);
+    process.stdout.write(
+      `${DIM('Ready. Terminal editor supports CJK, Alt/Option+Enter or Ctrl+J newlines, multiline paste, and live revision. /edit is available for oversized drafts.')}\n`
+    );
     editor.start();
     prompt();
     await new Promise<void>(resolve => {

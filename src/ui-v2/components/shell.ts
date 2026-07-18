@@ -109,7 +109,6 @@ function buildStatusParts(stats: V2StatusLineStats): string[] {
     renderToken('model', stats.model),
     stats.sessionId ? renderToken('session', stats.sessionId.slice(0, 8)) : '',
     renderToken('tokens', formatTokens(stats.tokens)),
-    stats.cost > 0 ? renderToken('cost', formatCost(stats.cost)) : '',
     stats.ctxPercent > 0 ? renderToken('ctx', `${stats.ctxPercent}%`) : '',
     stats.mcpTotal > 0 ? renderToken('mcp', `${stats.mcpConnected}/${stats.mcpTotal}`) : '',
     stats.modeText ? renderToken('mode', stats.modeText) : '',
@@ -164,10 +163,4 @@ function formatTokens(tokens: number): string {
   if (tokens >= 1000000) return `${(tokens / 1000000).toFixed(1)}M`;
   if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}K`;
   return String(tokens);
-}
-
-function formatCost(cost: number): string {
-  if (cost < 0.01) return `$${cost.toFixed(4)}`;
-  if (cost < 1) return `$${cost.toFixed(2)}`;
-  return `$${cost.toFixed(1)}`;
 }

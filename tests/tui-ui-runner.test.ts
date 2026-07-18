@@ -3,6 +3,9 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { TuiRunner } from '../src/tui-ui/runner';
+import { InlineTerminalSurface, MemoryOutput } from '../src/tui-ui/inline-surface';
+import { renderStyledFrameRow, type TuiFrame } from '../src/tui-core/frame';
+import { styleKey, type StyledRow } from '../src/tui-core/style';
 import { makeToolStartedEvent, makeToolFinishedEvent, resetToolEventSequence } from './test-helpers';
 import type { SessionMeta } from '../src/services/session-storage';
 
@@ -17,6 +20,22 @@ function createOutput() {
       },
     },
   };
+}
+
+function transcriptRowsFromFrame(frame: TuiFrame, count: number): StyledRow[] {
+  return frame.rows.slice(0, count).map(row => {
+    const spans = renderStyledFrameRow(row).map(span => ({ ...span }));
+    const last = spans[spans.length - 1];
+    if (last && styleKey(last.style) === '') {
+      last.text = last.text.replace(/ +$/u, '');
+      if (!last.text) spans.pop();
+    }
+    return spans;
+  });
+}
+
+function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '');
 }
 
 describe('tui-ui runner', () => {
@@ -780,5 +799,239 @@ describe('tui-ui runner', () => {
     // PageUp moves back by 10 (clamped to 0)
     runner.feedInput(Buffer.from('\x1b[5~'));
     expect(runner.getState().overlay).toMatchObject({ type: 'edit', selectedIndex: 0 });
+  });
+
+  // --- v0.2.22: surface integration tests ---
+
+  it('keeps the idle live frame compact when a surface is attached', async () => {
+    const out = new MemoryOutput();
+    const surface = new InlineTerminalSurface({ output: out });
+    await surface.mount(80, 24);
+
+    const { output } = createOutput();
+    const runner = new TuiRunner({
+      output,
+      width: 80,
+      height: 24,
+      surface,
+    });
+
+    const frame = runner.getLastFrame();
+    expect(frame).not.toBeNull();
+    if (frame) {
+      expect(frame.width).toBe(79);
+      expect(frame.height).toBe(8);
+      expect(frame.height).toBeLessThan(surface.getLiveBandRows());
+      expect(frame.height).toBeLessThan(24);
+    }
+
+    await surface.unmount();
+  });
+
+  it('tryCommit sends finalized entries to surface scrollback', async () => {
+    const out = new MemoryOutput();
+    const surface = new InlineTerminalSurface({ output: out });
+    await surface.mount(80, 24);
+
+    const { output } = createOutput();
+    const runner = new TuiRunner({
+      output,
+      width: 80,
+      height: 24,
+      surface,
+    });
+
+    // Append a user entry (auto-finalized)
+    runner.events.append({ role: 'user', content: 'hello world' });
+    // Append an assistant entry (needs finalize)
+    const assistantId = runner.events.append({ role: 'assistant', content: 'response' });
+    runner.events.finalize(assistantId);
+
+    // The surface should have received the committed entry in its stream.
+    await surface.whenIdle();
+    const text = out.text();
+    // User entry (role: user → prefix '› ') should be in committed output.
+    expect(stripAnsi(text)).toContain('› hello world');
+    // Assistant entry should also be there.
+    expect(text).toContain('response');
+
+    await surface.unmount();
+  });
+
+  it('commits replacement history even when the new generation is shorter', async () => {
+    const out = new MemoryOutput();
+    const surface = new InlineTerminalSurface({ output: out });
+    await surface.mount(80, 24);
+    const { output } = createOutput();
+    const runner = new TuiRunner({ output, width: 80, height: 24, surface });
+
+    runner.dispatch({
+      type: 'replaceTranscript',
+      entries: [
+        { id: 'old-1', role: 'user', content: 'old-one' },
+        { id: 'old-2', role: 'assistant', content: 'old-two' },
+        { id: 'old-3', role: 'user', content: 'old-three' },
+      ],
+    });
+    await surface.whenIdle();
+    out.chunks = [];
+
+    runner.dispatch({
+      type: 'replaceTranscript',
+      entries: [{ id: 'new-1', role: 'assistant', content: 'shorter-generation' }],
+    });
+    await surface.whenIdle();
+
+    expect(out.text()).toContain('shorter-generation');
+    await surface.unmount();
+  });
+
+  it('runner resize invalidates transcript layout cache', async () => {
+    const out = new MemoryOutput();
+    const surface = new InlineTerminalSurface({ output: out });
+    await surface.mount(80, 24);
+
+    const { output } = createOutput();
+    const runner = new TuiRunner({
+      output,
+      width: 80,
+      height: 24,
+      surface,
+    });
+
+    // Append and finalize some content.
+    runner.events.append({ role: 'user', content: 'hello' });
+
+    // Resize to new dimensions.
+    runner.resize(60, 20);
+
+    // Should not crash — resize invalidates cache and re-renders.
+    await surface.whenIdle();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await surface.whenIdle();
+    const text = out.text();
+    expect(stripAnsi(text)).toContain('› hello');
+
+    await surface.unmount();
+  });
+
+  it('defers finalized commits until resize uses the final width', async () => {
+    const out = new MemoryOutput();
+    const surface = new InlineTerminalSurface({ output: out });
+    await surface.mount(40, 14);
+    const commit = jest.spyOn(surface, 'commit');
+    const { output } = createOutput();
+    const runner = new TuiRunner({ output, width: 40, height: 14, surface });
+    const content = 'abcdefghijklmnopqrstuvwxyz0123456789';
+
+    runner.beginResize(20);
+    runner.events.append({ role: 'user', content });
+    expect(commit).not.toHaveBeenCalled();
+
+    runner.resize(20, 14);
+    await surface.whenIdle();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await surface.whenIdle();
+
+    expect(commit).toHaveBeenCalledTimes(1);
+    const batchText = commit.mock.calls[0][0].entries
+      .flatMap(entry => entry.rows)
+      .flatMap(row => row)
+      .map(span => span.text)
+      .join('');
+    expect(batchText.replace(/\s/gu, '')).toContain(content);
+
+    await surface.unmount();
+  });
+
+  it('commits the final styled revision after a same-length streaming update', async () => {
+    const out = new MemoryOutput();
+    const surface = new InlineTerminalSurface({ output: out });
+    await surface.mount(80, 24);
+    const commit = jest.spyOn(surface, 'commit');
+    const { output } = createOutput();
+    const runner = new TuiRunner({ output, width: 80, height: 24, surface });
+
+    const id = runner.events.append({ role: 'assistant', content: '# One', live: true });
+    runner.events.update(id, { content: '# Two' });
+    runner.getScheduler().flush();
+
+    const liveFrame = runner.getLastFrame();
+    expect(liveFrame).not.toBeNull();
+    expect(runner.getVisibleRows().join('\n')).toContain('Two');
+    expect(runner.getVisibleRows().join('\n')).not.toContain('# Two');
+    expect(liveFrame?.rows[0].some(cell => cell.char === 'T' && cell.style.bold)).toBe(true);
+
+    runner.events.finalize(id);
+    await surface.whenIdle();
+
+    const batch = commit.mock.calls.at(-1)?.[0];
+    const committedRows = batch?.entries[0]?.rows ?? [];
+    const committedText = committedRows
+      .map(row => row.map(span => span.text).join(''))
+      .join('\n');
+    expect(committedText).toContain('Two');
+    expect(committedText).not.toContain('One');
+    expect(committedRows[0]?.some(span => span.text.includes('Two') && span.style?.bold)).toBe(true);
+    expect(transcriptRowsFromFrame(liveFrame!, committedRows.length)).toEqual(
+      committedRows.map(row => row.map(span => ({ text: span.text, style: span.style ?? {} }))),
+    );
+
+    await surface.unmount();
+  });
+
+  it('uses identical live and committed rows for a multi-span user message', async () => {
+    const out = new MemoryOutput();
+    const surface = new InlineTerminalSurface({ output: out });
+    await surface.mount(40, 12);
+    const commit = jest.spyOn(surface, 'commit');
+    const { output } = createOutput();
+    const runner = new TuiRunner({ output, width: 40, height: 12, surface });
+
+    const id = runner.events.append({
+      role: 'user',
+      content: '你好 👨‍👩‍👧 multi-span question that wraps',
+      live: true,
+    });
+    runner.getScheduler().flush();
+    const liveFrame = runner.getLastFrame();
+    expect(liveFrame).not.toBeNull();
+
+    runner.events.finalize(id);
+    await surface.whenIdle();
+
+    const committedRows = commit.mock.calls.at(-1)?.[0].entries[0].rows ?? [];
+    expect(committedRows.length).toBeGreaterThan(1);
+    expect(transcriptRowsFromFrame(liveFrame!, committedRows.length)).toEqual(
+      committedRows.map(row => row.map(span => ({ text: span.text, style: span.style ?? {} }))),
+    );
+    await surface.unmount();
+  });
+
+  it('writes user background styling to scrollback and resets the row', async () => {
+    const previousNoColor = process.env.NO_COLOR;
+    const previousForceColor = process.env.FORCE_COLOR;
+    delete process.env.NO_COLOR;
+    process.env.FORCE_COLOR = '1';
+    try {
+      const out = new MemoryOutput();
+      const surface = new InlineTerminalSurface({ output: out });
+      await surface.mount(40, 12);
+      const { output } = createOutput();
+      const runner = new TuiRunner({ output, width: 40, height: 12, surface });
+
+      runner.events.append({ role: 'user', content: '你好 question' });
+      await surface.whenIdle();
+
+      expect(out.text()).toMatch(/\x1b\[[0-9;]*48;2;218;221;226m/);
+      expect(out.text()).toContain('你好 question');
+      expect(out.text()).toContain('\x1b[0m\n');
+      await surface.unmount();
+    } finally {
+      if (previousNoColor === undefined) delete process.env.NO_COLOR;
+      else process.env.NO_COLOR = previousNoColor;
+      if (previousForceColor === undefined) delete process.env.FORCE_COLOR;
+      else process.env.FORCE_COLOR = previousForceColor;
+    }
   });
 });

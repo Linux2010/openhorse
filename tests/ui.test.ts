@@ -133,7 +133,7 @@ describe('Status Bar', () => {
     expect(bar).toContain('MCP');
   });
 
-  test('renderCompactStatusBar shows tokens and cost', () => {
+  test('renderCompactStatusBar shows tokens and context without realtime cost', () => {
     const stats = {
       model: 'gpt-4o',
       tokens: 1000,
@@ -148,6 +148,7 @@ describe('Status Bar', () => {
     const bar = renderCompactStatusBar(stats);
     expect(bar).toContain('K tok'); // Uses format like "1.0K tok"
     expect(bar).toContain('ctx');
+    expect(bar).not.toContain('$0.0100');
   });
 
   test('handles zero values', () => {

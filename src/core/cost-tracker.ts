@@ -10,13 +10,41 @@
 // ============================================================================
 
 /** 使用记录 */
+export type CostSource = 'provider' | 'configured' | 'builtin' | 'fallback';
+
+export interface ModelPricing {
+  /** USD per one million input tokens. */
+  input: number;
+  /** USD per one million output tokens. */
+  output: number;
+  /** USD per one million cached input tokens. Defaults to input pricing. */
+  cachedInput?: number;
+}
+
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  cachedPromptTokens?: number;
+  /** Provider-reported billed cost in USD. */
+  costUsd?: number;
+  /** Stable provider request id used to suppress duplicate accounting. */
+  requestId?: string;
+}
+
 export interface UsageRecord {
   timestamp: Date;
   model: string;
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cachedPromptTokens: number;
+  /** Cost used for accounting, in USD. */
+  costUsd: number;
+  costSource: CostSource;
+  /** @deprecated Use costUsd. Kept for API compatibility. */
   estimatedCost: number; // USD
+  requestId?: string;
+  requestKind?: string;
   agentId?: string;
   taskId?: string;
 }
@@ -27,7 +55,10 @@ export interface CostStats {
   totalCompletionTokens: number;
   totalTokens: number;
   totalCost: number;
+  providerCost: number;
+  estimatedCost: number;
   recordCount: number;
+  bySource: Record<CostSource, { cost: number; count: number }>;
   byAgent: Record<string, { tokens: number; cost: number; count: number }>;
   byTask: Record<string, { tokens: number; cost: number; count: number }>;
   byModel: Record<string, { tokens: number; cost: number; count: number }>;
@@ -43,7 +74,7 @@ export interface TimeRange {
 // 模型定价表（每 1M tokens，USD）
 // ============================================================================
 
-const MODEL_PRICING: Record<string, { input: number; output: number }> = {
+const MODEL_PRICING: Record<string, ModelPricing> = {
   // OpenAI
   'gpt-4o': { input: 2.5, output: 10 },
   'gpt-4o-mini': { input: 0.15, output: 0.6 },
@@ -89,44 +120,103 @@ const MODEL_PRICING: Record<string, { input: number; output: number }> = {
 /** 默认定价（未知模型） */
 const DEFAULT_PRICING = { input: 1, output: 5 };
 
+export interface CostTrackerOptions {
+  pricing?: Record<string, ModelPricing>;
+  defaultPricing?: ModelPricing;
+  onRecord?: (record: UsageRecord) => void;
+}
+
 // ============================================================================
 // CostTracker 类
 // ============================================================================
 
 export class CostTracker {
   private records: UsageRecord[] = [];
+  private recordsByRequestId = new Map<string, UsageRecord>();
   private budgetLimit: number | null = null;
   private sessionStartTime: Date;
+  private pricing: Record<string, ModelPricing>;
+  private defaultPricing: ModelPricing;
+  private onRecord?: (record: UsageRecord) => void;
 
-  constructor() {
+  constructor(options: CostTrackerOptions = {}) {
     this.sessionStartTime = new Date();
+    this.pricing = { ...(options.pricing ?? {}) };
+    this.defaultPricing = options.defaultPricing ?? DEFAULT_PRICING;
+    this.onRecord = options.onRecord;
   }
 
   /**
    * 记录使用量
    */
   record(
-    usage: { promptTokens: number; completionTokens: number },
-    meta: { model: string; agentId?: string; taskId?: string },
+    usage: TokenUsage,
+    meta: {
+      model: string;
+      agentId?: string;
+      taskId?: string;
+      requestKind?: string;
+    },
   ): UsageRecord {
-    const pricing = MODEL_PRICING[meta.model] || DEFAULT_PRICING;
-    const totalTokens = usage.promptTokens + usage.completionTokens;
-    const estimatedCost =
-      (usage.promptTokens * pricing.input + usage.completionTokens * pricing.output) / 1_000_000;
+    if (usage.requestId) {
+      const existing = this.recordsByRequestId.get(usage.requestId);
+      if (existing) return existing;
+    }
+
+    const promptTokens = normalizeTokenCount(usage.promptTokens);
+    const completionTokens = normalizeTokenCount(usage.completionTokens);
+    const cachedPromptTokens = Math.min(
+      promptTokens,
+      normalizeTokenCount(usage.cachedPromptTokens ?? 0),
+    );
+    const totalTokens = promptTokens + completionTokens;
+    const providerCost = normalizeProviderCost(usage.costUsd);
+    const configuredPricing = this.pricing[meta.model];
+    const builtinPricing = MODEL_PRICING[meta.model];
+    const pricing = configuredPricing ?? builtinPricing ?? this.defaultPricing;
+    const costSource: CostSource = providerCost !== undefined
+      ? 'provider'
+      : configuredPricing
+        ? 'configured'
+        : builtinPricing
+          ? 'builtin'
+          : 'fallback';
+    const nonCachedPromptTokens = promptTokens - cachedPromptTokens;
+    const costUsd = providerCost ?? (
+      nonCachedPromptTokens * pricing.input
+      + cachedPromptTokens * (pricing.cachedInput ?? pricing.input)
+      + completionTokens * pricing.output
+    ) / 1_000_000;
 
     const record: UsageRecord = {
       timestamp: new Date(),
       model: meta.model,
-      promptTokens: usage.promptTokens,
-      completionTokens: usage.completionTokens,
+      promptTokens,
+      completionTokens,
       totalTokens,
-      estimatedCost,
+      cachedPromptTokens,
+      costUsd,
+      costSource,
+      estimatedCost: costUsd,
+      requestId: usage.requestId,
+      requestKind: meta.requestKind,
       agentId: meta.agentId,
       taskId: meta.taskId,
     };
 
     this.records.push(record);
+    if (record.requestId) this.recordsByRequestId.set(record.requestId, record);
+    try {
+      this.onRecord?.(record);
+    } catch {
+      // Accounting persistence must not fail an otherwise successful model call.
+    }
     return record;
+  }
+
+  /** Configure the durable sink after runtime/session bootstrap. */
+  setRecordSink(onRecord?: (record: UsageRecord) => void): void {
+    this.onRecord = onRecord;
   }
 
   /**
@@ -146,7 +236,15 @@ export class CostTracker {
       totalCompletionTokens: 0,
       totalTokens: 0,
       totalCost: 0,
+      providerCost: 0,
+      estimatedCost: 0,
       recordCount: filtered.length,
+      bySource: {
+        provider: { cost: 0, count: 0 },
+        configured: { cost: 0, count: 0 },
+        builtin: { cost: 0, count: 0 },
+        fallback: { cost: 0, count: 0 },
+      },
       byAgent: {},
       byTask: {},
       byModel: {},
@@ -156,7 +254,11 @@ export class CostTracker {
       stats.totalPromptTokens += record.promptTokens;
       stats.totalCompletionTokens += record.completionTokens;
       stats.totalTokens += record.totalTokens;
-      stats.totalCost += record.estimatedCost;
+      stats.totalCost += record.costUsd;
+      if (record.costSource === 'provider') stats.providerCost += record.costUsd;
+      else stats.estimatedCost += record.costUsd;
+      stats.bySource[record.costSource].cost += record.costUsd;
+      stats.bySource[record.costSource].count++;
 
       // 按 Agent 统计
       if (record.agentId) {
@@ -164,7 +266,7 @@ export class CostTracker {
           stats.byAgent[record.agentId] = { tokens: 0, cost: 0, count: 0 };
         }
         stats.byAgent[record.agentId].tokens += record.totalTokens;
-        stats.byAgent[record.agentId].cost += record.estimatedCost;
+        stats.byAgent[record.agentId].cost += record.costUsd;
         stats.byAgent[record.agentId].count++;
       }
 
@@ -174,7 +276,7 @@ export class CostTracker {
           stats.byTask[record.taskId] = { tokens: 0, cost: 0, count: 0 };
         }
         stats.byTask[record.taskId].tokens += record.totalTokens;
-        stats.byTask[record.taskId].cost += record.estimatedCost;
+        stats.byTask[record.taskId].cost += record.costUsd;
         stats.byTask[record.taskId].count++;
       }
 
@@ -183,7 +285,7 @@ export class CostTracker {
         stats.byModel[record.model] = { tokens: 0, cost: 0, count: 0 };
       }
       stats.byModel[record.model].tokens += record.totalTokens;
-      stats.byModel[record.model].cost += record.estimatedCost;
+      stats.byModel[record.model].cost += record.costUsd;
       stats.byModel[record.model].count++;
     }
 
@@ -229,6 +331,7 @@ export class CostTracker {
    */
   clear(): void {
     this.records = [];
+    this.recordsByRequestId.clear();
     this.sessionStartTime = new Date();
   }
 
@@ -251,10 +354,10 @@ export class CostTracker {
    */
   formatCost(cost: number): string {
     if (cost < 0.01) {
-      return `$${cost.toFixed(4)}`;
+      return `$${cost.toFixed(6)}`;
     }
     if (cost < 1) {
-      return `$${cost.toFixed(3)}`;
+      return `$${cost.toFixed(4)}`;
     }
     return `$${cost.toFixed(2)}`;
   }
@@ -277,4 +380,14 @@ export class CostTracker {
 
     return lines.join('\n');
   }
+}
+
+function normalizeTokenCount(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
+function normalizeProviderCost(value: number | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
 }

@@ -25,6 +25,11 @@ export {
 } from './auto-compact';
 
 export {
+  CompactCoordinator,
+  type CompactCoordinatorConfig,
+} from './coordinator';
+
+export {
   microCompact,
   ultraCompact,
   roleCompact,

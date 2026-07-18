@@ -16,6 +16,7 @@ import {
   getHistoryPath,
   getProjectSessionMessagesPath,
   getProjectSessionHarnessPath,
+  getProjectSessionCompactPath,
   getProjectSessionMetaPath,
   getProjectSessionTracePath,
   getProjectSessionsDir,
@@ -26,6 +27,7 @@ import { deleteSessionIndex, updateSessionIndex } from './session-index';
 import { redactTraceText } from './redaction';
 import type { LoopContinuationAction, LoopFinishReason } from '../framework/query';
 import type { Message } from './llm';
+import type { ContextUsageSnapshot } from './model-context';
 import { summarizeHarnessStateForMeta, upgradeHarnessState, type ContextCapsule, type HarnessSidecar, type HarnessState } from '../harness';
 
 // ============================================================================
@@ -73,6 +75,9 @@ export interface SessionMeta {
   historySizeBytes?: number;
   /** UI transcript should resume from this timestamp; compacted earlier messages may stay hidden. */
   transcriptDisplayStartTime?: number;
+  /** Active durable compact checkpoint stored in the compact sidecar. */
+  activeCompactCheckpointId?: string;
+  lastCompactAt?: number;
   /** Optional human-readable name */
   name?: string;
   /** Git branch at session creation/resume time */
@@ -93,6 +98,39 @@ export interface SessionMeta {
   contextCapsule?: ContextCapsule;
   /** Skills applied in this session. */
   skillsUsed?: string[];
+}
+
+export interface CompactCheckpointV1 {
+  version: 1;
+  checkpointId: string;
+  sessionId: string;
+  createdAt: number;
+  mode: 'predictive' | 'threshold' | 'manual';
+  modelId: string;
+  sourceMessageCount: number;
+  transcriptStartMessageIndex: number;
+  modelHistory: Message[];
+  summary: {
+    text: string;
+    generatedAt: number;
+    source: 'llm' | 'heuristic';
+    sourceMessageCount: number;
+  };
+  beforeUsage: ContextUsageSnapshot;
+  afterUsage: ContextUsageSnapshot;
+}
+
+export interface CommitCompactCheckpointInput {
+  sessionId: string;
+  mode: CompactCheckpointV1['mode'];
+  modelId: string;
+  sourceMessageCount: number;
+  transcriptStartMessageIndex: number;
+  modelHistory: Message[];
+  summary: Omit<CompactCheckpointV1['summary'], 'sourceMessageCount'>;
+  beforeUsage: ContextUsageSnapshot;
+  afterUsage: ContextUsageSnapshot;
+  createdAt?: number;
 }
 
 /** 历史记录条目 */
@@ -156,7 +194,9 @@ export type SessionTraceEventType =
   | 'subtask_cancelled'
   | 'subtask_rejected'
   | 'subtask_timed_out'
-  | 'subtask_artifact_stored';
+  | 'subtask_artifact_stored'
+  | 'compact_completed'
+  | 'compact_failed';
 
 export interface SessionTraceEvent {
   sessionId: string;
@@ -356,7 +396,6 @@ function evictOldest<K, V>(map: Map<K, V>, maxSize: number): void {
 }
 
 const resolvedProjectPathCache = new Map<string, string>();
-const gitBranchCache = new Map<string, string | undefined>();
 
 /**
  * Resolve a working directory to the project identity used for session storage.
@@ -405,13 +444,7 @@ export function getProjectKey(projectPath: string): string {
 }
 
 function getGitBranch(projectPath: string): string | undefined {
-  if (gitBranchCache.has(projectPath)) {
-    return gitBranchCache.get(projectPath);
-  }
-
   if (!existsSync(projectPath)) {
-    gitBranchCache.set(projectPath, undefined);
-    evictOldest(gitBranchCache, MAX_CACHE_SIZE);
     return undefined;
   }
 
@@ -420,13 +453,8 @@ function getGitBranch(projectPath: string): string | undefined {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
-    const value = branch || undefined;
-    gitBranchCache.set(projectPath, value);
-    evictOldest(gitBranchCache, MAX_CACHE_SIZE);
-    return value;
+    return branch || undefined;
   } catch {
-    gitBranchCache.set(projectPath, undefined);
-    evictOldest(gitBranchCache, MAX_CACHE_SIZE);
     return undefined;
   }
 }
@@ -480,6 +508,7 @@ function isSessionMetaFile(file: string): boolean {
   return file.endsWith('.json')
     && !file.endsWith('.messages.json')
     && !file.endsWith('.harness.json')
+    && !file.endsWith('.compact.json')
     && !file.endsWith('.index.json');
 }
 
@@ -488,6 +517,27 @@ function parseHarnessSidecarFile(path: string): HarnessSidecar | null {
     const content = readFileSync(path, 'utf-8');
     const parsed = JSON.parse(content) as HarnessSidecar;
     return parsed?.version === 2 && parsed.state ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseCompactCheckpointFile(path: string): CompactCheckpointV1 | null {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as CompactCheckpointV1;
+    if (
+      parsed?.version !== 1 ||
+      !parsed.checkpointId ||
+      !parsed.sessionId ||
+      !Array.isArray(parsed.modelHistory) ||
+      !Number.isInteger(parsed.sourceMessageCount) ||
+      parsed.sourceMessageCount < 0 ||
+      !parsed.summary ||
+      typeof parsed.summary.text !== 'string'
+    ) {
+      return null;
+    }
+    return parsed;
   } catch {
     return null;
   }
@@ -728,6 +778,99 @@ export function persistSessionCompactHistory(
 
   appendSessionMessages(sessionId, compactMessages);
   return markSessionTranscriptDisplayStart(sessionId, timestamp);
+}
+
+export function loadSessionCompactCheckpoint(sessionId: string): CompactCheckpointV1 | null {
+  const session = loadSessionMeta(sessionId);
+  if (!session) return null;
+  const checkpoint = parseCompactCheckpointFile(
+    getProjectSessionCompactPath(session.projectPath, sessionId)
+  );
+  if (!checkpoint || checkpoint.sessionId !== sessionId) return null;
+  if (session.activeCompactCheckpointId !== checkpoint.checkpointId) {
+    return null;
+  }
+
+  const rawCount = readSessionMessages(sessionId).length;
+  if (checkpoint.sourceMessageCount > rawCount) return null;
+
+  return checkpoint;
+}
+
+export function commitSessionCompactCheckpoint(
+  input: CommitCompactCheckpointInput
+): CompactCheckpointV1 {
+  const session = loadSessionMeta(input.sessionId);
+  if (!session) throw new Error(`Session not found: ${input.sessionId}`);
+  const rawCount = readSessionMessages(input.sessionId).length;
+  if (input.sourceMessageCount < 0 || input.sourceMessageCount > rawCount) {
+    throw new Error(
+      `Invalid compact source boundary ${input.sourceMessageCount}; transcript has ${rawCount} messages`
+    );
+  }
+
+  const createdAt = input.createdAt ?? Date.now();
+  const checkpoint: CompactCheckpointV1 = {
+    version: 1,
+    checkpointId: randomUUID(),
+    sessionId: input.sessionId,
+    createdAt,
+    mode: input.mode,
+    modelId: input.modelId,
+    sourceMessageCount: input.sourceMessageCount,
+    transcriptStartMessageIndex: Math.max(
+      0,
+      Math.min(input.sourceMessageCount, input.transcriptStartMessageIndex)
+    ),
+    modelHistory: input.modelHistory
+      .filter(message => message.role !== 'system')
+      .map(message => ({ ...message })),
+    summary: {
+      ...input.summary,
+      sourceMessageCount: input.sourceMessageCount,
+    },
+    beforeUsage: { ...input.beforeUsage },
+    afterUsage: { ...input.afterUsage },
+  };
+
+  const previousId = session.activeCompactCheckpointId;
+  const previousTime = session.lastCompactAt;
+  session.activeCompactCheckpointId = checkpoint.checkpointId;
+  session.lastCompactAt = createdAt;
+  session.updatedAt = createdAt;
+  session.updatedAtIso = new Date(createdAt).toISOString();
+
+  // Commit the pointer before replacing the atomic sidecar. If the process
+  // crashes between writes, the loader safely uses the last valid sidecar.
+  saveSessionMeta(session);
+  try {
+    atomicWriteFileSync(
+      getProjectSessionCompactPath(session.projectPath, input.sessionId),
+      JSON.stringify(checkpoint, null, 2),
+      { mode: 0o600 }
+    );
+  } catch (error) {
+    session.activeCompactCheckpointId = previousId;
+    session.lastCompactAt = previousTime;
+    saveSessionMeta(session);
+    throw error;
+  }
+
+  return checkpoint;
+}
+
+export function loadSessionTranscriptMessages(sessionId: string): SessionMessage[] {
+  const messages = readSessionMessages(sessionId);
+  const checkpoint = loadSessionCompactCheckpoint(sessionId);
+  if (checkpoint) {
+    return messages.slice(checkpoint.transcriptStartMessageIndex);
+  }
+
+  const session = loadSessionMeta(sessionId);
+  const displayStartTime = session?.transcriptDisplayStartTime;
+  return typeof displayStartTime === 'number'
+    ? messages.filter(message => (message.timestamp ?? 0) >= displayStartTime)
+    : messages;
 }
 
 function hasPersistedCompactContext(messages: SessionMessage[]): boolean {
@@ -1048,6 +1191,13 @@ export function readSessionTraceEvents(sessionId: string): SessionTraceEvent[] {
  */
 export function loadSessionHistory(sessionId: string): Message[] {
   const messages = readSessionMessages(sessionId);
+  const checkpoint = loadSessionCompactCheckpoint(sessionId);
+  if (checkpoint) {
+    return [
+      ...checkpoint.modelHistory.map(message => ({ ...message })),
+      ...messages.slice(checkpoint.sourceMessageCount).map(sessionMessageToModelMessage),
+    ];
+  }
   const session = loadSessionMeta(sessionId);
   const displayStartTime = session?.transcriptDisplayStartTime;
   let modelVisibleMessages = messages;
@@ -1058,24 +1208,21 @@ export function loadSessionHistory(sessionId: string): Message[] {
       : messages;
   }
 
-  return modelVisibleMessages.map(m => {
-    const result: Message = {
-      role: m.role,
-      content: m.modelVisibleContent ?? m.content,
-    };
+  return modelVisibleMessages.map(sessionMessageToModelMessage);
+}
 
-    // tool role: 添加 tool_call_id
-    if (m.role === 'tool' && m.toolCallId) {
-      result.tool_call_id = m.toolCallId;
-    }
-
-    // assistant role: 添加 tool_calls
-    if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
-      result.tool_calls = m.tool_calls;
-    }
-
-    return result;
-  });
+function sessionMessageToModelMessage(message: SessionMessage): Message {
+  const result: Message = {
+    role: message.role,
+    content: message.modelVisibleContent ?? message.content,
+  };
+  if (message.role === 'tool' && message.toolCallId) {
+    result.tool_call_id = message.toolCallId;
+  }
+  if (message.role === 'assistant' && message.tool_calls && message.tool_calls.length > 0) {
+    result.tool_calls = message.tool_calls;
+  }
+  return result;
 }
 
 /**
@@ -1208,6 +1355,7 @@ export function deleteSession(sessionId: string): boolean {
     getProjectSessionMetaPath(session.projectPath, sessionId),
     getProjectSessionMessagesPath(session.projectPath, sessionId),
     getProjectSessionHarnessPath(session.projectPath, sessionId),
+    getProjectSessionCompactPath(session.projectPath, sessionId),
     getProjectSessionTracePath(session.projectPath, sessionId),
   ];
   deleteSessionIndex(sessionId, session.projectPath);

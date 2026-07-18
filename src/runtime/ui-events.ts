@@ -2,6 +2,7 @@ import type { OpenHorseRuntime } from '../init';
 import type { Store } from '../framework/store';
 import type { LoopStats } from '../framework';
 import type { LLMService } from '../services/llm';
+import type { CompactCoordinator } from '../services/compact';
 import type { OpenHorseCLIConfig } from '../services/config';
 import type { SessionMeta, SessionTraceEvent } from '../services/session-storage';
 import type { RuntimeSubtaskEvent } from './subagents/types';
@@ -17,7 +18,12 @@ export interface StructuredToolActivity {
   state: 'queued' | 'running' | 'success' | 'error' | 'skipped' | 'requested';
   name: string;
   detail: string;
+  command?: string;
   duration?: string;
+  summary?: string;
+  outputBytes?: number;
+  /** Structured display body. When present, TUI ignores legacy TranscriptEntry.content. */
+  body?: string;
   error?: string;
   seq?: number;
   artifactHint?: string;
@@ -29,6 +35,7 @@ export interface TranscriptEntry {
   content: string;
   title?: string;
   errorLayer?: ErrorLayer;
+  statusTone?: 'neutral' | 'warning';
   /** Structured tool activity — set by tool event presenter so renderers
    *  consume typed data instead of parsing transcript text. */
   toolActivity?: StructuredToolActivity;
@@ -158,6 +165,11 @@ export interface RuntimeSessionRestoredEvent {
   restoredMessages: number;
   messageCount?: number;
   summary?: string;
+  summaryGeneratedAt?: number;
+  summarySource?: 'llm' | 'heuristic' | 'resume_heuristic';
+  summaryCoveredMessages?: number;
+  checkpointId?: string;
+  transcriptMessages?: number;
 }
 
 export type RuntimeLoopStats = LoopStats;
@@ -194,6 +206,7 @@ export interface OpenHorseUiRuntime extends RuntimeSessionAccessors {
   config: OpenHorseCLIConfig;
   store: Store;
   llm: LLMService | null;
+  compactCoordinator?: CompactCoordinator;
   runtime: OpenHorseRuntime;
   isConfigured: boolean;
   mcpReady?: Promise<void>;

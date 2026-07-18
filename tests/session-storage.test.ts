@@ -13,6 +13,10 @@ import {
   appendSessionMessages,
   readSessionMessages,
   loadSessionHistory,
+  loadSessionCompactCheckpoint,
+  loadSessionTranscriptMessages,
+  commitSessionCompactCheckpoint,
+  deleteSession,
   updateSessionSummary,
   truncateSessionToLastComplete,
   listProjectSessions,
@@ -33,7 +37,14 @@ import { createContextHarness } from '../src/harness';
 import { existsSync, mkdirSync, readFileSync, rmSync, realpathSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { getProjectSessionHarnessPath, getProjectSessionMessagesPath, getProjectSessionMetaPath } from '../src/services/config-dir';
+import {
+  getProjectSessionCompactPath,
+  getProjectSessionHarnessPath,
+  getProjectSessionMessagesPath,
+  getProjectSessionMetaPath,
+} from '../src/services/config-dir';
+import { createContextUsageSnapshot } from '../src/services/model-context';
+import * as atomicWrite from '../src/services/atomic-write';
 
 describe('session-storage', () => {
   // Use a unique test directory based on timestamp to avoid conflicts
@@ -97,6 +108,210 @@ describe('session-storage', () => {
       expect(loaded?.id).toBe(created.id);
       expect(loaded?.projectPath).toBe(created.projectPath);
       expect(loaded?.model).toBe(created.model);
+    });
+  });
+
+  describe('compact checkpoints', () => {
+    const usage = (usedTokens: number) =>
+      createContextUsageSnapshot({
+        modelId: 'gpt-4o',
+        usedTokens,
+        outputReserveTokens: 4096,
+      });
+
+    test('keeps the raw transcript immutable and restores checkpoint history plus new tail', () => {
+      const session = createSession('/tmp/project-compact-checkpoint', 'gpt-4o');
+      const rawMessages = Array.from({ length: 8 }, (_, index) => ({
+        role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+        content: `raw-${index}`,
+        timestamp: 1000 + index,
+      }));
+      appendSessionMessages(session.id, rawMessages);
+
+      const checkpoint = commitSessionCompactCheckpoint({
+        sessionId: session.id,
+        mode: 'threshold',
+        modelId: 'gpt-4o',
+        sourceMessageCount: rawMessages.length,
+        transcriptStartMessageIndex: 4,
+        modelHistory: [
+          { role: 'system', content: 'must not persist' },
+          { role: 'user', content: '[Context Summary]\ncompleted setup' },
+          { role: 'assistant', content: 'recent answer' },
+        ],
+        summary: {
+          text: 'completed setup',
+          generatedAt: 2000,
+          source: 'heuristic',
+        },
+        beforeUsage: usage(110000),
+        afterUsage: usage(1200),
+      });
+
+      expect(readSessionMessages(session.id)).toEqual(rawMessages);
+      expect(checkpoint.modelHistory).not.toContainEqual(
+        expect.objectContaining({ role: 'system' })
+      );
+      expect(loadSessionMeta(session.id)).toMatchObject({
+        activeCompactCheckpointId: checkpoint.checkpointId,
+        lastCompactAt: checkpoint.createdAt,
+      });
+      expect(loadSessionTranscriptMessages(session.id).map(message => message.content)).toEqual([
+        'raw-4',
+        'raw-5',
+        'raw-6',
+        'raw-7',
+      ]);
+
+      appendSessionMessage(session.id, {
+        role: 'user',
+        content: 'new-tail',
+        timestamp: 3000,
+      });
+      expect(loadSessionHistory(session.id).map(message => message.content)).toEqual([
+        '[Context Summary]\ncompleted setup',
+        'recent answer',
+        'new-tail',
+      ]);
+    });
+
+    test('uses the latest checkpoint boundary across consecutive compactions', () => {
+      const session = createSession('/tmp/project-consecutive-compact', 'gpt-4o');
+      appendSessionMessages(session.id, [
+        { role: 'user', content: 'first', timestamp: 1 },
+        { role: 'assistant', content: 'second', timestamp: 2 },
+      ]);
+      const common = {
+        sessionId: session.id,
+        modelId: 'gpt-4o',
+        transcriptStartMessageIndex: 0,
+        beforeUsage: usage(110000),
+        afterUsage: usage(1000),
+      };
+      commitSessionCompactCheckpoint({
+        ...common,
+        mode: 'predictive',
+        sourceMessageCount: 2,
+        modelHistory: [{ role: 'user', content: 'checkpoint-one' }],
+        summary: { text: 'one', generatedAt: 10, source: 'heuristic' },
+      });
+      appendSessionMessage(session.id, { role: 'user', content: 'third', timestamp: 3 });
+      const latest = commitSessionCompactCheckpoint({
+        ...common,
+        mode: 'threshold',
+        sourceMessageCount: 3,
+        modelHistory: [{ role: 'user', content: 'checkpoint-two' }],
+        summary: { text: 'two', generatedAt: 20, source: 'llm' },
+      });
+
+      expect(loadSessionCompactCheckpoint(session.id)?.checkpointId).toBe(latest.checkpointId);
+      expect(loadSessionHistory(session.id)).toEqual([
+        { role: 'user', content: 'checkpoint-two' },
+      ]);
+      expect(readSessionMessages(session.id)).toHaveLength(3);
+    });
+
+    test('falls back to raw history for a corrupt or mismatched sidecar', () => {
+      const session = createSession('/tmp/project-corrupt-compact', 'gpt-4o');
+      appendSessionMessage(session.id, { role: 'user', content: 'auditable raw', timestamp: 1 });
+      const checkpoint = commitSessionCompactCheckpoint({
+        sessionId: session.id,
+        mode: 'manual',
+        modelId: 'gpt-4o',
+        sourceMessageCount: 1,
+        transcriptStartMessageIndex: 0,
+        modelHistory: [{ role: 'user', content: 'checkpoint context' }],
+        summary: { text: 'summary', generatedAt: 2, source: 'heuristic' },
+        beforeUsage: usage(1000),
+        afterUsage: usage(500),
+      });
+      const compactPath = getProjectSessionCompactPath(session.projectPath, session.id);
+      writeFileSync(
+        compactPath,
+        JSON.stringify({ ...checkpoint, checkpointId: 'mismatched-id' }),
+        'utf-8'
+      );
+
+      expect(loadSessionCompactCheckpoint(session.id)).toBeNull();
+      expect(loadSessionHistory(session.id)).toEqual([{ role: 'user', content: 'auditable raw' }]);
+
+      writeFileSync(compactPath, '{broken', 'utf-8');
+      expect(loadSessionCompactCheckpoint(session.id)).toBeNull();
+      expect(loadSessionHistory(session.id)).toEqual([{ role: 'user', content: 'auditable raw' }]);
+    });
+
+    test('preserves the previous checkpoint when sidecar or meta commit fails', () => {
+      const session = createSession('/tmp/project-failed-compact-commit', 'gpt-4o');
+      appendSessionMessage(session.id, { role: 'user', content: 'raw source', timestamp: 1 });
+      const input = {
+        sessionId: session.id,
+        mode: 'manual' as const,
+        modelId: 'gpt-4o',
+        sourceMessageCount: 1,
+        transcriptStartMessageIndex: 0,
+        modelHistory: [{ role: 'user' as const, content: 'stable checkpoint' }],
+        summary: { text: 'stable', generatedAt: 2, source: 'heuristic' as const },
+        beforeUsage: usage(1000),
+        afterUsage: usage(500),
+      };
+      const stable = commitSessionCompactCheckpoint(input);
+      const compactPath = getProjectSessionCompactPath(session.projectPath, session.id);
+      const metaPath = getProjectSessionMetaPath(session.projectPath, session.id);
+      const realAtomicWrite = atomicWrite.atomicWriteFileSync;
+
+      const sidecarFailure = jest
+        .spyOn(atomicWrite, 'atomicWriteFileSync')
+        .mockImplementation((path, content, options) => {
+          if (path === compactPath) throw new Error('sidecar unavailable');
+          realAtomicWrite(path, content, options);
+        });
+      expect(() =>
+        commitSessionCompactCheckpoint({
+          ...input,
+          modelHistory: [{ role: 'user', content: 'must not commit' }],
+        })
+      ).toThrow('sidecar unavailable');
+      sidecarFailure.mockRestore();
+      expect(loadSessionCompactCheckpoint(session.id)?.checkpointId).toBe(stable.checkpointId);
+
+      const metaFailure = jest
+        .spyOn(atomicWrite, 'atomicWriteFileSync')
+        .mockImplementation((path, content, options) => {
+          if (path === metaPath) throw new Error('meta unavailable');
+          realAtomicWrite(path, content, options);
+        });
+      expect(() =>
+        commitSessionCompactCheckpoint({
+          ...input,
+          modelHistory: [{ role: 'user', content: 'also must not commit' }],
+        })
+      ).toThrow('meta unavailable');
+      metaFailure.mockRestore();
+      expect(loadSessionCompactCheckpoint(session.id)?.checkpointId).toBe(stable.checkpointId);
+      expect(loadSessionHistory(session.id)).toEqual([
+        { role: 'user', content: 'stable checkpoint' },
+      ]);
+    });
+
+    test('deleting a session removes its compact sidecar', () => {
+      const session = createSession('/tmp/project-delete-compact', 'gpt-4o');
+      appendSessionMessage(session.id, { role: 'user', content: 'delete me', timestamp: 1 });
+      commitSessionCompactCheckpoint({
+        sessionId: session.id,
+        mode: 'manual',
+        modelId: 'gpt-4o',
+        sourceMessageCount: 1,
+        transcriptStartMessageIndex: 0,
+        modelHistory: [{ role: 'user', content: 'compact' }],
+        summary: { text: 'summary', generatedAt: 2, source: 'heuristic' },
+        beforeUsage: usage(1000),
+        afterUsage: usage(500),
+      });
+      const compactPath = getProjectSessionCompactPath(session.projectPath, session.id);
+      expect(existsSync(compactPath)).toBe(true);
+
+      expect(deleteSession(session.id)).toBe(true);
+      expect(existsSync(compactPath)).toBe(false);
     });
   });
 

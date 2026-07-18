@@ -37,7 +37,9 @@ import {
   lookupSessionRef,
   loadSessionHistory,
   loadSessionMeta,
-  persistSessionCompactHistory,
+  loadSessionCompactCheckpoint,
+  loadSessionTranscriptMessages,
+  commitSessionCompactCheckpoint,
   appendSessionMessage,
   appendSessionMessages,
   endSession,
@@ -57,10 +59,13 @@ import {
 } from '../services/session-storage';
 import { loadSessionIndex, searchSessions } from '../services/session-index';
 import { getAutoCompact } from '../services/compact/auto-compact';
+import { CompactCoordinator } from '../services/compact/coordinator';
 import { createContextHarness } from '../harness';
 import {
   getSkillsRegistry,
+  loadExplicitSkillReference,
   normalizeRequestedSkillName,
+  parseSkillCommandInput,
   resolveSkillsForTurn,
   skillActivationNames,
 } from '../skills';
@@ -68,7 +73,11 @@ import { buildReferencedFilesPrompt } from '../services/file-context';
 import { loadProjectInstructionFiles } from '../services/project-instructions';
 import { refreshProjectInstructions } from '../services/prompt-context';
 import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from '../services/doctor';
-import { resolveModelContext } from '../services/model-context';
+import {
+  createContextUsageSnapshot,
+  resolveModelContext,
+} from '../services/model-context';
+import { estimateMessagesTokens } from '../utils/token-estimate';
 import {
   getModelCatalogAliases,
   getModelCatalogEntry,
@@ -88,6 +97,7 @@ import {
 } from '../services/storage-maintenance';
 import { agentStepStatus, compactStatus, runningToolsStatus } from '../runtime/agent-status';
 import { resolveRuntimeLoopBudget } from '../runtime/loop-budget';
+import { loadUsageState, summarizeUsageLedger } from '../services/usage-state';
 
 // ============================================================================
 // 颜色常量
@@ -350,7 +360,7 @@ function showStatus(ctx: CommandContext): CommandResult {
   console.log(`  Log level  ${DIM(ctx.config.logLevel)}`);
   const modelId = ctx.llm?.getModel() ?? snapshotCurrentModel(ctx);
   const modelContext = resolveModelContext(modelId);
-  const compactStats = getAutoCompact({ modelId }).getStats();
+  const compactStats = getCommandAutoCompact(ctx, modelId).getStats();
   console.log(`  Model      ${BRAND(modelId)}`);
   console.log(`  Context    ${DIM(`${formatTokenCount(modelContext.contextWindow)} tokens (${modelContext.source}${modelContext.source === 'fuzzy' ? `:${modelContext.matchedId}` : ''})`)}`);
   console.log(`  Compact    ${compactStats.enabled ? SUCCESS('auto') : WARN('off')} ${DIM(`predict ${formatThreshold(compactStats.predictiveCompactThreshold)}, hard ${formatThreshold(compactStats.threshold)}, used ${compactStats.ctxPercent}%`)}`);
@@ -1127,6 +1137,18 @@ function snapshotCurrentModel(ctx: CommandContext): string {
   return ctx.store.getSnapshot().currentModel || ctx.config.model;
 }
 
+function getCommandAutoCompact(ctx: CommandContext, modelId: string) {
+  if (ctx.compactCoordinator) {
+    ctx.compactCoordinator.configure({
+      modelId,
+      llm: ctx.llm,
+      outputReserveTokens: ctx.llm?.getMaxTokens?.(),
+    });
+    return ctx.compactCoordinator.getAutomatic();
+  }
+  return getAutoCompact({ modelId });
+}
+
 function showAgents(ctx: CommandContext): CommandResult {
   console.log();
   console.log(HEADER('Registered Agents'));
@@ -1386,9 +1408,10 @@ function showHarness(ctx: CommandContext, args: string = ''): CommandResult {
     }
     console.log();
     console.log(HEADER('  Auto Compact'));
-    const compactStats = getAutoCompact({
-      modelId: state.promptAssemblyStats?.modelId ?? snapshotCurrentModel(ctx),
-    }).getStats();
+    const compactStats = getCommandAutoCompact(
+      ctx,
+      state.promptAssemblyStats?.modelId ?? snapshotCurrentModel(ctx)
+    ).getStats();
     const contextInfo = resolveModelContext(compactStats.modelId);
     console.log(`    Model       ${ACCENT(compactStats.modelId)}`);
     console.log(`    Window      ${DIM(`${formatTokenCount(contextInfo.contextWindow)} tokens (${contextInfo.source}${contextInfo.source === 'fuzzy' ? `:${contextInfo.matchedId}` : ''})`)}`);
@@ -1464,7 +1487,7 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
       const currentModel = ctx.llm.getModel();
       const aliasEntry = getModelCatalogEntry(currentModel);
       const contextInfo = resolveModelContext(currentModel);
-      const compactStats = getAutoCompact({ modelId: currentModel }).getStats();
+      const compactStats = getCommandAutoCompact(ctx, currentModel).getStats();
       console.log(HEADER('Current Model'));
       console.log(DIM('─'.repeat(40)));
       console.log(`  Model    ${BRAND(currentModel)}`);
@@ -1544,7 +1567,7 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
   const resolvedModel = resolveModelAlias(args);
 
   ctx.llm.setModel(resolvedModel);
-  getAutoCompact({ modelId: resolvedModel });
+  getCommandAutoCompact(ctx, resolvedModel);
   ctx.store.setState({ currentModel: resolvedModel });
   console.log(SUCCESS(`✔ Model changed to ${BRAND(resolvedModel)}`));
   const contextInfo = resolveModelContext(resolvedModel);
@@ -2068,13 +2091,14 @@ async function handleExit(ctx: CommandContext): Promise<CommandResult> {
 
 function handleCost(ctx: CommandContext): CommandResult {
   console.log();
-  console.log(HEADER('Session Cost'));
+  console.log(HEADER('Lifetime Cost'));
   console.log(DIM('─'.repeat(40)));
 
   const costTracker = ctx.store.getSnapshot().costTracker;
-  const stats = costTracker.getSessionStats();
+  const state = loadUsageState();
+  const ledger = summarizeUsageLedger();
 
-  if (stats.recordCount === 0) {
+  if (state.totalTokens === 0 && state.totalCost === 0) {
     console.log(DIM('  No usage recorded yet.'));
     console.log(DIM('  Use /run or /chat to interact with LLM.'));
     console.log();
@@ -2083,19 +2107,42 @@ function handleCost(ctx: CommandContext): CommandResult {
 
   // Summary
   console.log();
-  console.log(`  ${ACCENT('Total Tokens')}   ${stats.totalTokens}`);
-  console.log(`  ${ACCENT('Prompt')}         ${stats.totalPromptTokens}`);
-  console.log(`  ${ACCENT('Completion')}    ${stats.totalCompletionTokens}`);
-  console.log(`  ${ACCENT('Est. Cost')}     ${costTracker.formatCost(stats.totalCost)}`);
-  console.log(`  ${ACCENT('Requests')}       ${stats.recordCount}`);
+  console.log(`  ${ACCENT('Total Tokens')}   ${state.totalTokens.toLocaleString()}`);
+  console.log(`  ${ACCENT('Tracked Cost')}   ${costTracker.formatCost(state.totalCost)}`);
+  console.log(`  ${ACCENT('Provider Cost')}  ${costTracker.formatCost(state.providerCost)}`);
+  console.log(`  ${ACCENT('Estimated Cost')} ${costTracker.formatCost(state.estimatedCost)}`);
+  console.log(`  ${ACCENT('Requests')}       ${state.usageRecords.toLocaleString()}`);
+  console.log(`  ${ACCENT('Sessions')}       ${state.totalSessions.toLocaleString()}`);
 
   // By Model
-  if (Object.keys(stats.byModel).length > 0) {
+  if (Object.keys(ledger.byModel).length > 0) {
     console.log();
     console.log(HEADER('  By Model:'));
-    for (const [model, data] of Object.entries(stats.byModel)) {
+    for (const [model, data] of Object.entries(ledger.byModel)) {
       console.log(`    ${BRAND(model.padEnd(20))} ${data.tokens} tokens, ${costTracker.formatCost(data.cost)}`);
     }
+  }
+
+  console.log();
+  console.log(HEADER('  Cost Sources:'));
+  for (const source of ['provider', 'configured', 'builtin', 'fallback'] as const) {
+    const data = ledger.bySource[source];
+    if (data.count === 0) continue;
+    console.log(
+      `    ${source.padEnd(12)} ${data.count} requests, ${costTracker.formatCost(data.cost)}`,
+    );
+  }
+  if (state.baselineCost > 0 || state.baselineTokens > 0) {
+    console.log(
+      DIM(
+        `    legacy       ${state.baselineTokens.toLocaleString()} tokens, ${costTracker.formatCost(state.baselineCost)}`,
+      ),
+    );
+  }
+  if (ledger.bySource.fallback.count > 0) {
+    console.log();
+    console.log(WARN('  Unknown-model fallback pricing is an estimate.'));
+    console.log(DIM('  Configure cost.modelPricing in ~/.openhorse/openhorse.json for accuracy.'));
   }
 
   // Budget
@@ -2105,7 +2152,7 @@ function handleCost(ctx: CommandContext): CommandResult {
     console.log();
     console.log(HEADER('  Budget:'));
     console.log(`    ${ACCENT('Limit')}    ${costTracker.formatCost(budget)}`);
-    console.log(`    ${ACCENT('Used')}     ${costTracker.formatCost(check.used)}`);
+    console.log(`    ${ACCENT('Used this run')} ${costTracker.formatCost(check.used)}`);
     console.log(`    ${check.ok ? SUCCESS('✓ Within budget') : WARN('⚠ Budget exceeded')}`);
   }
 
@@ -2154,7 +2201,7 @@ function handleSkills(_ctx: CommandContext): CommandResult {
   return { success: true };
 }
 
-function handleSkill(args: string): CommandResult {
+function handleSkill(ctx: CommandContext, args: string): CommandResult {
   const trimmed = args.trim();
   const registry = getSkillsRegistry();
   registry.initialize();
@@ -2170,9 +2217,18 @@ function handleSkill(args: string): CommandResult {
     };
   }
 
-  const [rawName, ...rest] = trimmed.split(/\s+/);
-  const requestedName = normalizeRequestedSkillName(rawName);
-  const skill = registry.getAllSkills()
+  const parsed = parseSkillCommandInput(`/skill ${trimmed}`);
+  const rawName = trimmed.split(/\s+/, 1)[0] || '';
+  const requestedName = parsed.skillName || normalizeRequestedSkillName(rawName);
+  const referencedSkill = loadExplicitSkillReference(`/skill ${trimmed}`, ctx.cwd);
+  if (parsed.skillPath && !referencedSkill) {
+    return {
+      success: false,
+      error: `Invalid skill reference: ${parsed.skillPath}`,
+    };
+  }
+
+  const skill = referencedSkill || registry.getAllSkills()
     .find(candidate => skillActivationNames(candidate)
       .some(name => normalizeRequestedSkillName(name) === requestedName));
 
@@ -2189,7 +2245,7 @@ function handleSkill(args: string): CommandResult {
     };
   }
 
-  const task = rest.join(' ').trim();
+  const task = parsed.task;
   const source = registry.getSource(skill.name);
   const resourceRoot = skill.resourceRoot || skill.source || source?.path;
   const skillFile = resourceRoot
@@ -2197,13 +2253,18 @@ function handleSkill(args: string): CommandResult {
     : source?.skillFile;
 
   if (!task) {
+    const usageSelector = parsed.skillPath
+      ? `[$${skill.name}](${formatSkillReferencePath(parsed.skillPath)})`
+      : skill.name;
     return {
       success: true,
       output: [
-        `Skill ${skill.name} is loaded.`,
+        parsed.skillPath
+          ? `Skill reference ${skill.name} is valid for one turn.`
+          : `Skill ${skill.name} is loaded.`,
         skillFile ? `SKILL.md ${skillFile}` : '',
         resourceRoot ? `Root     ${resourceRoot}` : '',
-        `Use: /skill ${skill.name} <task>`,
+        `Use: /skill ${usageSelector} <task>`,
       ].filter(Boolean).join('\n'),
     };
   }
@@ -2211,8 +2272,14 @@ function handleSkill(args: string): CommandResult {
   return {
     success: true,
     continueAsChat: true,
-    chatInput: `/skill ${skill.name} ${task}`,
+    chatInput: parsed.skillPath
+      ? `/skill [$${skill.name}](${formatSkillReferencePath(parsed.skillPath)}) ${task}`
+      : `/skill ${skill.name} ${task}`,
   };
+}
+
+function formatSkillReferencePath(path: string): string {
+  return /[\s()]/u.test(path) ? `<${path}>` : path;
 }
 
 function handleMcp(_ctx: CommandContext): CommandResult {
@@ -2413,31 +2480,78 @@ async function handleCompact(ctx: CommandContext, args: string): Promise<Command
 
   console.log(DIM(compactStatus()));
   try {
-    const autoCompact = getAutoCompact();
-    autoCompact.configure({
-      maxMessages: threshold,
+    const modelId = ctx.llm?.getModel() ?? ctx.store.getSnapshot().currentModel;
+    const coordinator = ctx.compactCoordinator ?? new CompactCoordinator({
+      modelId,
+      llm: ctx.llm,
+      outputReserveTokens: ctx.llm?.getMaxTokens?.(),
       getContextCapsule: () => ctx.store.getSnapshot().harnessState?.capsule,
       getHarnessState: () => ctx.store.getSnapshot().harnessState,
-      llm: ctx.llm,
     });
-    const compacted = await autoCompact.forceCompact(history);
-
-    // 更新 store
-    ctx.store.setState({ conversationHistory: compacted });
+    coordinator.configure({
+      modelId,
+      llm: ctx.llm,
+      outputReserveTokens: ctx.llm?.getMaxTokens?.(),
+      getContextCapsule: () => ctx.store.getSnapshot().harnessState?.capsule,
+      getHarnessState: () => ctx.store.getSnapshot().harnessState,
+    });
+    const beforeTokens = estimateMessagesTokens(history);
+    const automaticStats = coordinator.getAutomatic().getStats();
+    const beforeUsage = createContextUsageSnapshot({
+      modelId,
+      usedTokens: beforeTokens,
+      source: 'estimated',
+      outputReserveTokens: ctx.llm?.getMaxTokens?.(),
+      warningThreshold: automaticStats.preCompactThreshold,
+      autoCompactThreshold: automaticStats.threshold,
+      autoCompactEnabled: automaticStats.enabled,
+    });
+    const result = await coordinator.compactManual(history, threshold);
+    const compacted = result.messages;
+    const compactedTokens = estimateMessagesTokens(compacted);
+    const afterUsage = createContextUsageSnapshot({
+      modelId,
+      usedTokens: compactedTokens,
+      source: 'estimated',
+      outputReserveTokens: ctx.llm?.getMaxTokens?.(),
+      warningThreshold: automaticStats.preCompactThreshold,
+      autoCompactThreshold: automaticStats.threshold,
+      autoCompactEnabled: automaticStats.enabled,
+    });
 
     const reduction = history.length - compacted.length;
     const percent = Math.round((reduction / history.length) * 100);
     const sessionId = ctx.getSession?.()?.id ?? ctx.sessionId;
     if (sessionId) {
-      persistSessionCompactHistory(sessionId, compacted);
+      const sourceMessageCount = readSessionMessages(sessionId).length;
+      const checkpoint = commitSessionCompactCheckpoint({
+        sessionId,
+        mode: 'manual',
+        modelId,
+        sourceMessageCount,
+        transcriptStartMessageIndex: Math.max(0, sourceMessageCount - threshold),
+        modelHistory: compacted,
+        summary: {
+          text: result.summary,
+          generatedAt: result.summaryGeneratedAt,
+          source: result.summarySource,
+        },
+        beforeUsage,
+        afterUsage,
+      });
+      ctx.store.setState({ conversationHistory: checkpoint.modelHistory });
+    } else {
+      ctx.store.setState({ conversationHistory: compacted });
     }
+    ctx.store.setContextUsage(afterUsage);
 
     console.log(SUCCESS(`✔ Compacted ${history.length} → ${compacted.length} messages`));
     console.log(DIM(`  Reduced by ${reduction} messages (${percent}%)`));
     console.log();
     return { success: true };
-  } catch (err: any) {
-    console.log(ERROR(`✗ Compact failed: ${err.message}`));
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.log(ERROR(`✗ Compact failed: ${message}`));
     console.log();
     return { success: false };
   }
@@ -2744,9 +2858,16 @@ function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boole
 
   // Load history and notify runtime/TUI consumers.
   const history = loadSessionHistory(resumed.id);
-  const summary = history.length > 0 ? generateHistorySummary(history) : '';
+  const transcriptMessages = loadSessionTranscriptMessages(resumed.id);
+  const rawMessages = readSessionMessages(resumed.id);
+  const checkpoint = loadSessionCompactCheckpoint(resumed.id);
+  const resumeGeneratedAt = Date.now();
+  const summary = checkpoint?.summary.text ?? (history.length > 0 ? generateHistorySummary(history) : '');
+  const summaryGeneratedAt = checkpoint?.summary.generatedAt ?? resumeGeneratedAt;
+  const summarySource = checkpoint?.summary.source ?? 'resume_heuristic';
+  const summaryCoveredMessages = checkpoint?.summary.sourceMessageCount ?? rawMessages.length;
   if (history.length > 0) {
-    const eventSummary = generateRestoredSessionEventSummary(history);
+    const eventSummary = checkpoint?.summary.text ?? generateRestoredSessionEventSummary(history);
     ctx.store.setState({ conversationHistory: history });
     ctx.store.setState({ harnessState: loadSessionHarnessState(resumed.id) ?? resumed.harnessState });
     resetToolState();
@@ -2757,6 +2878,11 @@ function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boole
       restoredMessages: history.length,
       messageCount: resumed.messageCount,
       summary: eventSummary,
+      summaryGeneratedAt,
+      summarySource,
+      summaryCoveredMessages,
+      checkpointId: checkpoint?.checkpointId,
+      transcriptMessages: transcriptMessages.length,
     });
   } else {
     ctx.sessionRestored?.({
@@ -2765,6 +2891,11 @@ function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boole
       model: resumed.model,
       restoredMessages: 0,
       messageCount: resumed.messageCount,
+      summaryGeneratedAt,
+      summarySource,
+      summaryCoveredMessages,
+      checkpointId: checkpoint?.checkpointId,
+      transcriptMessages: transcriptMessages.length,
     });
   }
 
@@ -2782,25 +2913,26 @@ function restoreSession(ctx: CommandContext, session: SessionMeta, isLast: boole
   ];
   if (history.length > 0) {
     bannerLines.push(`  Summary: ${summary}`);
-    bannerLines.push(`✔ Restored ${history.length} messages`);
+    bannerLines.push(
+      `  Generated: ${new Date(summaryGeneratedAt).toLocaleString()} (${checkpoint ? 'compact checkpoint' : 'generated on resume'})`
+    );
+    bannerLines.push(`  Covers: ${summaryCoveredMessages} source messages`);
+    bannerLines.push(
+      `✔ Restored ${history.length} model-context messages / ${transcriptMessages.length} transcript messages`
+    );
   } else {
     bannerLines.push('  No messages in session');
   }
 
-  if (ctx.uiRenderer === 'tui') {
-    for (const line of bannerLines) ctx.writeLine?.(line);
+  if (ctx.uiRenderer === 'tui' || ctx.uiRenderer === 'ink') {
+    if (!ctx.sessionRestored) {
+      for (const line of bannerLines) ctx.writeLine?.(line);
+    }
   } else {
     console.log();
     console.log(HEADER(bannerLines[0]));
-    console.log(DIM(bannerLines[1]));
-    console.log(DIM(bannerLines[2]));
-    console.log(DIM(bannerLines[3]));
-    console.log(DIM(bannerLines[4]));
-    if (history.length > 0) {
-      console.log(DIM(bannerLines[5]));
-      console.log(SUCCESS(bannerLines[6]));
-    } else {
-      console.log(DIM(bannerLines[5]));
+    for (const line of bannerLines.slice(1)) {
+      console.log(line.startsWith('✔') ? SUCCESS(line) : DIM(line));
     }
     console.log();
   }
@@ -3147,7 +3279,7 @@ const COMMANDS: SlashCommand[] = [
     category: 'context',
     priority: 21,
     type: 'chat',
-    execute: (_ctx, args) => handleSkill(args),
+    execute: (ctx, args) => handleSkill(ctx, args),
   },
   {
     name: 'memory',

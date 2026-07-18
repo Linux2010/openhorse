@@ -1,25 +1,19 @@
-/**
- * Rich text layout: convert RichTextBlock[] to StyledRow[].
- *
- * Pure function: takes blocks + width + theme, returns styled rows.
- * Handles width degradation, code wrapping, diff prefixes, table fallback.
- * Every output row satisfies stringWidth(row) <= safeWidth.
- */
+/** Pure rich-text layout: structured Markdown blocks to terminal-safe styled rows. */
 
 import stringWidth from 'string-width';
 import { segmentGraphemes } from '../composer/grapheme';
 import {
-  type RichTextBlock,
-  type RichTextSpan,
-  type RichTextDocument,
-  type RichTextThemeResolver,
   type DiffLine,
+  type RichTextBlock,
+  type RichTextDocument,
+  type RichTextSpan,
+  type RichTextThemeResolver,
 } from './types';
 import {
+  styleKey,
   type StyledRow,
   type StyledSpan,
   type TuiStyle,
-  styleKey,
 } from '../../tui-core/style';
 
 export interface RichTextLayoutOptions {
@@ -29,250 +23,194 @@ export interface RichTextLayoutOptions {
   indent?: number;
 }
 
-/**
- * Layout a RichTextDocument into StyledRow[].
- * Each row's visual width <= safeWidth.
- */
-export function layoutRichText(doc: RichTextDocument, options: RichTextLayoutOptions): StyledRow[] {
-  const safeWidth = Math.max(1, options.width);
-  const rows: StyledRow[] = [];
-
-  for (const block of doc.blocks) {
-    const blockRows = layoutBlock(block, safeWidth, options.theme, options.indent ?? 0);
-    rows.push(...blockRows);
-  }
-
-  return rows;
+interface StyledUnit {
+  text: string;
+  style: TuiStyle;
+  width: number;
 }
 
-function layoutBlock(block: RichTextBlock, width: number, theme: RichTextThemeResolver, indent: number): StyledRow[] {
+/** Every returned row has a visual width less than or equal to options.width. */
+export function layoutRichText(doc: RichTextDocument, options: RichTextLayoutOptions): StyledRow[] {
+  const width = normalizeWidth(options.width);
+  const indent = normalizeIndent(options.indent ?? 0, width);
+  return doc.blocks.flatMap(block => layoutBlock(block, width, options.theme, indent));
+}
+
+function layoutBlock(
+  block: RichTextBlock,
+  width: number,
+  theme: RichTextThemeResolver,
+  indent: number,
+): StyledRow[] {
   switch (block.type) {
     case 'paragraph':
-      return layoutParagraph(block.spans, width, theme('assistantText'), indent);
+      return layoutInline(block.spans, width, theme, theme('assistantText'), indent);
     case 'heading':
-      return layoutParagraph(block.spans, width, theme('heading'), indent);
+      return layoutInline(block.spans, width, theme, theme('heading'), indent);
     case 'list':
       return layoutList(block, width, theme, indent);
     case 'quote':
       return layoutQuote(block, width, theme, indent);
     case 'code':
-      return layoutCode(block.lines, block.language, width, theme('code'), indent);
+      return layoutCode(block.lines, width, theme, indent, block.language);
     case 'diff':
       return layoutDiff(block.lines, width, theme, indent);
     case 'table':
       return layoutTable(block, width, theme, indent);
-    case 'rule':
-      return [[{ text: '─'.repeat(width), style: theme('muted') }]];
-    default:
-      return [];
+    case 'rule': {
+      const available = Math.max(1, width - indent);
+      return [[
+        { text: ' '.repeat(indent), style: theme('muted') },
+        { text: '─'.repeat(available), style: theme('muted') },
+      ]];
+    }
   }
 }
 
-function layoutParagraph(spans: RichTextSpan[], width: number, style: TuiStyle, indent: number): StyledRow[] {
-  const availableWidth = Math.max(1, width - indent);
-  const styledSpans: StyledSpan[] = spans.map(s => ({
-    text: s.text,
-    style: resolveSpanStyle(s, style),
+function layoutInline(
+  spans: RichTextSpan[],
+  width: number,
+  theme: RichTextThemeResolver,
+  baseStyle: TuiStyle,
+  indent: number,
+): StyledRow[] {
+  const prefix: StyledRow = indent > 0 ? [{ text: ' '.repeat(indent), style: baseStyle }] : [];
+  const styled = spans.map(span => ({
+    text: span.text,
+    style: resolveSpanStyle(span, baseStyle, theme),
   }));
+  return layoutPrefixedSpans(styled, width, prefix, prefix, true);
+}
 
-  // If no text content, return an empty row with indent.
-  const fullText = styledSpans.map(s => s.text).join('');
-  if (!fullText) return [[{ text: ' '.repeat(indent), style }]];
-
-  // Check if all spans share the same style — if so, use simple wrap.
-  const allSameStyle = styledSpans.every(s => styleKey(s.style) === styleKey(styledSpans[0].style));
-
-  if (allSameStyle) {
-    // Simple path: join text, wrap, apply single style.
-    const lines = fullText.split('\n');
-    const rows: StyledRow[] = [];
-    for (const line of lines) {
-      const wrapped = wrapText(line, availableWidth);
-      for (const wrappedLine of wrapped) {
-        rows.push([{ text: ' '.repeat(indent) + wrappedLine, style: styledSpans[0].style }]);
-      }
-    }
-    return rows;
-  }
-
-  // Mixed-style path: build a character-to-style map, wrap the joined text,
-  // then reconstruct spans per row preserving style boundaries.
-  const charStyles: TuiStyle[] = [];
-  for (const span of styledSpans) {
-    Array.from(span.text).forEach(() => {
-      charStyles.push(span.style);
-    });
-  }
-
-  const lines = fullText.split('\n');
+function layoutList(
+  block: Extract<RichTextBlock, { type: 'list' }>,
+  width: number,
+  theme: RichTextThemeResolver,
+  indent: number,
+): StyledRow[] {
   const rows: StyledRow[] = [];
-  let charOffset = 0;
 
-  for (const line of lines) {
-    const wrapped = wrapText(line, availableWidth);
-    for (const wrappedLine of wrapped) {
-      const lineStart = charOffset;
-      const lineEnd = charOffset + Array.from(wrappedLine).length;
-      // Build spans for this line from the charStyles map.
-      const rowSpans: StyledSpan[] = [{ text: ' '.repeat(indent), style }];
-      let currentSpanText = '';
-      let currentSpanStyle: TuiStyle | null = null;
+  block.items.forEach((item, itemIndex) => {
+    const marker = block.ordered ? `${itemIndex + 1}. ` : '- ';
+    const markerIndent = normalizeIndent(indent, width);
+    const prefixStyle = theme('muted');
+    const firstPrefix: StyledRow = [
+      { text: ' '.repeat(markerIndent), style: prefixStyle },
+      { text: marker, style: prefixStyle },
+    ];
+    const continuationPrefix: StyledRow = [
+      { text: ' '.repeat(markerIndent + stringWidth(marker)), style: prefixStyle },
+    ];
 
-      for (let ci = lineStart; ci < lineEnd && ci < charStyles.length; ci++) {
-        const ch = Array.from(fullText)[ci] || '';
-        const chStyle = charStyles[ci];
-        if (currentSpanStyle !== null && styleKey(chStyle) !== styleKey(currentSpanStyle)) {
-          if (currentSpanText) {
-            rowSpans.push({ text: currentSpanText, style: currentSpanStyle });
-          }
-          currentSpanText = ch;
-          currentSpanStyle = chStyle;
-        } else {
-          currentSpanText += ch;
-          currentSpanStyle = chStyle;
-        }
+    item.forEach((subBlock, blockIndex) => {
+      if (blockIndex === 0 && (subBlock.type === 'paragraph' || subBlock.type === 'heading')) {
+        const base = subBlock.type === 'heading' ? theme('heading') : theme('assistantText');
+        const styled = subBlock.spans.map(span => ({
+          text: span.text,
+          style: resolveSpanStyle(span, base, theme),
+        }));
+        rows.push(...layoutPrefixedSpans(
+          styled,
+          width,
+          firstPrefix,
+          continuationPrefix,
+          true,
+        ));
+        return;
       }
-      if (currentSpanText && currentSpanStyle !== null) {
-        rowSpans.push({ text: currentSpanText, style: currentSpanStyle });
+
+      if (blockIndex === 0) {
+        rows.push(clampRow(firstPrefix, width));
       }
-
-      rows.push(rowSpans);
-      charOffset = lineEnd;
-    }
-    // Skip the newline character in the charStyles map.
-    charOffset += 1;
-  }
-
-  return rows;
-}
-
-function wrapText(text: string, maxWidth: number): string[] {
-  if (!text) return [''];
-  if (stringWidth(text) <= maxWidth) return [text];
-
-  const words = text.split(' ');
-  const lines: string[] = [];
-  let current = '';
-
-  for (const word of words) {
-    const candidate = current ? `${current} ${word}` : word;
-
-    if (stringWidth(candidate) <= maxWidth) {
-      current = candidate;
-    } else {
-      if (current) lines.push(current);
-      // Hard-wrap long words.
-      if (stringWidth(word) > maxWidth) {
-        const chunks = splitByVisualWidth(word, maxWidth);
-        lines.push(...chunks.slice(0, -1));
-        current = chunks[chunks.length - 1];
-      } else {
-        current = word;
-      }
-    }
-  }
-
-  if (current) lines.push(current);
-  return lines.length > 0 ? lines : [''];
-}
-
-function splitByVisualWidth(text: string, maxWidth: number): string[] {
-  if (text.length === 0) return [''];
-  const chunks: string[] = [];
-  let current = '';
-  for (const part of segmentGraphemes(text)) {
-    const next = `${current}${part.segment}`;
-    if (current && stringWidth(next) > maxWidth) {
-      chunks.push(current);
-      current = part.segment;
-    } else {
-      current = next;
-    }
-  }
-  chunks.push(current);
-  return chunks;
-}
-
-function layoutList(block: { ordered: boolean; items: RichTextBlock[][] }, width: number, theme: RichTextThemeResolver, indent: number): StyledRow[] {
-  const rows: StyledRow[] = [];
-  const marker = block.ordered ? '1. ' : '- ';
-  const childIndent = indent + marker.length;
-
-  block.items.forEach((item, i) => {
-    const prefix = block.ordered ? `${i + 1}. ` : '- ';
-    const availableWidth = Math.max(1, width - indent);
-
-    // Render first block with prefix, rest with child indent.
-    item.forEach((subBlock, j) => {
-      if (j === 0) {
-        const subRows = layoutBlock(subBlock, width, theme, indent);
-        if (subRows.length > 0) {
-          // Prepend marker to first row.
-          const firstRow = subRows[0];
-          rows.push([{ text: prefix + ' '.repeat(Math.max(0, indent)) + (firstRow[0]?.text ?? '').trimStart(), style: theme('muted') }]);
-          rows.push(...subRows.slice(1));
-        }
-      } else {
-        rows.push(...layoutBlock(subBlock, width, theme, childIndent));
-      }
+      const childIndent = normalizeIndent(markerIndent + stringWidth(marker), width);
+      rows.push(...layoutBlock(subBlock, width, theme, childIndent));
     });
-    void availableWidth;
   });
 
   return rows;
 }
 
-function layoutQuote(block: { blocks: RichTextBlock[] }, width: number, theme: RichTextThemeResolver, indent: number): StyledRow[] {
+function layoutQuote(
+  block: Extract<RichTextBlock, { type: 'quote' }>,
+  width: number,
+  theme: RichTextThemeResolver,
+  indent: number,
+): StyledRow[] {
+  const prefix: StyledRow = [{
+    text: `${' '.repeat(normalizeIndent(indent, width))}> `,
+    style: theme('muted'),
+  }];
+  const prefixWidth = rowWidth(prefix);
+  const childWidth = Math.max(1, width - prefixWidth);
   const rows: StyledRow[] = [];
-  const quoteIndent = indent + 2;
 
-  for (const subBlock of block.blocks) {
-    const subRows = layoutBlock(subBlock, width, theme, quoteIndent);
-    for (const row of subRows) {
-      // Add quote prefix.
-      rows.push([{ text: '> ', style: theme('muted') }, ...row]);
+  for (const child of block.blocks) {
+    const childRows = layoutBlock(child, childWidth, theme, 0);
+    if (childRows.length === 0) rows.push(clampRow(prefix, width));
+    for (const childRow of childRows) {
+      rows.push(clampRow([...prefix, ...childRow], width));
     }
   }
 
   return rows;
 }
 
-function layoutCode(lines: string[], _language: string | undefined, width: number, style: TuiStyle, indent: number): StyledRow[] {
-  const availableWidth = Math.max(1, width - indent - 1); // 1 for border/prefix
+function layoutCode(
+  lines: string[],
+  width: number,
+  theme: RichTextThemeResolver,
+  indent: number,
+  language?: string,
+): StyledRow[] {
+  const safeIndent = normalizeIndent(indent, width);
+  const available = Math.max(1, width - safeIndent);
+  const style = theme('code');
+  const prefix: StyledRow = safeIndent > 0 ? [{ text: ' '.repeat(safeIndent), style }] : [];
   const rows: StyledRow[] = [];
 
-  for (const line of lines) {
-    if (stringWidth(line) <= availableWidth) {
-      rows.push([{ text: ' '.repeat(indent) + line, style }]);
-    } else {
-      const wrapped = splitByVisualWidth(line, availableWidth);
-      wrapped.forEach((chunk, i) => {
-        const marker = i > 0 ? '↳' : ' ';
-        rows.push([{ text: ' '.repeat(indent) + marker + chunk, style }]);
-      });
+  if (language) {
+    const labelStyle = mergeStyles(style, theme('muted'));
+    const labelPrefix: StyledRow = safeIndent > 0
+      ? [{ text: ' '.repeat(safeIndent), style: labelStyle }]
+      : [];
+    const label = truncateToWidth(language, available);
+    rows.push(clampRow([
+      ...labelPrefix,
+      ...padRow([{ text: label, style: labelStyle }], available, labelStyle),
+    ], width));
+  }
+
+  for (const line of lines.length > 0 ? lines : ['']) {
+    const wrapped = wrapStyledSpans([{ text: line, style }], available, false);
+    for (const row of wrapped) {
+      rows.push(clampRow([...prefix, ...padRow(row, available, style)], width));
     }
   }
 
   return rows;
 }
 
-function layoutDiff(lines: DiffLine[], width: number, theme: RichTextThemeResolver, indent: number): StyledRow[] {
+function layoutDiff(
+  lines: DiffLine[],
+  width: number,
+  theme: RichTextThemeResolver,
+  indent: number,
+): StyledRow[] {
   const rows: StyledRow[] = [];
-  const availableWidth = Math.max(1, width - indent - 1);
+  const safeIndent = normalizeIndent(indent, width);
 
   for (const line of lines) {
     const prefix = line.kind === 'add' ? '+' : line.kind === 'remove' ? '-' : ' ';
     const style = diffLineStyle(line.kind, theme);
-
-    if (stringWidth(line.content) <= availableWidth) {
-      rows.push([{ text: ' '.repeat(indent) + prefix + line.content, style }]);
-    } else {
-      const wrapped = splitByVisualWidth(line.content, availableWidth);
-      wrapped.forEach((chunk, i) => {
-        const marker = i > 0 ? '↳' : prefix;
-        rows.push([{ text: ' '.repeat(indent) + marker + chunk, style }]);
-      });
-    }
+    const firstPrefix: StyledRow = [{ text: `${' '.repeat(safeIndent)}${prefix}`, style }];
+    const continuationPrefix: StyledRow = [{ text: `${' '.repeat(safeIndent)}↳`, style }];
+    rows.push(...layoutPrefixedSpans(
+      [{ text: line.content, style }],
+      width,
+      firstPrefix,
+      continuationPrefix,
+      false,
+    ));
   }
 
   return rows;
@@ -280,94 +218,270 @@ function layoutDiff(lines: DiffLine[], width: number, theme: RichTextThemeResolv
 
 function diffLineStyle(kind: DiffLine['kind'], theme: RichTextThemeResolver): TuiStyle {
   switch (kind) {
-    case 'add': return theme('diffAdded');
-    case 'remove': return theme('diffRemoved');
+    case 'add':
+      return theme('diffAdded');
+    case 'remove':
+      return theme('diffRemoved');
     case 'hunk':
-    case 'meta': return theme('diffHunk');
-    case 'context': return theme('muted');
+    case 'meta':
+      return theme('diffHunk');
+    case 'context':
+      return theme('muted');
   }
 }
 
-function layoutTable(block: { headers: RichTextSpan[][]; rows: RichTextSpan[][][] }, width: number, theme: RichTextThemeResolver, indent: number): StyledRow[] {
-  const availableWidth = Math.max(1, width - indent);
+function layoutTable(
+  block: Extract<RichTextBlock, { type: 'table' }>,
+  width: number,
+  theme: RichTextThemeResolver,
+  indent: number,
+): StyledRow[] {
+  const safeIndent = normalizeIndent(indent, width);
+  const available = Math.max(1, width - safeIndent);
+  const columnCount = Math.max(block.headers.length, ...block.rows.map(row => row.length));
+  if (columnCount === 0) return [];
 
-  // Measure column widths.
-  const colCount = Math.max(block.headers.length, ...block.rows.map(r => r.length));
-  if (colCount === 0) return [];
+  const columnWidth = Math.floor(available / columnCount);
+  if (columnWidth < 4) return layoutTableAsKeyValue(block, width, theme, safeIndent);
 
-  const minColWidth = 3;
-  const maxTotal = availableWidth;
-  const idealColWidth = Math.floor(maxTotal / colCount);
-
-  // If columns can't fit, fall back to key/value layout.
-  if (idealColWidth < minColWidth) {
-    return layoutTableAsKeyValue(block, width, theme, indent);
-  }
-
-  const colWidth = idealColWidth;
   const rows: StyledRow[] = [];
+  const indentSpan: StyledSpan[] = safeIndent > 0
+    ? [{ text: ' '.repeat(safeIndent), style: theme('assistantText') }]
+    : [];
 
-  // Header row.
-  const headerRow: StyledSpan[] = [];
-  for (let c = 0; c < colCount; c++) {
-    const headerText = block.headers[c]?.map(s => s.text).join('') ?? '';
-    const truncated = truncateToWidth(headerText, colWidth - 1);
-    headerRow.push({ text: truncated.padEnd(colWidth), style: theme('heading') });
+  const header: StyledRow = [...indentSpan];
+  for (let column = 0; column < columnCount; column++) {
+    const text = block.headers[column]?.map(span => span.text).join('') ?? '';
+    header.push({
+      text: padText(truncateToWidth(text, columnWidth - 1), columnWidth),
+      style: theme('heading'),
+    });
   }
-  rows.push(headerRow);
+  rows.push(clampRow(header, width));
+  rows.push([
+    ...indentSpan,
+    { text: '─'.repeat(columnWidth * columnCount), style: theme('muted') },
+  ]);
 
-  // Separator.
-  rows.push([{ text: '-'.repeat(Math.min(colWidth * colCount, maxTotal)), style: theme('muted') }]);
-
-  // Data rows.
-  for (const row of block.rows) {
-    const dataRow: StyledSpan[] = [];
-    for (let c = 0; c < colCount; c++) {
-      const cellText = row[c]?.map(s => s.text).join('') ?? '';
-      const truncated = truncateToWidth(cellText, colWidth - 1);
-      dataRow.push({ text: truncated.padEnd(colWidth), style: theme('assistantText') });
+  for (const sourceRow of block.rows) {
+    const row: StyledRow = [...indentSpan];
+    for (let column = 0; column < columnCount; column++) {
+      const text = sourceRow[column]?.map(span => span.text).join('') ?? '';
+      row.push({
+        text: padText(truncateToWidth(text, columnWidth - 1), columnWidth),
+        style: theme('assistantText'),
+      });
     }
-    rows.push(dataRow);
+    rows.push(clampRow(row, width));
   }
 
   return rows;
 }
 
-function layoutTableAsKeyValue(block: { headers: RichTextSpan[][]; rows: RichTextSpan[][][] }, width: number, theme: RichTextThemeResolver, indent: number): StyledRow[] {
+function layoutTableAsKeyValue(
+  block: Extract<RichTextBlock, { type: 'table' }>,
+  width: number,
+  theme: RichTextThemeResolver,
+  indent: number,
+): StyledRow[] {
   const rows: StyledRow[] = [];
-  const keyWidth = Math.max(1, Math.floor(width / 3) - indent);
+  const prefixIndent = ' '.repeat(normalizeIndent(indent, width));
 
-  for (let c = 0; c < block.headers.length; c++) {
-    const key = block.headers[c]?.map(s => s.text).join('') ?? `col${c}`;
-    rows.push([{ text: ' '.repeat(indent) + truncateToWidth(key, keyWidth).padEnd(keyWidth) + ': ', style: theme('heading') }]);
-    for (const row of block.rows) {
-      const value = row[c]?.map(s => s.text).join('') ?? '';
-      rows.push([{ text: ' '.repeat(indent + keyWidth + 2) + value, style: theme('assistantText') }]);
+  for (const sourceRow of block.rows) {
+    for (let column = 0; column < block.headers.length; column++) {
+      const key = block.headers[column]?.map(span => span.text).join('') || `col${column + 1}`;
+      const value = sourceRow[column] ?? [];
+      const prefix: StyledRow = [{ text: `${prefixIndent}${key}: `, style: theme('heading') }];
+      const safePrefix = clampRow(prefix, Math.max(1, width - 1));
+      const continuation: StyledRow = [{ text: ' '.repeat(rowWidth(safePrefix)), style: theme('muted') }];
+      const styledValue = value.map(span => ({
+        text: span.text,
+        style: resolveSpanStyle(span, theme('assistantText'), theme),
+      }));
+      rows.push(...layoutPrefixedSpans(
+        styledValue,
+        width,
+        safePrefix,
+        continuation,
+        true,
+      ));
     }
   }
 
   return rows;
 }
 
-function resolveSpanStyle(span: RichTextSpan, baseStyle: TuiStyle): TuiStyle {
-  if (!span.bold && !span.italic && !span.code) return baseStyle;
-  return {
-    ...baseStyle,
-    bold: span.bold || baseStyle.bold,
-    italic: span.italic || baseStyle.italic,
-    dim: span.code || baseStyle.dim,
-  };
+function layoutPrefixedSpans(
+  spans: StyledSpan[],
+  width: number,
+  firstPrefix: StyledRow,
+  continuationPrefix: StyledRow,
+  softWrap: boolean,
+): StyledRow[] {
+  const prefixWidth = Math.max(rowWidth(firstPrefix), rowWidth(continuationPrefix));
+  if (prefixWidth >= width) {
+    const prefixRow = clampRow(firstPrefix, width);
+    const body = wrapStyledSpans(spans, width, softWrap);
+    const hasContent = spans.some(span => span.text.length > 0);
+    return hasContent ? [prefixRow, ...body.map(row => clampRow(row, width))] : [prefixRow];
+  }
+
+  const bodyRows = wrapStyledSpans(spans, width - prefixWidth, softWrap);
+  return bodyRows.map((row, index) => clampRow([
+    ...(index === 0 ? firstPrefix : continuationPrefix),
+    ...row,
+  ], width));
+}
+
+function wrapStyledSpans(spans: StyledSpan[], width: number, softWrap: boolean): StyledRow[] {
+  const safeWidth = normalizeWidth(width);
+  const lines = splitStyledUnitsIntoLines(spans);
+  const rows: StyledRow[] = [];
+
+  for (const units of lines) {
+    if (units.length === 0) {
+      rows.push([]);
+      continue;
+    }
+
+    let remaining = units;
+    while (remaining.length > 0) {
+      let used = 0;
+      let take = 0;
+      let lastWhitespace = -1;
+
+      while (take < remaining.length && used + remaining[take].width <= safeWidth) {
+        used += remaining[take].width;
+        if (/^\s+$/u.test(remaining[take].text)) lastWhitespace = take;
+        take += 1;
+      }
+
+      if (take === remaining.length) {
+        rows.push(unitsToRow(remaining));
+        break;
+      }
+
+      if (take === 0) {
+        rows.push([{ text: '…', style: remaining[0].style }]);
+        remaining = remaining.slice(1);
+        continue;
+      }
+
+      const breakAt = softWrap && lastWhitespace > 0 ? lastWhitespace : take;
+      rows.push(unitsToRow(remaining.slice(0, breakAt)));
+      let consumed = softWrap && lastWhitespace > 0 ? lastWhitespace + 1 : take;
+      if (softWrap) {
+        while (consumed < remaining.length && /^\s+$/u.test(remaining[consumed].text)) {
+          consumed += 1;
+        }
+      }
+      remaining = remaining.slice(consumed);
+    }
+  }
+
+  return rows.length > 0 ? rows : [[]];
+}
+
+function splitStyledUnitsIntoLines(spans: StyledSpan[]): StyledUnit[][] {
+  const lines: StyledUnit[][] = [[]];
+  for (const span of spans) {
+    for (const part of span.text.split(/(\n)/u)) {
+      if (part === '\n') {
+        lines.push([]);
+        continue;
+      }
+      for (const grapheme of segmentGraphemes(part)) {
+        lines[lines.length - 1].push({
+          text: grapheme.segment,
+          style: span.style,
+          width: stringWidth(grapheme.segment),
+        });
+      }
+    }
+  }
+  return lines;
+}
+
+function unitsToRow(units: StyledUnit[]): StyledRow {
+  const row: StyledRow = [];
+  for (const unit of units) {
+    const previous = row[row.length - 1];
+    if (previous && styleKey(previous.style) === styleKey(unit.style)) {
+      previous.text += unit.text;
+    } else {
+      row.push({ text: unit.text, style: unit.style });
+    }
+  }
+  return row;
+}
+
+function resolveSpanStyle(
+  span: RichTextSpan,
+  baseStyle: TuiStyle,
+  theme: RichTextThemeResolver,
+): TuiStyle {
+  let style = baseStyle;
+  if (span.linkUrl) style = mergeStyles(style, theme('link'));
+  if (span.code) style = mergeStyles(style, theme('inlineCode'));
+  if (span.bold) style = { ...style, bold: true };
+  if (span.italic) style = { ...style, italic: true };
+  return style;
+}
+
+function mergeStyles(base: TuiStyle, overlay: TuiStyle): TuiStyle {
+  return { ...base, ...overlay };
+}
+
+function padRow(row: StyledRow, targetWidth: number, style: TuiStyle): StyledRow {
+  const padding = Math.max(0, targetWidth - rowWidth(row));
+  return padding > 0 ? [...row, { text: ' '.repeat(padding), style }] : row;
+}
+
+function clampRow(row: StyledRow, width: number): StyledRow {
+  const result: StyledRow = [];
+  let used = 0;
+
+  for (const span of row) {
+    let text = '';
+    for (const grapheme of segmentGraphemes(span.text.replace(/\n/gu, ''))) {
+      const graphemeWidth = stringWidth(grapheme.segment);
+      if (used + graphemeWidth > width) break;
+      text += grapheme.segment;
+      used += graphemeWidth;
+    }
+    if (text) result.push({ text, style: span.style });
+    if (used >= width) break;
+  }
+
+  return result;
 }
 
 function truncateToWidth(text: string, maxWidth: number): string {
+  if (maxWidth <= 0) return '';
   if (stringWidth(text) <= maxWidth) return text;
-  // Truncate by graphemes.
+  if (maxWidth === 1) return '…';
+
   let result = '';
-  for (const part of segmentGraphemes(text)) {
-    if (stringWidth(result + part.segment) > maxWidth - 1) {
-      return result + '…';
-    }
-    result += part.segment;
+  for (const grapheme of segmentGraphemes(text)) {
+    if (stringWidth(result + grapheme.segment) > maxWidth - 1) break;
+    result += grapheme.segment;
   }
-  return result;
+  return `${result}…`;
+}
+
+function padText(text: string, width: number): string {
+  return text + ' '.repeat(Math.max(0, width - stringWidth(text)));
+}
+
+function rowWidth(row: StyledRow): number {
+  return stringWidth(row.map(span => span.text).join(''));
+}
+
+function normalizeWidth(width: number): number {
+  return Math.max(1, Number.isFinite(width) ? Math.floor(width) : 1);
+}
+
+function normalizeIndent(indent: number, width: number): number {
+  const normalized = Number.isFinite(indent) ? Math.floor(indent) : 0;
+  return Math.max(0, Math.min(width - 1, normalized));
 }

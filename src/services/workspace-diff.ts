@@ -28,7 +28,10 @@ export interface WorkspaceDiffOptions {
 }
 
 function runGit(args: string[], cwd: string): string {
-  return execFileSync('git', args, {
+  // core.quotepath=false makes git emit non-ASCII paths as UTF-8 instead of
+  // C-style octal-escaped quoted strings (e.g. "uni\346\226\207.txt"), so the
+  // returned paths are the real filenames usable on the filesystem.
+  return execFileSync('git', ['-c', 'core.quotepath=false', ...args], {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -44,6 +47,31 @@ function tryGit(args: string[], cwd: string): string {
   }
 }
 
+/**
+ * Unquote a git C-quoted path (e.g. `"a\"b"` -> `a"b`, `"uni\346\226.txt"` ->
+ * the UTF-8 string). With core.quotepath=false git emits UTF-8 directly, but
+ * paths containing `"`, `\`, or control chars are still C-quoted, so this
+ * normalizes any remaining quoted form.
+ */
+function unquoteGitPath(path: string): string {
+  if (path.length < 2 || path[0] !== '"' || path[path.length - 1] !== '"') return path;
+  const inner = path.slice(1, -1);
+  // Decode octal escapes (\NNN) and standard C escapes.
+  return inner.replace(/\\(?:([0-7]{1,3})|(.))/g, (_, oct: string | undefined, ch: string | undefined) => {
+    if (oct !== undefined) {
+      return Buffer.from([parseInt(oct, 8)]).toString('utf8');
+    }
+    switch (ch) {
+      case 'n': return '\n';
+      case 't': return '\t';
+      case 'r': return '\r';
+      case '"': return '"';
+      case '\\': return '\\';
+      default: return ch ?? '';
+    }
+  });
+}
+
 function parseNameStatus(output: string): WorkspaceDiffFile[] {
   if (!output.trim()) return [];
 
@@ -52,7 +80,10 @@ function parseNameStatus(output: string): WorkspaceDiffFile[] {
     .map(line => {
       const parts = line.split('\t');
       const status = parts[0] || '?';
-      const path = parts.length > 2 ? `${parts[1]} -> ${parts[2]}` : parts[1] || line.slice(status.length).trim();
+      const rawPath = parts.length > 2 ? `${parts[1]} -> ${parts[2]}` : parts[1] || line.slice(status.length).trim();
+      const path = parts.length > 2
+        ? `${unquoteGitPath(parts[1])} -> ${unquoteGitPath(parts[2])}`
+        : unquoteGitPath(rawPath);
       return { status, path };
     });
 }
@@ -61,7 +92,7 @@ function parseUntracked(output: string): WorkspaceDiffFile[] {
   if (!output.trim()) return [];
   return output.split('\n')
     .filter(Boolean)
-    .map(path => ({ status: '??', path }));
+    .map(path => ({ status: '??', path: unquoteGitPath(path) }));
 }
 
 export function collectWorkspaceDiff(options: WorkspaceDiffOptions = {}): WorkspaceDiffReport {

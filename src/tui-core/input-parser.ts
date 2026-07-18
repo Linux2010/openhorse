@@ -12,6 +12,7 @@ export type TuiKey =
   | 'ctrl+c'
   | 'ctrl+u'
   | 'ctrl+w'
+  | 'newline'
   | 'left'
   | 'right'
   | 'up'
@@ -140,7 +141,15 @@ export class TuiInputParser {
       }
 
       const char = text[index];
+      // Alt+Enter sends ESC followed by \r or \n in most terminals.
+      // Detect this sequence and emit a single 'newline' key event.
       if (char === '\x1b') {
+        const nextChar = text[index + 1];
+        if (nextChar === '\r' || nextChar === '\n') {
+          events.push({ type: 'key', key: 'newline', raw: `\x1b${nextChar}` });
+          index += 2;
+          continue;
+        }
         if (index === text.length - 1) {
           this.state.pendingEscape = '\x1b';
         } else {
@@ -194,8 +203,9 @@ function readCsiKey(value: string): { key: TuiKey; raw: string } | null {
 function controlKeyFromChar(char: string): TuiKey | null {
   switch (char) {
     case '\r':
-    case '\n':
       return 'enter';
+    case '\n':
+      return 'newline';
     case '\t':
       return 'tab';
     case '\x7f':

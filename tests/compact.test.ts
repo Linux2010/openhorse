@@ -1,7 +1,16 @@
-import { getAutoCompact, resetAutoCompact, AutoCompact } from '../src/services/compact/auto-compact';
+import {
+  getAutoCompact,
+  resetAutoCompact,
+  AutoCompact,
+} from '../src/services/compact/auto-compact';
 import { compactMessages } from '../src/services/compact/compact';
+import { CompactCoordinator } from '../src/services/compact/coordinator';
 import { createContextHarness } from '../src/harness';
-import { resolveModelContext } from '../src/services/model-context';
+import {
+  createContextUsageSnapshot,
+  resolveContextBudget,
+  resolveModelContext,
+} from '../src/services/model-context';
 import type { Message } from '../src/services/llm';
 
 function createMessages(count: number): Message[] {
@@ -46,7 +55,38 @@ describe('AutoCompact', () => {
       expect(result.length).toBe(msgs.length);
     });
 
-    test('respects 30s interval between compacts', async () => {
+    test('does not round 94.99% up into an automatic compact', async () => {
+      const autoCompact = getAutoCompact({
+        modelId: 'test-model',
+        maxMessages: 5,
+      });
+      const msgs = createMessages(30);
+      const safeInputBudget = resolveContextBudget('test-model').safeInputBudget;
+
+      const result = await autoCompact.checkAndCompact(
+        msgs,
+        Math.floor(safeInputBudget * 0.9499)
+      );
+
+      expect(result).toBe(msgs);
+      expect(autoCompact.getStats().ctxPercent).toBe(94);
+    });
+
+    test('triggers automatic compact at exactly 95%', async () => {
+      const autoCompact = getAutoCompact({
+        modelId: 'test-model',
+        maxMessages: 5,
+      });
+      const msgs = createMessages(30);
+      const safeInputBudget = resolveContextBudget('test-model').safeInputBudget;
+
+      const result = await autoCompact.checkAndCompact(msgs, safeInputBudget * 0.95);
+
+      expect(result.length).toBeLessThan(msgs.length);
+      expect(autoCompact.getStats().ctxPercent).toBe(95);
+    });
+
+    test('does not repeatedly compact the same unchanged history', async () => {
       const autoCompact = getAutoCompact({
         modelId: 'test-model',
         maxMessages: 3,
@@ -56,10 +96,23 @@ describe('AutoCompact', () => {
       const result1 = await autoCompact.checkAndCompact(msgs, 200000);
       expect(result1.length).toBeLessThan(msgs.length);
 
-      // Immediate second call should not compact (interval check)
-      const freshMsgs = createMessages(30);
-      const result2 = await autoCompact.checkAndCompact(freshMsgs, 200000);
-      expect(result2.length).toBe(freshMsgs.length);
+      const result2 = await autoCompact.checkAndCompact(result1, 200000);
+      expect(result2).toBe(result1);
+      expect(autoCompact.getStats().compactCount).toBe(1);
+    });
+
+    test('can compact changed context again within 30 seconds', async () => {
+      const autoCompact = getAutoCompact({
+        modelId: 'test-model',
+        maxMessages: 3,
+      });
+
+      const result1 = await autoCompact.checkAndCompact(createMessages(30), 200000);
+      const grown = [...result1, ...createMessages(30)];
+      const result2 = await autoCompact.checkAndCompact(grown, 200000);
+
+      expect(result2.length).toBeLessThan(grown.length);
+      expect(autoCompact.getStats().compactCount).toBe(2);
     });
 
     test('forceCompact bypasses interval check', async () => {
@@ -112,13 +165,13 @@ describe('AutoCompact', () => {
 
       const msgs = createMessages(30);
 
-      // 100k tokens is 49% of glm-5's 202752 — should NOT compact
+      // 100k tokens is 52% of glm-5's safe input budget — should NOT compact
       const result = await autoCompact.checkAndCompact(msgs, 100000);
       expect(result.length).toBe(msgs.length);
 
       // Check ctxPercent
       const pct = autoCompact.getCtxPercent(100000);
-      expect(pct).toBe(49);
+      expect(pct).toBe(52);
     });
 
     test('setModel updates context window', async () => {
@@ -126,12 +179,11 @@ describe('AutoCompact', () => {
         modelId: 'glm-5', // 202752
       });
 
-      // 100k is 49% of glm-5
-      expect(autoCompact.getCtxPercent(100000)).toBe(49);
+      // Percentages use the safe input budget rather than the raw context window.
+      expect(autoCompact.getCtxPercent(100000)).toBe(52);
 
       autoCompact.setModel('gpt-4o'); // 128000
-      // 100k is 78% of gpt-4o's 128000
-      expect(autoCompact.getCtxPercent(100000)).toBe(78);
+      expect(autoCompact.getCtxPercent(100000)).toBe(85);
     });
 
     test('resolves provider-prefixed model aliases to known context windows', () => {
@@ -156,10 +208,19 @@ describe('AutoCompact', () => {
       const result = await autoCompact.checkPredictiveAndCompact(msgs, 114000);
 
       expect(result.length).toBeLessThan(msgs.length);
-      expect(onCompact).toHaveBeenCalledWith(expect.objectContaining({
-        mode: 'predictive',
-      }));
+      expect(onCompact).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: 'predictive',
+        })
+      );
       expect(autoCompact.getStats().preCompactArmed).toBe(true);
+    });
+
+    test('uses 95% as the default predictive and hard threshold', () => {
+      const stats = getAutoCompact({ modelId: 'test-model' }).getStats();
+
+      expect(stats.predictiveCompactThreshold).toBe(0.95);
+      expect(stats.threshold).toBe(0.95);
     });
 
     test('passes configured LLM to compact summary generation', async () => {
@@ -182,14 +243,59 @@ describe('AutoCompact', () => {
     });
   });
 
+  test('creates context snapshots from current context rather than cumulative usage', () => {
+    const usage = createContextUsageSnapshot({
+      modelId: 'gpt-4',
+      usedTokens: 4915,
+      outputReserveTokens: 1024,
+    });
+
+    expect(usage).toMatchObject({
+      usedTokens: 4915,
+      contextWindow: 8192,
+      percent: 79,
+      rawPercent: 59,
+      safeInputBudget: 6144,
+      reservedOutputTokens: 1024,
+      safetyMarginTokens: 1024,
+      warningThresholdPercent: 80,
+      autoCompactThresholdPercent: 95,
+      source: 'estimated',
+    });
+  });
+
+  test('calibrates estimates from provider usage and resets on model change', () => {
+    const autoCompact = new AutoCompact({ modelId: 'glm-5' });
+
+    autoCompact.recordProviderUsage(1000, 1250, 'glm-5');
+    expect(autoCompact.adjustTokenEstimate(2000, 'glm-5')).toBe(2250);
+    expect(autoCompact.hasProviderCalibration('glm-5')).toBe(true);
+
+    autoCompact.configure({ modelId: 'gpt-4o' });
+    expect(autoCompact.adjustTokenEstimate(2000, 'gpt-4o')).toBe(2000);
+    expect(autoCompact.hasProviderCalibration('gpt-4o')).toBe(false);
+  });
+
+  test('manual compact settings do not mutate the automatic 20-message policy', async () => {
+    const coordinator = new CompactCoordinator({ modelId: 'test-model' });
+
+    const manual = await coordinator.compactManual(createMessages(60), 3);
+    expect(manual.messages.length).toBeLessThan(10);
+    expect(coordinator.getAutomatic().getStats()).toMatchObject({
+      modelId: 'test-model',
+    });
+
+    const automatic = await coordinator
+      .getAutomatic()
+      .checkAndCompact(createMessages(60), 200000);
+    expect(automatic.filter(message => message.content?.startsWith('Message '))).toHaveLength(20);
+  });
+
   test('compactMessages preserves structured Harness State v2 before summary text', async () => {
     const harness = createContextHarness({ cwd: '/repo', modelId: 'gpt-4o' });
     harness.updateContractFromUserInput('实现 v0.1.23 harness，必须支持 resume 后继续');
 
-    const messages: Message[] = [
-      { role: 'system', content: 'base' },
-      ...createMessages(12),
-    ];
+    const messages: Message[] = [{ role: 'system', content: 'base' }, ...createMessages(12)];
 
     const result = await compactMessages(messages, {
       maxMessages: 2,
@@ -200,7 +306,9 @@ describe('AutoCompact', () => {
     const joined = result.messages.map(message => message.content).join('\n');
     expect(joined).toContain('[OpenHorse Context State v2]');
     expect(joined).toContain('rootObjective');
-    expect(joined.indexOf('[OpenHorse Context State v2]')).toBeLessThan(joined.indexOf('[Context Summary]'));
+    expect(joined.indexOf('[OpenHorse Context State v2]')).toBeLessThan(
+      joined.indexOf('[Context Summary]')
+    );
   });
 
   test('compactMessages uses LLM summary when an LLM service is provided', async () => {
@@ -218,6 +326,52 @@ describe('AutoCompact', () => {
 
     expect(llm.chat).toHaveBeenCalled();
     expect(result.summary).toBe('LLM compact summary');
-    expect(result.messages.map(message => message.content).join('\n')).toContain('LLM compact summary');
+    expect(result.messages.map(message => message.content).join('\n')).toContain(
+      'LLM compact summary'
+    );
+  });
+
+  test('falls back to a redacted heuristic summary when the summary model fails', async () => {
+    const llm = {
+      chat: jest.fn(async () => {
+        throw new Error('provider unavailable');
+      }),
+    };
+    const result = await compactMessages(
+      [
+        { role: 'user', content: 'deploy using apiKey=sk-testsecret123456' },
+        ...createMessages(5),
+      ],
+      { maxMessages: 1, llm: llm as any }
+    );
+
+    expect(result.summarySource).toBe('heuristic');
+    expect(result.summary).toContain('[REDACTED_SECRET]');
+    expect(result.summary).not.toContain('sk-testsecret');
+  });
+
+  test('merges an existing context summary with only new history', async () => {
+    const llm = {
+      chat: jest.fn(async () => ({ content: 'merged durable summary', model: 'test-model' })),
+    };
+    const result = await compactMessages(
+      [
+        { role: 'user', content: '[Context Summary]\nprior durable summary' },
+        {
+          role: 'assistant',
+          content:
+            'I understand the context. I will continue the conversation with this background information.',
+        },
+        { role: 'user', content: 'new work' },
+        { role: 'assistant', content: 'new result' },
+      ],
+      { maxMessages: 1, llm: llm as any }
+    );
+
+    const prompt = (llm.chat as jest.Mock).mock.calls[0][0][0].content as string;
+    expect(prompt).toContain('Prior durable summary');
+    expect(prompt).toContain('prior durable summary');
+    expect(prompt.match(/prior durable summary/g)).toHaveLength(1);
+    expect(result.summary).toBe('merged durable summary');
   });
 });

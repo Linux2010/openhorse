@@ -216,7 +216,7 @@ describe('verification-profile', () => {
     expect(classifyCommandSafety('echo hello')).toEqual({ risk: 'low', reason: 'prints text to output' });
     expect(classifyCommandSafety('git status')).toEqual({ risk: 'low', reason: 'shows repository status' });
     expect(classifyCommandSafety('git diff HEAD~1')).toEqual({ risk: 'low', reason: 'shows file differences' });
-    expect(classifyCommandSafety('node -e "console.log(1)"')).toEqual({ risk: 'low', reason: 'evaluates a Node.js expression' });
+    expect(classifyCommandSafety('node -e "console.log(1)"')).toEqual({ risk: 'high', reason: 'evaluates arbitrary Node.js code' });
   });
 
   it('classifyCommandSafety returns unknown for unmatched commands', () => {
@@ -224,5 +224,40 @@ describe('verification-profile', () => {
       risk: 'unknown',
       reason: 'command does not match known safety patterns',
     });
+  });
+});
+
+describe('classifyCommandSafety arbitrary code execution (bug-hunt round 8)', () => {
+  it('classifies node -e with a destructive payload as high risk, not low', () => {
+    // node -e executes arbitrary JS - equivalent to eval (which is already
+    // high risk). A payload that deletes files must not be shown to the user
+    // as low-risk in the permission prompt.
+    const r = classifyCommandSafety("node -e \"require('fs').unlinkSync('/tmp/x')\"");
+    expect(r.risk).not.toBe('low');
+  });
+
+  it('classifies plain node -e as high risk (arbitrary code execution capability)', () => {
+    expect(classifyCommandSafety('node -e "console.log(1)"').risk).not.toBe('low');
+  });
+});
+
+describe('summarizeVerificationState no-command deadlock (bug-hunt round 9)', () => {
+  it('allows completion when a required profile has no verifiable commands', () => {
+    // selectVerificationProfile returns a `generic` profile with required=true
+    // and commands=[] when files change but no repo-specific profile matches.
+    // claimAllowed must be true here, otherwise the completion gate deadlocks:
+    // the gate blocks completion, but there is no command the agent can run to
+    // satisfy it.
+    const profile = {
+      profile: 'generic' as const,
+      required: true,
+      commands: [],
+      changedFiles: ['config.yml'],
+      reason: 'Files changed, but no repo-specific verification profile was inferred.',
+    };
+
+    const summary = summarizeVerificationState(profile, []);
+    expect(summary.claimAllowed).toBe(true);
+    expect(summary.missingCommands).toEqual([]);
   });
 });

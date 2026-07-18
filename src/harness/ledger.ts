@@ -71,8 +71,12 @@ export class ContextLedger {
     if (this.entries.length > ContextLedger.MAX_ENTRIES) {
       const sorted = [...this.entries].sort((a, b) => a.importance - b.importance || a.createdAt - b.createdAt);
       const toRemove = sorted.slice(0, this.entries.length - ContextLedger.MAX_ENTRIES);
-      const removeIds = new Set(toRemove.map(e => e.source.ref));
-      this.entries = this.entries.filter(e => !removeIds.has(e.source.ref));
+      // Key removal on entry id (unique). Keying on source.ref is wrong: many
+      // entries share a ref (e.g. every read_file call has ref 'read_file'),
+      // so a Set of refs collapses to one element and the filter would remove
+      // ALL entries with that ref, over-evicting the ledger toward zero.
+      const removeIds = new Set(toRemove.map(e => e.id));
+      this.entries = this.entries.filter(e => !removeIds.has(e.id));
     }
     return entry;
   }

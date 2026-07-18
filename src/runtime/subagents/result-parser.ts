@@ -37,41 +37,55 @@ export interface ParsedSubtaskPayload {
  */
 export function extractJsonObject(text: string): unknown {
   if (!text) return null;
-  const start = text.indexOf('{');
-  if (start === -1) return null;
 
-  // Scan for the matching closing brace, respecting nested objects and strings.
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (inString) {
-      if (escaped) { escaped = false; continue; }
-      if (ch === '\\') { escaped = true; continue; }
-      if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === '"') { inString = true; continue; }
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) {
-        const candidate = text.slice(start, i + 1);
-        try {
-          return JSON.parse(candidate);
-        } catch {
-          return null;
-        }
+  // Iterate over every top-level '{' start position. A child's text may contain
+  // prose with brace fragments (e.g. "{ result above }") before the real JSON
+  // object, so a candidate that is balanced but not valid JSON must not abort
+  // the search — we keep scanning for the next '{'.
+  let searchFrom = 0;
+  while (searchFrom < text.length) {
+    const start = text.indexOf('{', searchFrom);
+    if (start === -1) return null;
+
+    // Scan for the matching closing brace, respecting nested objects and strings.
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let end = -1;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (inString) {
+        if (escaped) { escaped = false; continue; }
+        if (ch === '\\') { escaped = true; continue; }
+        if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) { end = i; break; }
       }
     }
+
+    if (end === -1) {
+      // Unbalanced from this start; try a last-ditch parse of the tail.
+      try {
+        return JSON.parse(text.slice(start));
+      } catch {
+        return null;
+      }
+    }
+
+    const candidate = text.slice(start, end + 1);
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // Balanced but not valid JSON (prose fragment). Continue past it.
+      searchFrom = end + 1;
+    }
   }
-  // Unbalanced; try a last-ditch parse of the tail.
-  try {
-    return JSON.parse(text.slice(start));
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 function str(value: unknown, max = MAX_FIELD_LEN): string {

@@ -2,6 +2,8 @@ import { getSkillsLoader, normalizeSkillSourcePath, parseSkillFile } from '../sr
 import { getSkillsRegistry, resetSkillsRegistry } from '../src/skills/registry';
 import {
   hasMatchingSkill,
+  loadExplicitSkillReference,
+  MAX_EXPLICIT_SKILL_BYTES,
   parseSkillCommandInput,
   resolveSkillResourcePath,
   resolveSkillsForTurn,
@@ -280,8 +282,113 @@ No trigger prompt`);
     expect(resolution.promptInjection).toContain('No trigger prompt');
     expect(hasMatchingSkill('/no-trigger-skill do the task')).toBe(true);
 
+    const markdownReference = `[$no-trigger-skill](${externalRoot}/no-trigger-skill/SKILL.md) inspect it`;
+    expect(parseSkillCommandInput(markdownReference)).toEqual({
+      skillName: 'no-trigger-skill',
+      skillPath: `${externalRoot}/no-trigger-skill/SKILL.md`,
+      task: 'inspect it',
+    });
+    expect(resolveSkillsForTurn({
+      cwd: projectDir,
+      input: markdownReference,
+      tools: ['read_file', 'write_file'].map(makeTool),
+    }).skills.map(skill => skill.name)).toEqual(['no-trigger-skill']);
+
     process.chdir(originalCwd);
     rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  test('loads an unconfigured skill from an explicit SKILL.md reference', () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'openhorse-skills-linked-'));
+    const configDir = join(tempRoot, 'home');
+    const projectDir = join(tempRoot, 'project');
+    const externalRoot = join(tempRoot, 'external root)');
+    mkdirSync(configDir, { recursive: true });
+    mkdirSync(projectDir, { recursive: true });
+
+    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    process.chdir(projectDir);
+    writeFileSync(join(configDir, 'openhorse.json'), JSON.stringify({
+      defaultModel: 'gpt-4o',
+    }), 'utf-8');
+    writeSkill(externalRoot, 'chronicle', `---
+name: chronicle
+description: Screen history
+---
+Chronicle prompt`);
+
+    resetSkillsRegistry();
+    const skillFile = join(externalRoot, 'chronicle', 'SKILL.md');
+    const input = `[$chronicle](<${skillFile}>) inspect recent work (today)`;
+    const resolution = resolveSkillsForTurn({
+      cwd: projectDir,
+      input,
+      tools: ['read_file', 'write_file'].map(makeTool),
+    });
+
+    expect(getSkillsRegistry().getSkill('chronicle')).toBeUndefined();
+    expect(parseSkillCommandInput(input)).toEqual({
+      skillName: 'chronicle',
+      skillPath: skillFile,
+      task: 'inspect recent work (today)',
+    });
+    expect(resolution.skills.map(skill => skill.name)).toEqual(['chronicle']);
+    expect(resolution.promptInjection).toContain('Chronicle prompt');
+    expect(resolution.skills[0].resourceRoot).toBe(join(externalRoot, 'chronicle'));
+    expect(resolveSkillsForTurn({
+      cwd: projectDir,
+      input: `/${input}`,
+      tools: ['read_file', 'write_file'].map(makeTool),
+    }).skills.map(skill => skill.name)).toEqual(['chronicle']);
+
+    const command = findCommand('skill');
+    expect(command!.execute({ cwd: projectDir } as any, input)).toEqual(expect.objectContaining({
+      success: true,
+      continueAsChat: true,
+      chatInput: `/skill [$chronicle](<${skillFile}>) inspect recent work (today)`,
+    }));
+    const noTask = command!.execute(
+      { cwd: projectDir } as any,
+      `[$chronicle](<${skillFile}>)`,
+    );
+    expect(noTask).toEqual(expect.objectContaining({
+      output: expect.stringContaining('Skill reference chronicle is valid for one turn.'),
+    }));
+    expect(noTask).not.toEqual(expect.objectContaining({
+      output: expect.stringContaining('Skill chronicle is loaded.'),
+    }));
+
+    const relativeInput = '[$chronicle](<../external root)/chronicle/SKILL.md>) inspect';
+    process.chdir(originalCwd);
+    expect(hasMatchingSkill(relativeInput, projectDir)).toBe(true);
+
+    const oversizedRoot = join(tempRoot, 'oversized');
+    writeSkill(oversizedRoot, 'oversized', `---
+name: oversized
+description: Oversized skill
+---
+${'x'.repeat(MAX_EXPLICIT_SKILL_BYTES)}`);
+    const oversizedInput = `[$oversized](${join(oversizedRoot, 'oversized', 'SKILL.md')}) inspect`;
+    expect(loadExplicitSkillReference(oversizedInput, projectDir)).toBeUndefined();
+    const invalidBuiltinReference = `[$code-review](${join(oversizedRoot, 'missing', 'SKILL.md')}) inspect`;
+    expect(hasMatchingSkill(invalidBuiltinReference, projectDir)).toBe(false);
+    expect(resolveSkillsForTurn({
+      cwd: projectDir,
+      input: invalidBuiltinReference,
+      tools: ['read_file', 'write_file'].map(makeTool),
+    }).skills).toEqual([]);
+
+    rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  test('keeps closing parentheses in a markdown skill task', () => {
+    expect(parseSkillCommandInput(
+      '/skill [$code-review](/tmp/code-review/SKILL.md) inspect (src)',
+    )).toEqual({
+      skillName: 'code-review',
+      skillPath: '/tmp/code-review/SKILL.md',
+      task: 'inspect (src)',
+    });
   });
 
   test('explicit natural-language skill request activates a loaded skill by name', () => {
@@ -334,6 +441,15 @@ Squad prompt`);
       success: true,
       continueAsChat: true,
       chatInput: '/skill code-review inspect src',
+    }));
+
+    const codeReview = getSkillsRegistry().getSkill('code-review');
+    const markdownResult = command!.execute({ cwd: process.cwd() } as any,
+      `[$code-review](${codeReview!.resourceRoot}/SKILL.md) inspect src`);
+    expect(markdownResult).toEqual(expect.objectContaining({
+      success: true,
+      continueAsChat: true,
+      chatInput: expect.stringMatching(/^\/skill \[\$code-review\]\(.+\/SKILL\.md\) inspect src$/),
     }));
   });
 

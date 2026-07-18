@@ -9,6 +9,7 @@
 
 import OpenAI from 'openai';
 import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions';
+import { randomUUID } from 'crypto';
 import { diagnoseProviderError, toLLMProviderError } from './provider-diagnostics';
 import type { ProviderErrorType } from './provider-diagnostics';
 
@@ -115,14 +116,27 @@ export interface Tool {
 }
 
 /** LLM 响应 */
+export interface LLMUsage {
+  promptTokens: number;
+  completionTokens: number;
+  cachedPromptTokens?: number;
+  /** Provider-reported billed cost in USD, when supplied by the API. */
+  costUsd?: number;
+  /** Provider request id, or a locally generated id when omitted. */
+  requestId?: string;
+}
+
+export interface LLMUsageEvent {
+  usage: LLMUsage;
+  model: string;
+  operation: 'chat' | 'chat_stream';
+}
+
 export interface LLMResponse {
   /** 回复内容 */
   content: string;
   /** Token 用量 */
-  usage?: {
-    promptTokens: number;
-    completionTokens: number;
-  };
+  usage?: LLMUsage;
   /** 使用的模型 */
   model: string;
   /** 工具调用 */
@@ -293,6 +307,46 @@ const DEFAULT_TEMPERATURE = 0.1;       // 代码场景需要确定性输出
 const DEFAULT_MAX_RETRIES = DEFAULT_RETRY_CONFIG.maxRetries;
 const DEFAULT_RETRY_DELAY = DEFAULT_RETRY_CONFIG.baseDelayMs;
 
+function toNonNegativeFiniteNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return undefined;
+}
+
+/** Extract non-standard billing fields used by OpenAI-compatible providers. */
+function extractProviderCost(usage: any, response: any): number | undefined {
+  return [
+    usage?.cost,
+    usage?.total_cost,
+    usage?.cost_usd,
+    response?.cost,
+    response?.total_cost,
+    response?.cost_usd,
+  ]
+    .map(toNonNegativeFiniteNumber)
+    .find(value => value !== undefined);
+}
+
+function extractLLMUsage(usage: any, response: any, requestId?: string): LLMUsage {
+  const cachedPromptTokens = toNonNegativeFiniteNumber(
+    usage?.prompt_tokens_details?.cached_tokens
+      ?? usage?.input_tokens_details?.cached_tokens,
+  );
+  return {
+    promptTokens: toNonNegativeFiniteNumber(usage?.prompt_tokens ?? usage?.input_tokens) ?? 0,
+    completionTokens:
+      toNonNegativeFiniteNumber(usage?.completion_tokens ?? usage?.output_tokens) ?? 0,
+    ...(cachedPromptTokens !== undefined ? { cachedPromptTokens } : {}),
+    ...(extractProviderCost(usage, response) !== undefined
+      ? { costUsd: extractProviderCost(usage, response) }
+      : {}),
+    requestId: requestId || randomUUID(),
+  };
+}
+
 export class LLMService {
   private client: OpenAI;
   private config: {
@@ -307,6 +361,7 @@ export class LLMService {
   private consecutive529Errors = 0;
   private usingFallback = false;
   private lastRequestDiagnostics: LLMRequestDiagnostics;
+  private usageObservers = new Set<(event: LLMUsageEvent) => void>();
 
   constructor(config: LLMConfig) {
     this.client = new OpenAI({
@@ -339,6 +394,12 @@ export class LLMService {
       ...this.lastRequestDiagnostics,
       retryErrorTypes: [...this.lastRequestDiagnostics.retryErrorTypes],
     };
+  }
+
+  /** Observe every successful provider call, including compact summaries. */
+  subscribeUsage(observer: (event: LLMUsageEvent) => void): () => void {
+    this.usageObservers.add(observer);
+    return () => this.usageObservers.delete(observer);
   }
 
   /** 触发 fallback */
@@ -391,11 +452,10 @@ export class LLMService {
     }));
 
     const usage = response.usage
-      ? {
-          promptTokens: response.usage.prompt_tokens,
-          completionTokens: response.usage.completion_tokens,
-        }
+      ? extractLLMUsage(response.usage, response, response.id)
       : undefined;
+
+    if (usage) this.publishUsage(usage, response.model ?? this.config.model, 'chat');
 
     return {
       content,
@@ -478,7 +538,8 @@ export class LLMService {
 
           let content = '';
           let usedModel = this.config.model;
-          let usage: { promptTokens: number; completionTokens: number } | undefined;
+          let usage: LLMUsage | undefined;
+          let providerRequestId: string | undefined;
           const toolCallsMap = new Map<string, {
             id: string;
             type: 'function';
@@ -540,11 +601,10 @@ export class LLMService {
             }
 
             if (chunk.usage) {
-              usage = {
-                promptTokens: chunk.usage.prompt_tokens ?? 0,
-                completionTokens: chunk.usage.completion_tokens ?? 0,
-              };
+              usage = extractLLMUsage(chunk.usage, chunk, chunk.id ?? providerRequestId);
             }
+
+            if (chunk.id) providerRequestId = chunk.id;
 
             if (chunk.model) {
               usedModel = chunk.model;
@@ -567,6 +627,8 @@ export class LLMService {
               }
             }
           }
+
+          if (usage) this.publishUsage(usage, usedModel, 'chat_stream');
 
           this.consecutive529Errors = 0;
           requestDiagnostics.finalModel = usedModel;
@@ -600,6 +662,20 @@ export class LLMService {
       };
       if (isAbortError(error)) throw error;
       throw toLLMProviderError(error);
+    }
+  }
+
+  private publishUsage(
+    usage: LLMUsage,
+    model: string,
+    operation: LLMUsageEvent['operation'],
+  ): void {
+    for (const observer of this.usageObservers) {
+      try {
+        observer({ usage, model, operation });
+      } catch {
+        // Telemetry/accounting observers must not fail the model request.
+      }
     }
   }
 
@@ -672,6 +748,11 @@ export class LLMService {
    */
   getModel(): string {
     return this.config.model;
+  }
+
+  /** Maximum completion tokens requested from the provider for each call. */
+  getMaxTokens(): number {
+    return this.config.maxTokens;
   }
 
   /**

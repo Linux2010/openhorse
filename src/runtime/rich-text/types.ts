@@ -47,6 +47,8 @@ export type RichTextStyleToken =
   | 'assistantText'
   | 'heading'
   | 'code'
+  | 'inlineCode'
+  | 'link'
   | 'diffAdded'
   | 'diffRemoved'
   | 'diffHunk'

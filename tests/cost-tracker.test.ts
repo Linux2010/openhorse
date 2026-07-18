@@ -62,6 +62,45 @@ describe('CostTracker', () => {
       expect(qwen.estimatedCost).toBeCloseTo(0.0025, 5);
       expect(minimax.estimatedCost).toBeCloseTo(0.0025, 5);
     });
+
+    test('prefers provider-reported cost over token-price estimates', () => {
+      const record = tracker.record(
+        { promptTokens: 1000, completionTokens: 1000, costUsd: 0.1234 },
+        { model: 'gpt-4o' },
+      );
+
+      expect(record.costUsd).toBe(0.1234);
+      expect(record.costSource).toBe('provider');
+      expect(tracker.getStats().providerCost).toBe(0.1234);
+    });
+
+    test('uses configured model pricing and cached input rate', () => {
+      const configured = new CostTracker({
+        pricing: {
+          routed: { input: 4, output: 10, cachedInput: 1 },
+        },
+      });
+      const record = configured.record(
+        { promptTokens: 1000, cachedPromptTokens: 600, completionTokens: 500 },
+        { model: 'routed' },
+      );
+
+      expect(record.costSource).toBe('configured');
+      expect(record.costUsd).toBeCloseTo(0.0072, 8);
+    });
+
+    test('deduplicates records with the same provider request id', () => {
+      tracker.record(
+        { promptTokens: 10, completionTokens: 5, requestId: 'request-1' },
+        { model: 'gpt-4o' },
+      );
+      tracker.record(
+        { promptTokens: 10, completionTokens: 5, requestId: 'request-1' },
+        { model: 'gpt-4o' },
+      );
+
+      expect(tracker.getStats().recordCount).toBe(1);
+    });
   });
 
   describe('getStats', () => {
@@ -170,12 +209,12 @@ describe('CostTracker', () => {
   });
 
   describe('formatCost', () => {
-    test('formats small costs with 4 decimals', () => {
-      expect(tracker.formatCost(0.00123)).toBe('$0.0012');
+    test('formats small costs with 6 decimals', () => {
+      expect(tracker.formatCost(0.00123)).toBe('$0.001230');
     });
 
-    test('formats medium costs with 3 decimals', () => {
-      expect(tracker.formatCost(0.123)).toBe('$0.123');
+    test('formats medium costs with 4 decimals', () => {
+      expect(tracker.formatCost(0.123)).toBe('$0.1230');
     });
 
     test('formats large costs with 2 decimals', () => {

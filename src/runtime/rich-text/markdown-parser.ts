@@ -173,46 +173,69 @@ function parseHtml(token: Tokens.HTML): RichTextBlock {
   return { type: 'paragraph', spans: [{ text: token.text }] };
 }
 
-function parseInlineTokens(tokens: Token[], depth: number): RichTextSpan[] {
-  if (depth > MAX_MARKDOWN_NESTING) return [];
+type RichTextSpanMarks = Omit<RichTextSpan, 'text'>;
+
+function parseInlineTokens(
+  tokens: Token[],
+  depth: number,
+  inherited: RichTextSpanMarks = {},
+): RichTextSpan[] {
+  if (depth > MAX_MARKDOWN_NESTING) {
+    const text = tokens.map(extractTokenText).join('');
+    return text ? [{ text, ...inherited }] : [];
+  }
 
   const spans: RichTextSpan[] = [];
   for (const token of tokens) {
-    const span = inlineTokenToSpan(token, depth);
-    if (span) spans.push(span);
+    spans.push(...inlineTokenToSpans(token, depth, inherited));
   }
-  return spans.length > 0 ? spans : [];
+  return spans;
 }
 
-function inlineTokenToSpan(token: Token, _depth: number): RichTextSpan | null {
+function inlineTokenToSpans(
+  token: Token,
+  depth: number,
+  inherited: RichTextSpanMarks,
+): RichTextSpan[] {
   switch (token.type) {
     case 'text':
-      return { text: extractTokenText(token) };
+      return [{ text: extractTokenText(token), ...inherited }];
     case 'strong':
-      return { text: extractTokenText(token), bold: true };
+      return nestedInlineSpans(token, depth, { ...inherited, bold: true });
     case 'em':
-      return { text: extractTokenText(token), italic: true };
+      return nestedInlineSpans(token, depth, { ...inherited, italic: true });
     case 'codespan':
-      return { text: (token as Tokens.Codespan).text, code: true };
-    case 'link':
-      return {
-        text: extractTokenText(token),
-        linkUrl: (token as Tokens.Link).href,
-      };
+      return [{ text: (token as Tokens.Codespan).text, ...inherited, code: true }];
+    case 'link': {
+      const linkUrl = (token as Tokens.Link).href;
+      return nestedInlineSpans(token, depth, { ...inherited, linkUrl });
+    }
     case 'br':
-      return { text: '\n' };
+      return [{ text: '\n', ...inherited }];
     case 'del':
-      return { text: extractTokenText(token) };
+      return nestedInlineSpans(token, depth, inherited);
     case 'image':
-      return {
+      return [{
         text: (token as Tokens.Image).text || (token as Tokens.Image).href,
+        ...inherited,
         linkUrl: (token as Tokens.Image).href,
-      };
+      }];
     default:
       // Unknown inline: use raw text.
       const raw = (token as { raw?: string }).raw;
-      return raw ? { text: raw } : null;
+      return raw ? [{ text: raw, ...inherited }] : [];
   }
+}
+
+function nestedInlineSpans(
+  token: Token,
+  depth: number,
+  inherited: RichTextSpanMarks,
+): RichTextSpan[] {
+  const nested = (token as Token & { tokens?: Token[] }).tokens;
+  if (nested?.length) return parseInlineTokens(nested, depth + 1, inherited);
+  const text = extractTokenText(token);
+  return text ? [{ text, ...inherited }] : [];
 }
 
 function extractTokenText(token: Token): string {

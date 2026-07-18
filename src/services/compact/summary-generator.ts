@@ -4,7 +4,8 @@
  * 为压缩的历史消息生成简洁摘要，保留关键信息。
  */
 
-import type { Message } from '../llm';
+import type { LLMService, Message } from '../llm';
+import { redactTraceText } from '../redaction';
 
 // ============================================================================
 // 类型定义
@@ -52,12 +53,14 @@ export async function summaryGenerator(
     return '';
   }
 
+  const prepared = prepareSummaryInput(messages);
+
   // 收集关键信息
   const userTopics: string[] = [];
   const toolsUsed: string[] = [];
   const filesModified: string[] = [];
 
-  for (const msg of messages) {
+  for (const msg of prepared.messages) {
     if (msg.role === 'user' && msg.content) {
       // 提取用户主题（截取前 50 字符）
       const topic = msg.content.slice(0, 50).trim();
@@ -75,7 +78,7 @@ export async function summaryGenerator(
           try {
             const args = JSON.parse(tc.function.arguments);
             if (args.path) {
-              filesModified.push(args.path);
+              filesModified.push(redactTraceText(String(args.path)));
             }
           } catch {
             // ignore
@@ -92,18 +95,23 @@ export async function summaryGenerator(
 
   // 构建摘要
   const maxLen = opts.maxLength || 500;
+  let freshSummary = '';
   switch (opts.format) {
     case 'bullet':
-      return buildBulletSummary(uniqueTopics, uniqueTools, uniqueFiles, maxLen);
+      freshSummary = buildBulletSummary(uniqueTopics, uniqueTools, uniqueFiles, maxLen);
+      break;
 
     case 'narrative':
-      return buildNarrativeSummary(uniqueTopics, uniqueTools, uniqueFiles, maxLen);
+      freshSummary = buildNarrativeSummary(uniqueTopics, uniqueTools, uniqueFiles, maxLen);
+      break;
 
     case 'structured':
-      return buildStructuredSummary(uniqueTopics, uniqueTools, uniqueFiles, maxLen);
+      freshSummary = buildStructuredSummary(uniqueTopics, uniqueTools, uniqueFiles, maxLen);
+      break;
   }
 
-  return '';
+  const combined = [prepared.priorSummary, freshSummary].filter(Boolean).join('\n');
+  return combined.length > maxLen ? `${combined.slice(0, maxLen - 3)}...` : combined;
 }
 
 // ============================================================================
@@ -192,7 +200,103 @@ export { summaryGenerator as generateSummary };
 // LLM-driven Summary (生产级摘要)
 // ============================================================================
 
-import type { LLMService } from '../llm';
+export interface GeneratedSummary {
+  text: string;
+  source: 'llm' | 'heuristic';
+}
+
+const CONTEXT_SUMMARY_PREFIX = '[Context Summary]\n';
+
+function prepareSummaryInput(messages: Message[]): {
+  priorSummary?: string;
+  messages: Message[];
+} {
+  let priorSummary: string | undefined;
+  const prepared: Message[] = [];
+
+  for (const message of messages) {
+    if (message.content?.startsWith(CONTEXT_SUMMARY_PREFIX)) {
+      priorSummary = redactTraceText(message.content.slice(CONTEXT_SUMMARY_PREFIX.length));
+      continue;
+    }
+    if (
+      message.role === 'assistant' &&
+      message.content ===
+        'I understand the context. I will continue the conversation with this background information.'
+    ) {
+      continue;
+    }
+    prepared.push({
+      ...message,
+      content: redactTraceText(message.content ?? ''),
+    });
+  }
+
+  return { priorSummary, messages: prepared };
+}
+
+export async function generateSummaryWithSource(
+  messages: Message[],
+  llm: LLMService,
+  options?: SummaryOptions
+): Promise<GeneratedSummary> {
+  const opts = { ...DEFAULT_OPTIONS, ...options };
+  if (messages.length === 0) return { text: '', source: 'heuristic' };
+
+  const prepared = prepareSummaryInput(messages);
+
+  const condensed = prepared.messages
+    .map(msg => {
+      const content = msg.content ?? '';
+      if (msg.role === 'user') return `[User]: ${content.slice(0, 200)}`;
+      if (msg.role === 'assistant') {
+        const toolCalls = msg.tool_calls
+          ? ` (tools: ${msg.tool_calls.map(tc => tc.function.name).join(', ')})`
+          : '';
+        return `[Assistant]: ${content.slice(0, 300)}${toolCalls}`;
+      }
+      if (msg.role === 'tool') return `[Tool]: ${content.slice(0, 150)}`;
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n');
+
+  const priorSummarySection = prepared.priorSummary
+    ? `Prior durable summary (merge it with only the new conversation below):\n${prepared.priorSummary}\n\n`
+    : '';
+  const prompt = `Summarize the following coding agent conversation compactly. Focus on:
+1. User's main goal/objective
+2. Key actions taken (files modified, commands run)
+3. Current state (what's done, what's pending)
+4. Any important decisions or constraints mentioned
+
+Keep the summary under ${opts.maxLength || 500} characters. Use bullet points.
+
+${priorSummarySection}New conversation since the prior summary:
+${condensed.slice(0, 8000)}
+
+Summary:`;
+
+  try {
+    const response = await llm.chat([{ role: 'user', content: prompt }]);
+    if (response.content) {
+      return {
+        text: response.content.trim().slice(0, opts.maxLength || 500),
+        source: 'llm',
+      };
+    }
+  } catch {
+    // Fall back to the deterministic summarizer below.
+  }
+
+  const freshSummary = await summaryGenerator(prepared.messages, options);
+  const combined = [prepared.priorSummary, freshSummary].filter(Boolean).join('\n');
+  const maxLength = opts.maxLength || 500;
+  return {
+    text: combined.length > maxLength ? `${combined.slice(0, maxLength - 3)}...` : combined,
+    source: 'heuristic',
+  };
+}
 
 /**
  * Generate a summary using the LLM for high-quality context compaction.
@@ -208,53 +312,5 @@ export async function generateLLMSummary(
   llm: LLMService,
   options?: SummaryOptions
 ): Promise<string> {
-  const opts = { ...DEFAULT_OPTIONS, ...options };
-
-  if (messages.length === 0) return '';
-
-  // Build a condensed representation of the messages for the LLM
-  const condensed = messages
-    .map(msg => {
-      if (msg.role === 'user') {
-        return `[User]: ${msg.content?.slice(0, 200) || ''}`;
-      }
-      if (msg.role === 'assistant') {
-        const toolCalls = msg.tool_calls
-          ? ` (tools: ${msg.tool_calls.map(tc => tc.function.name).join(', ')})`
-          : '';
-        return `[Assistant]: ${msg.content?.slice(0, 300) || ''}${toolCalls}`;
-      }
-      if (msg.role === 'tool') {
-        return `[Tool]: ${(msg.content || '').slice(0, 150)}`;
-      }
-      return '';
-    })
-    .filter(Boolean)
-    .join('\n');
-
-  const prompt = `Summarize the following coding agent conversation compactly. Focus on:
-1. User's main goal/objective
-2. Key actions taken (files modified, commands run)
-3. Current state (what's done, what's pending)
-4. Any important decisions or constraints mentioned
-
-Keep the summary under ${opts.maxLength || 500} characters. Use bullet points.
-
-Conversation:
-${condensed.slice(0, 8000)}
-
-Summary:`;
-
-  try {
-    const response = await llm.chat([{ role: 'user', content: prompt }]);
-
-    if (response.content) {
-      return response.content.trim().slice(0, opts.maxLength || 500);
-    }
-  } catch {
-    // LLM call failed or timed out — fall through to heuristic
-  }
-
-  // Fallback to heuristic summary
-  return summaryGenerator(messages, options);
+  return (await generateSummaryWithSource(messages, llm, options)).text;
 }

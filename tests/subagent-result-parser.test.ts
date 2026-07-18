@@ -109,3 +109,18 @@ describe('subagent result parser', () => {
     });
   });
 });
+
+describe('extractJsonObject robustness (bug-hunt round 5)', () => {
+  it('skips a leading non-JSON brace fragment and parses the later valid object', () => {
+    // A child may emit "{ result above }" style prose before the real JSON.
+    // The first balanced brace pair is "{ result above }" which is not valid
+    // JSON; the parser must continue scanning and return the real object.
+    const text = 'Here is the { result above } output: {"summary":"ok","findings":[]}';
+    expect(extractJsonObject(text)).toEqual({ summary: 'ok', findings: [] });
+  });
+
+  it('skips multiple non-JSON brace fragments before the valid object', () => {
+    const text = 'noise { a } more { b } then {"summary":"done"}';
+    expect(extractJsonObject(text)).toEqual({ summary: 'done' });
+  });
+});

@@ -19,7 +19,12 @@
  * All other escape sequences are discarded.
  */
 
-import type { StyledSpan, TuiStyle, TuiColor } from '../../tui-core/style';
+import {
+  normalizeStyle,
+  type StyledSpan,
+  type TuiStyle,
+  type TuiColor,
+} from '../../tui-core/style';
 
 // --- Public API ---
 
@@ -56,7 +61,7 @@ export function parseAnsiToStyledSpans(rawText: string): StyledSpan[] {
       const parsed = tryParseSgrSequence(text, i);
       if (parsed) {
         flush();
-        style = mergeTuiStyle(style, parsed.style);
+        style = applySgrChange(style, parsed.change);
         i = parsed.nextIndex;
         continue;
       }
@@ -83,8 +88,25 @@ export function parseAnsiToStyledSpans(rawText: string): StyledSpan[] {
 
 // --- Internal helpers ---
 
+/**
+ * A parsed SGR change. Distinguishes:
+ *  - reset (code 0): clear everything
+ *  - clearFg (code 39): clear foreground only
+ *  - clearBg (code 49): clear background only
+ *  - set: fields to set/override
+ *
+ * This separation is necessary because `foreground: undefined` alone cannot
+ * distinguish "clear foreground" from "don't touch foreground".
+ */
+interface SgrChange {
+  reset?: boolean;
+  clearFg?: boolean;
+  clearBg?: boolean;
+  set?: TuiStyle;
+}
+
 interface ParsedSgr {
-  style: TuiStyle;
+  change: SgrChange;
   nextIndex: number;
 }
 
@@ -99,9 +121,9 @@ function tryParseSgrSequence(text: string, escIndex: number): ParsedSgr | null {
     if (cp === undefined) break;
     if (cp >= 0x40 && cp <= 0x7e) {
       const params = text.slice(escIndex + 2, end + 1); // include terminator
-      const style = parseSgrParams(params);
-      if (style === null) return null; // not an SGR sequence
-      return { style, nextIndex: end + 1 };
+      const change = parseSgrParams(params);
+      if (change === null) return null; // not an SGR sequence
+      return { change, nextIndex: end + 1 };
     }
     end += 1;
   }
@@ -113,52 +135,62 @@ function tryParseSgrSequence(text: string, escIndex: number): ParsedSgr | null {
  * Parse SGR parameters (the portion between `\x1b[` and `m`).
  * Returns null if the final character is not 'm' (not an SGR sequence).
  */
-function parseSgrParams(params: string): TuiStyle | null {
+function parseSgrParams(params: string): SgrChange | null {
   if (params.length === 0) return null; // CSI without params
   const final = params.codePointAt(params.length - 1);
   if (final !== 0x6d) return null; // not ending with 'm'
 
-  const codes = params.slice(0, -1).split(';').map(c => parseInt(c, 10));
-  if (codes.length === 0 || codes.every(isNaN)) return null;
+  const body = params.slice(0, -1);
+  const codes = body === '' ? [0] : body.split(';').map(c => parseInt(c, 10));
+  if (codes.every(isNaN)) return null;
 
-  let result: TuiStyle = {};
+  const change: SgrChange = { set: {} };
+  let hasAny = false;
   for (const code of codes) {
     if (isNaN(code)) continue;
+    hasAny = true;
     switch (code) {
-      case 0:  result = {}; break;               // reset
-      case 1:  result = { ...result, bold: true }; break;
-      case 2:  result = { ...result, dim: true }; break;
-      case 30: result = { ...result, foreground: named('black') }; break;
-      case 31: result = { ...result, foreground: named('red') }; break;
-      case 32: result = { ...result, foreground: named('green') }; break;
-      case 33: result = { ...result, foreground: named('yellow') }; break;
-      case 34: result = { ...result, foreground: named('blue') }; break;
-      case 35: result = { ...result, foreground: named('magenta') }; break;
-      case 36: result = { ...result, foreground: named('cyan') }; break;
-      case 37: result = { ...result, foreground: named('white') }; break;
-      case 39: result = { ...result, foreground: undefined }; break;  // default fg
-      case 40: result = { ...result, background: named('black') }; break;
-      case 41: result = { ...result, background: named('red') }; break;
-      case 42: result = { ...result, background: named('green') }; break;
-      case 43: result = { ...result, background: named('yellow') }; break;
-      case 44: result = { ...result, background: named('blue') }; break;
-      case 45: result = { ...result, background: named('magenta') }; break;
-      case 46: result = { ...result, background: named('cyan') }; break;
-      case 47: result = { ...result, background: named('white') }; break;
-      case 49: result = { ...result, background: undefined }; break;  // default bg
-      case 90: result = { ...result, foreground: named('black') }; break;
-      case 91: result = { ...result, foreground: named('red') }; break;
-      case 92: result = { ...result, foreground: named('green') }; break;
-      case 93: result = { ...result, foreground: named('yellow') }; break;
-      case 94: result = { ...result, foreground: named('blue') }; break;
-      case 95: result = { ...result, foreground: named('magenta') }; break;
-      case 96: result = { ...result, foreground: named('cyan') }; break;
-      case 97: result = { ...result, foreground: named('white') }; break;
+      case 0:
+        change.reset = true;
+        change.clearFg = false;
+        change.clearBg = false;
+        change.set = {};
+        break;
+      case 1:  change.set = { ...change.set, bold: true }; break;
+      case 2:  change.set = { ...change.set, dim: true }; break;
+      case 30: setForeground(change, named('black')); break;
+      case 31: setForeground(change, named('red')); break;
+      case 32: setForeground(change, named('green')); break;
+      case 33: setForeground(change, named('yellow')); break;
+      case 34: setForeground(change, named('blue')); break;
+      case 35: setForeground(change, named('magenta')); break;
+      case 36: setForeground(change, named('cyan')); break;
+      case 37: setForeground(change, named('white')); break;
+      case 39: clearForeground(change); break;
+      case 40: setBackground(change, named('black')); break;
+      case 41: setBackground(change, named('red')); break;
+      case 42: setBackground(change, named('green')); break;
+      case 43: setBackground(change, named('yellow')); break;
+      case 44: setBackground(change, named('blue')); break;
+      case 45: setBackground(change, named('magenta')); break;
+      case 46: setBackground(change, named('cyan')); break;
+      case 47: setBackground(change, named('white')); break;
+      case 49: clearBackground(change); break;
+      // 90-97: bright foreground colours. Bright ≠ bold (separate SGR attrs).
+      case 90: setForeground(change, named('black')); break;
+      case 91: setForeground(change, named('red')); break;
+      case 92: setForeground(change, named('green')); break;
+      case 93: setForeground(change, named('yellow')); break;
+      case 94: setForeground(change, named('blue')); break;
+      case 95: setForeground(change, named('magenta')); break;
+      case 96: setForeground(change, named('cyan')); break;
+      case 97: setForeground(change, named('white')); break;
       // Unrecognised SGR codes are ignored (they are still valid SGR).
       default: break;
     }
   }
-  return result;
+  if (!hasAny) return null;
+  return change;
 }
 
 const VALID_NAMED_COLORS = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white'] as const;
@@ -172,21 +204,51 @@ function named(name: string): TuiColor {
   return { kind: 'named', value };
 }
 
-/** Merge a parsed SGR style on top of the current style. */
-function mergeTuiStyle(current: TuiStyle, incoming: TuiStyle): TuiStyle {
-  // If incoming is a reset (all fields undefined), return empty.
-  const hasReset =
-    incoming.foreground === undefined &&
-    incoming.background === undefined &&
-    incoming.bold === undefined &&
-    incoming.dim === undefined;
-  if (hasReset) return {};
-  return {
-    foreground: incoming.foreground !== undefined ? incoming.foreground : current.foreground,
-    background: incoming.background !== undefined ? incoming.background : current.background,
-    bold: incoming.bold !== undefined ? incoming.bold : current.bold,
-    dim: incoming.dim !== undefined ? incoming.dim : current.dim,
-  };
+function setForeground(change: SgrChange, color: TuiColor): void {
+  change.clearFg = false;
+  change.set = { ...change.set, foreground: color };
+}
+
+function clearForeground(change: SgrChange): void {
+  change.clearFg = true;
+  if (!change.set) return;
+  const rest = { ...change.set };
+  delete rest.foreground;
+  change.set = rest;
+}
+
+function setBackground(change: SgrChange, color: TuiColor): void {
+  change.clearBg = false;
+  change.set = { ...change.set, background: color };
+}
+
+function clearBackground(change: SgrChange): void {
+  change.clearBg = true;
+  if (!change.set) return;
+  const rest = { ...change.set };
+  delete rest.background;
+  change.set = rest;
+}
+
+/** Apply a parsed SGR change on top of the current style. */
+function applySgrChange(current: TuiStyle, change: SgrChange): TuiStyle {
+  let result = change.reset ? {} : current;
+  if (change.clearFg) {
+    result = { ...result, foreground: undefined };
+  }
+  if (change.clearBg) {
+    result = { ...result, background: undefined };
+  }
+  if (change.set) {
+    const set = change.set;
+    result = {
+      foreground: set.foreground !== undefined ? set.foreground : result.foreground,
+      background: set.background !== undefined ? set.background : result.background,
+      bold: set.bold !== undefined ? set.bold : result.bold,
+      dim: set.dim !== undefined ? set.dim : result.dim,
+    };
+  }
+  return normalizeStyle(result);
 }
 
 /**

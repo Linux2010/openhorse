@@ -13,6 +13,7 @@ import { CostTracker } from '../core/cost-tracker';
 import type { TodoItem } from './tool-state';
 import type { HarnessState } from '../harness';
 import type { LoopStats } from './query';
+import type { ContextUsageSnapshot } from '../services/model-context';
 
 // ============================================================================
 // 状态结构
@@ -25,6 +26,8 @@ export interface AppState {
   isProcessing: boolean;
   currentModel: string;
   tokenUsage: { promptTokens: number; completionTokens: number } | null;
+  /** Current request context pressure. This is not cumulative session usage. */
+  contextUsage: ContextUsageSnapshot | null;
   permissionMode: PermissionMode;
   costTracker: CostTracker;
   /** Project memory content loaded at startup */
@@ -55,13 +58,34 @@ export class Store {
   private state: AppState;
   private listeners: Set<Listener> = new Set();
 
-  constructor(initial: Omit<AppState, 'conversationHistory' | 'isProcessing' | 'tokenUsage' | 'permissionMode' | 'costTracker' | 'memoryContent' | 'skillsContent' | 'projectInstructionsContent' | 'todos' | 'planMode' | 'currentPlan'> & Partial<AppState>) {
+  constructor(
+    initial: Omit<
+      AppState,
+      | 'conversationHistory'
+      | 'isProcessing'
+      | 'tokenUsage'
+      | 'contextUsage'
+      | 'permissionMode'
+      | 'costTracker'
+      | 'memoryContent'
+      | 'skillsContent'
+      | 'projectInstructionsContent'
+      | 'todos'
+      | 'planMode'
+      | 'currentPlan'
+    > &
+      Partial<AppState>
+  ) {
     this.state = {
       conversationHistory: [],
       isProcessing: false,
       tokenUsage: null,
+      contextUsage: null,
       permissionMode: 'default',
-      costTracker: new CostTracker(),
+      costTracker: new CostTracker({
+        pricing: initial.config.cost?.modelPricing,
+        defaultPricing: initial.config.cost?.defaultPricing,
+      }),
       memoryContent: '',
       skillsContent: '',
       projectInstructionsContent: '',
@@ -96,6 +120,7 @@ export class Store {
     this.setState({
       conversationHistory: [],
       tokenUsage: null,
+      contextUsage: null,
     });
   }
 
@@ -114,6 +139,11 @@ export class Store {
   /** Convenience: update token usage */
   setTokenUsage(usage: { promptTokens: number; completionTokens: number }): void {
     this.setState({ tokenUsage: usage });
+  }
+
+  /** Update the latest runtime-owned context pressure snapshot. */
+  setContextUsage(usage: ContextUsageSnapshot): void {
+    this.setState({ contextUsage: usage });
   }
 
   /** Convenience: update the latest agent-loop stats */

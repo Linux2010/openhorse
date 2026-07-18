@@ -292,7 +292,8 @@ describe('UI v2 shell', () => {
     expect(bottom).toContain('model=glm-5');
     expect(bottom).toContain('session=f6bcadcf');
     expect(bottom).toContain('tokens=4.4K');
-    expect(bottom).toContain('cost=$0.0012');
+    expect(bottom).not.toContain('cost=');
+    expect(bottom).not.toContain('$0.0012');
     expect(bottom).toContain('ctx=2%');
     expect(bottom.endsWith('ctx=2% ')).toBe(true);
   });

@@ -4,6 +4,8 @@ import { buildTool } from '../src/framework/tool';
 import type { OpenHorseTool, ToolContext } from '../src/framework/tool';
 import type { LLMService, LLMResponse, Message, Tool } from '../src/services/llm';
 import { resetAutoCompact } from '../src/services/compact/auto-compact';
+import { CompactCoordinator } from '../src/services/compact/coordinator';
+import { CostTracker } from '../src/core/cost-tracker';
 
 const mockTool: OpenHorseTool = buildTool({
   name: 'read_file',
@@ -72,9 +74,7 @@ describe('query generator', () => {
   });
 
   test('yields request_start, message, complete on simple response', async () => {
-    const llm = makeMockLLM([
-      { content: 'Hello!', model: 'test-model' },
-    ]);
+    const llm = makeMockLLM([{ content: 'Hello!', model: 'test-model' }]);
 
     const messages: Message[] = [
       { role: 'system', content: 'You are a bot.' },
@@ -95,12 +95,50 @@ describe('query generator', () => {
     expect(events[0]).toMatchObject({ type: 'request_start', model: 'test-model', turn: 1 });
     expect(events[1]).toMatchObject({ type: 'message', role: 'assistant', content: 'Hello!' });
     expect(events[2]).toMatchObject({ type: 'complete', content: 'Hello!', model: 'test-model' });
+    expect(llm.chat).not.toHaveBeenCalled();
+  });
+
+  test('accounts for tool-calling model turns as well as the final response', async () => {
+    const llm = makeMockLLM([
+      {
+        content: '',
+        model: 'test-model',
+        usage: { promptTokens: 100, completionTokens: 20, requestId: 'tool-turn' },
+        toolCalls: [{
+          id: 'call-1',
+          type: 'function',
+          function: { name: 'read_file', arguments: '{"path":"a.ts"}' },
+        }],
+      },
+      {
+        content: 'done',
+        model: 'test-model',
+        usage: { promptTokens: 200, completionTokens: 30, requestId: 'final-turn' },
+      },
+    ]);
+    const costTracker = new CostTracker();
+    const messages: Message[] = [
+      { role: 'system', content: 'You are a bot.' },
+      { role: 'user', content: 'Read a.ts' },
+    ];
+
+    for await (const _event of query({
+      messages,
+      tools: [mockTool],
+      toolExecutor: async () => 'file content',
+      llm,
+      costTracker,
+    })) {
+      // Drain the loop.
+    }
+
+    const stats = costTracker.getStats();
+    expect(stats.recordCount).toBe(2);
+    expect(stats.totalTokens).toBe(350);
   });
 
   test('yields prompt assembly stats before model response when harness is active', async () => {
-    const llm = makeMockLLM([
-      { content: 'Hello with context', model: 'test-model' },
-    ]);
+    const llm = makeMockLLM([{ content: 'Hello with context', model: 'test-model' }]);
     const messages: Message[] = [
       { role: 'system', content: 'You are a bot.' },
       { role: 'user', content: 'Hi' },
@@ -165,7 +203,11 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/test"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/test"}' },
+          },
         ],
       },
       { content: 'The file says hello', model: 'test-model' },
@@ -215,8 +257,16 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/one"}' } },
-          { id: 'call-2', type: 'function', function: { name: 'read_file', arguments: '{"path":"/two"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/one"}' },
+          },
+          {
+            id: 'call-2',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/two"}' },
+          },
         ],
       },
       { content: 'Read both files', model: 'test-model' },
@@ -229,10 +279,11 @@ describe('query generator', () => {
         { role: 'user', content: 'Read two files' },
       ],
       tools: [mockTool],
-      toolExecutor: async (_name, args) => JSON.stringify({
-        success: true,
-        output: `content:${args.path}`,
-      }),
+      toolExecutor: async (_name, args) =>
+        JSON.stringify({
+          success: true,
+          output: `content:${args.path}`,
+        }),
       llm,
     })) {
       events.push(event);
@@ -281,7 +332,11 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/test"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/test"}' },
+          },
         ],
       },
       { content: 'Done', model: 'test-model' },
@@ -295,18 +350,22 @@ describe('query generator', () => {
         { role: 'user', content: 'Read the file' },
       ],
       tools: [mockTool],
-      toolExecutor: async () => JSON.stringify({
-        success: true,
-        output: 'file content',
-        summary: 'read /test (1L, 12B)',
-        outputBytes: 12,
-      }),
+      toolExecutor: async () =>
+        JSON.stringify({
+          success: true,
+          output: 'file content',
+          summary: 'read /test (1L, 12B)',
+          outputBytes: 12,
+        }),
       llm,
     })) {
       events.push(event);
     }
 
-    const toolResult = events.find(event => event.type === 'tool_result') as Extract<QueryEvent, { type: 'tool_result' }>;
+    const toolResult = events.find(event => event.type === 'tool_result') as Extract<
+      QueryEvent,
+      { type: 'tool_result' }
+    >;
     expect(toolResult.summary).toBe('read /test (1L, 12B)');
     expect(toolResult.outputBytes).toBe(12);
   });
@@ -317,7 +376,11 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/test"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/test"}' },
+          },
         ],
       },
       { content: 'Done', model: 'test-model' },
@@ -330,18 +393,22 @@ describe('query generator', () => {
         { role: 'user', content: 'Read the file' },
       ],
       tools: [mockTool],
-      toolExecutor: async () => JSON.stringify({
-        success: true,
-        output: 'file content',
-        summary: 'read /test',
-        outputBytes: 12,
-      }),
+      toolExecutor: async () =>
+        JSON.stringify({
+          success: true,
+          output: 'file content',
+          summary: 'read /test',
+          outputBytes: 12,
+        }),
       llm,
     })) {
       events.push(event);
     }
 
-    const complete = events.find(event => event.type === 'complete') as Extract<QueryEvent, { type: 'complete' }>;
+    const complete = events.find(event => event.type === 'complete') as Extract<
+      QueryEvent,
+      { type: 'complete' }
+    >;
     expect(complete.stats).toMatchObject({
       finishReason: 'completed',
       turnsStarted: 2,
@@ -355,9 +422,7 @@ describe('query generator', () => {
   });
 
   test('merges provider retry and fallback diagnostics into loop stats', async () => {
-    const llm = makeMockLLM([
-      { content: 'Recovered', model: 'fallback-model' },
-    ]);
+    const llm = makeMockLLM([{ content: 'Recovered', model: 'fallback-model' }]);
     (llm as any).getLastRequestDiagnostics = jest.fn(() => ({
       retryCount: 3,
       retryDelayMs: 12,
@@ -384,7 +449,10 @@ describe('query generator', () => {
       events.push(event);
     }
 
-    const complete = events.find(event => event.type === 'complete') as Extract<QueryEvent, { type: 'complete' }>;
+    const complete = events.find(event => event.type === 'complete') as Extract<
+      QueryEvent,
+      { type: 'complete' }
+    >;
     expect(complete.stats).toMatchObject({
       finishReason: 'completed',
       providerRetryCount: 3,
@@ -406,7 +474,11 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/test"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/test"}' },
+          },
         ],
       },
       { content: 'should not be requested', model: 'test-model' },
@@ -459,12 +531,22 @@ describe('query generator', () => {
         content: 'Need several files',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/one"}' } },
-          { id: 'call-2', type: 'function', function: { name: 'read_file', arguments: '{"path":"/two"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/one"}' },
+          },
+          {
+            id: 'call-2',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/two"}' },
+          },
         ],
       },
     ]);
-    const toolExecutor = jest.fn(async () => JSON.stringify({ success: true, output: 'file content' }));
+    const toolExecutor = jest.fn(async () =>
+      JSON.stringify({ success: true, output: 'file content' })
+    );
 
     const events: QueryEvent[] = [];
     for await (const event of query({
@@ -654,14 +736,22 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/one"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/one"}' },
+          },
         ],
       },
       {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-2', type: 'function', function: { name: 'read_file', arguments: '{"path":"/two"}' } },
+          {
+            id: 'call-2',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/two"}' },
+          },
         ],
       },
       { content: 'Done', model: 'test-model' },
@@ -674,7 +764,8 @@ describe('query generator', () => {
         { role: 'user', content: 'Inspect slowly' },
       ],
       tools: [mockTool],
-      toolExecutor: async (_name, args) => JSON.stringify({ success: true, output: `content:${args.path}` }),
+      toolExecutor: async (_name, args) =>
+        JSON.stringify({ success: true, output: `content:${args.path}` }),
       llm,
       loopBudget: { maxReadOnlyFragmentation: 2 },
     })) {
@@ -682,8 +773,13 @@ describe('query generator', () => {
     }
 
     const thirdRequestMessages = (llm.chatStream as jest.Mock).mock.calls[2][0] as Message[];
-    expect(thirdRequestMessages.map(message => message.content).join('\n')).toContain('prefer batch_read');
-    const complete = events.find(event => event.type === 'complete') as Extract<QueryEvent, { type: 'complete' }>;
+    expect(thirdRequestMessages.map(message => message.content).join('\n')).toContain(
+      'prefer batch_read'
+    );
+    const complete = events.find(event => event.type === 'complete') as Extract<
+      QueryEvent,
+      { type: 'complete' }
+    >;
     expect(complete.stats).toMatchObject({
       singleReadOnlyStreak: 2,
       batchReadSuggestionCount: 1,
@@ -698,7 +794,11 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/large"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/large"}' },
+          },
         ],
       },
       { content: 'Done', model: 'test-model' },
@@ -712,24 +812,34 @@ describe('query generator', () => {
     for await (const event of query({
       messages,
       tools: [mockTool],
-      toolExecutor: async () => JSON.stringify({
-        success: true,
-        output: largeOutput,
-        summary: 'read /large (1000L)',
-        outputBytes: Buffer.byteLength(largeOutput, 'utf8'),
-        artifactRef: { id: 'read_file-large', outputBytes: Buffer.byteLength(largeOutput, 'utf8') },
-      }),
+      toolExecutor: async () =>
+        JSON.stringify({
+          success: true,
+          output: largeOutput,
+          summary: 'read /large (1000L)',
+          outputBytes: Buffer.byteLength(largeOutput, 'utf8'),
+          artifactRef: {
+            id: 'read_file-large',
+            outputBytes: Buffer.byteLength(largeOutput, 'utf8'),
+          },
+        }),
       llm,
       maxModelVisibleToolResultBytes: 700,
     })) {
       events.push(event);
     }
 
-    const toolResult = events.find(event => event.type === 'tool_result') as Extract<QueryEvent, { type: 'tool_result' }>;
+    const toolResult = events.find(event => event.type === 'tool_result') as Extract<
+      QueryEvent,
+      { type: 'tool_result' }
+    >;
     expect(JSON.parse(toolResult.result).output).toContain(largeOutput.slice(0, 100));
     expect(Buffer.byteLength(toolResult.modelVisibleResult, 'utf8')).toBeLessThanOrEqual(700);
     expect(toolResult.modelVisibleResult).not.toBe(toolResult.result);
-    expect(toolResult.artifactRef).toEqual({ id: 'read_file-large', outputBytes: Buffer.byteLength(largeOutput, 'utf8') });
+    expect(toolResult.artifactRef).toEqual({
+      id: 'read_file-large',
+      outputBytes: Buffer.byteLength(largeOutput, 'utf8'),
+    });
 
     const toolMessage = messages.find(message => message.role === 'tool');
     expect(toolMessage?.content.length).toBeLessThan(toolResult.result.length);
@@ -737,9 +847,14 @@ describe('query generator', () => {
     expect(toolMessage?.content).toContain('modelVisibleCompressed');
     expect(toolMessage?.content).toContain('read_file-large');
 
-    const complete = events.find(event => event.type === 'complete') as Extract<QueryEvent, { type: 'complete' }>;
+    const complete = events.find(event => event.type === 'complete') as Extract<
+      QueryEvent,
+      { type: 'complete' }
+    >;
     expect(complete.stats?.toolResultBytes).toBe(Buffer.byteLength(largeOutput, 'utf8'));
-    expect(complete.stats?.modelVisibleToolBytes).toBeLessThan(complete.stats?.toolResultBytes ?? 0);
+    expect(complete.stats?.modelVisibleToolBytes).toBeLessThan(
+      complete.stats?.toolResultBytes ?? 0
+    );
     expect(complete.stats?.summarizedBytes).toBeGreaterThan(0);
   });
 
@@ -750,8 +865,16 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/one"}' } },
-          { id: 'call-2', type: 'function', function: { name: 'read_file', arguments: '{"path":"/two"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/one"}' },
+          },
+          {
+            id: 'call-2',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/two"}' },
+          },
         ],
       },
       { content: 'Done', model: 'test-model' },
@@ -764,13 +887,14 @@ describe('query generator', () => {
         { role: 'user', content: 'Read large files' },
       ],
       tools: [mockTool],
-      toolExecutor: async () => JSON.stringify({
-        success: true,
-        output: largeOutput,
-        summary: 'large read',
-        outputBytes: Buffer.byteLength(largeOutput, 'utf8'),
-        artifactRef: { id: 'large-output', outputBytes: Buffer.byteLength(largeOutput, 'utf8') },
-      }),
+      toolExecutor: async () =>
+        JSON.stringify({
+          success: true,
+          output: largeOutput,
+          summary: 'large read',
+          outputBytes: Buffer.byteLength(largeOutput, 'utf8'),
+          artifactRef: { id: 'large-output', outputBytes: Buffer.byteLength(largeOutput, 'utf8') },
+        }),
       llm,
       maxModelVisibleToolResultBytes: 700,
       loopBudget: { maxModelVisibleToolBytes: 700 },
@@ -778,13 +902,20 @@ describe('query generator', () => {
       events.push(event);
     }
 
-    const toolResults = events.filter(event => event.type === 'tool_result') as Array<Extract<QueryEvent, { type: 'tool_result' }>>;
+    const toolResults = events.filter(event => event.type === 'tool_result') as Array<
+      Extract<QueryEvent, { type: 'tool_result' }>
+    >;
     expect(toolResults).toHaveLength(2);
     expect(JSON.parse(toolResults[0].result).output).toContain(largeOutput.slice(0, 100));
     expect(JSON.parse(toolResults[1].result).output).toContain(largeOutput.slice(0, 100));
     expect(toolResults[1].modelVisibleResult).toContain('modelVisibleBudgetExceeded');
-    const complete = events.find(event => event.type === 'complete') as Extract<QueryEvent, { type: 'complete' }>;
-    expect(complete.stats?.modelVisibleToolBytes).toBeLessThan(complete.stats?.toolResultBytes ?? 0);
+    const complete = events.find(event => event.type === 'complete') as Extract<
+      QueryEvent,
+      { type: 'complete' }
+    >;
+    expect(complete.stats?.modelVisibleToolBytes).toBeLessThan(
+      complete.stats?.toolResultBytes ?? 0
+    );
     expect(complete.stats?.summarizedBytes).toBeGreaterThan(0);
   });
 
@@ -797,7 +928,11 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/large"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/large"}' },
+          },
         ],
       },
       { content: 'Done', model: 'test-model' },
@@ -810,13 +945,14 @@ describe('query generator', () => {
     for await (const _event of query({
       messages,
       tools: [mockTool],
-      toolExecutor: async () => JSON.stringify({
-        success: false,
-        output: largeOutput,
-        summary: longSummary,
-        error: longError,
-        outputBytes: Buffer.byteLength(largeOutput, 'utf8'),
-      }),
+      toolExecutor: async () =>
+        JSON.stringify({
+          success: false,
+          output: largeOutput,
+          summary: longSummary,
+          error: longError,
+          outputBytes: Buffer.byteLength(largeOutput, 'utf8'),
+        }),
       llm,
       maxModelVisibleToolResultBytes: 700,
     })) {
@@ -893,12 +1029,13 @@ describe('query generator', () => {
         { role: 'user', content: 'Inspect project' },
       ],
       tools: [batchReadTool],
-      toolExecutor: async () => JSON.stringify({
-        success: true,
-        output: JSON.stringify(batchPayload),
-        summary: batchPayload.summary,
-        outputBytes: 120,
-      }),
+      toolExecutor: async () =>
+        JSON.stringify({
+          success: true,
+          output: JSON.stringify(batchPayload),
+          summary: batchPayload.summary,
+          outputBytes: 120,
+        }),
       llm,
       harness: harness as any,
     })) {
@@ -906,42 +1043,58 @@ describe('query generator', () => {
     }
 
     expect(events.filter(event => event.type === 'tool_result')).toHaveLength(1);
-    expect(harness.recordToolResult).toHaveBeenCalledWith(expect.objectContaining({
-      name: 'batch_read',
-      summary: batchPayload.summary,
-    }));
-    expect(harness.recordToolResult).toHaveBeenCalledWith(expect.objectContaining({
-      name: 'read_file',
-      args: { path: 'src/index.ts' },
-      summary: 'read src/index.ts (10L, 100B)',
-    }));
-    expect(harness.recordToolResult).toHaveBeenCalledWith(expect.objectContaining({
-      name: 'grep',
-      args: { pattern: 'TODO', path: 'src' },
-      summary: 'grep /TODO/ -> 3 matches',
-    }));
+    expect(harness.recordToolResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'batch_read',
+        summary: batchPayload.summary,
+      })
+    );
+    expect(harness.recordToolResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'read_file',
+        args: { path: 'src/index.ts' },
+        summary: 'read src/index.ts (10L, 100B)',
+      })
+    );
+    expect(harness.recordToolResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'grep',
+        args: { pattern: 'TODO', path: 'src' },
+        summary: 'grep /TODO/ -> 3 matches',
+      })
+    );
   });
 
   test('runs concurrency-safe tool calls in parallel and preserves result order', async () => {
-    const safeTools = ['glob', 'grep'].map(name => buildTool({
-      name,
-      description: `Run ${name}`,
-      parameters: {
-        type: 'object',
-        properties: { pattern: { type: 'string', description: 'Pattern' } },
-        required: ['pattern'],
-      },
-      execute: async () => ({ success: true, output: 'ok' }),
-      isConcurrencySafe: () => true,
-      isReadOnly: () => true,
-    }));
+    const safeTools = ['glob', 'grep'].map(name =>
+      buildTool({
+        name,
+        description: `Run ${name}`,
+        parameters: {
+          type: 'object',
+          properties: { pattern: { type: 'string', description: 'Pattern' } },
+          required: ['pattern'],
+        },
+        execute: async () => ({ success: true, output: 'ok' }),
+        isConcurrencySafe: () => true,
+        isReadOnly: () => true,
+      })
+    );
     const llm = makeMockLLM([
       {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'glob', arguments: '{"pattern":"*.ts"}' } },
-          { id: 'call-2', type: 'function', function: { name: 'grep', arguments: '{"pattern":"needle"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'glob', arguments: '{"pattern":"*.ts"}' },
+          },
+          {
+            id: 'call-2',
+            type: 'function',
+            function: { name: 'grep', arguments: '{"pattern":"needle"}' },
+          },
         ],
       },
       { content: 'Done', model: 'test-model' },
@@ -956,7 +1109,7 @@ describe('query generator', () => {
         { role: 'user', content: 'Search' },
       ],
       tools: safeTools,
-      toolExecutor: async (name) => {
+      toolExecutor: async name => {
         active++;
         maxActive = Math.max(maxActive, active);
         await new Promise(resolve => setTimeout(resolve, name === 'glob' ? 30 : 10));
@@ -969,17 +1122,18 @@ describe('query generator', () => {
     }
 
     expect(maxActive).toBe(2);
-    expect(events.filter(event => event.type === 'tool_result').map(event => (event as Extract<QueryEvent, { type: 'tool_result' }>).name))
-      .toEqual(['glob', 'grep']);
+    expect(
+      events
+        .filter(event => event.type === 'tool_result')
+        .map(event => (event as Extract<QueryEvent, { type: 'tool_result' }>).name)
+    ).toEqual(['glob', 'grep']);
   });
 
   test('respects abort signal', async () => {
     const controller = new AbortController();
     controller.abort();
 
-    const llm = makeMockLLM([
-      { content: 'should not reach', model: 'test-model' },
-    ]);
+    const llm = makeMockLLM([{ content: 'should not reach', model: 'test-model' }]);
 
     const messages: Message[] = [
       { role: 'system', content: 'You are a bot.' },
@@ -1013,7 +1167,11 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/test"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/test"}' },
+          },
         ],
       },
     ]);
@@ -1035,7 +1193,10 @@ describe('query generator', () => {
       events.push(event);
     }
 
-    const complete = events.find(event => event.type === 'complete') as Extract<QueryEvent, { type: 'complete' }>;
+    const complete = events.find(event => event.type === 'complete') as Extract<
+      QueryEvent,
+      { type: 'complete' }
+    >;
     expect(complete).toMatchObject({
       type: 'complete',
       content: 'Operation cancelled.',
@@ -1051,9 +1212,7 @@ describe('query generator', () => {
 
   test('passes abort signal to chatStream', async () => {
     const controller = new AbortController();
-    const llm = makeMockLLM([
-      { content: 'Hello!', model: 'test-model' },
-    ]);
+    const llm = makeMockLLM([{ content: 'Hello!', model: 'test-model' }]);
 
     const messages: Message[] = [
       { role: 'system', content: 'You are a bot.' },
@@ -1070,12 +1229,9 @@ describe('query generator', () => {
       // consume
     }
 
-    expect(llm.chatStream).toHaveBeenCalledWith(
-      expect.any(Array),
-      undefined,
-      expect.any(Array),
-      { abortSignal: controller.signal },
-    );
+    expect(llm.chatStream).toHaveBeenCalledWith(expect.any(Array), undefined, expect.any(Array), {
+      abortSignal: controller.signal,
+    });
   });
 
   test('does not emit assistant message when aborted after stream returns', async () => {
@@ -1117,14 +1273,22 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/1"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/1"}' },
+          },
         ],
       },
       {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-2', type: 'function', function: { name: 'read_file', arguments: '{"path":"/2"}' } },
+          {
+            id: 'call-2',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/2"}' },
+          },
         ],
       },
     ]);
@@ -1186,9 +1350,7 @@ describe('query generator', () => {
   });
 
   test('runs predictive compact before sending an oversized request', async () => {
-    const llm = makeMockLLM([
-      { content: 'Answer', model: 'gpt-4' },
-    ], 'gpt-4');
+    const llm = makeMockLLM([{ content: 'Answer', model: 'gpt-4' }], 'gpt-4');
 
     const messages: Message[] = [
       { role: 'system', content: 'You are a bot.' },
@@ -1198,20 +1360,53 @@ describe('query generator', () => {
       })),
     ];
     const originalLength = messages.length;
+    const contextUpdates = jest.fn();
+    const autoCompactNotices = jest.fn();
+    const coordinator = new CompactCoordinator({ modelId: 'gpt-4', llm });
+    const events: QueryEvent[] = [];
 
-    for await (const _event of query({
+    for await (const event of query({
       messages,
       tools: [mockTool],
       toolExecutor: async () => 'result',
       llm,
+      onContextUsage: contextUpdates,
+      onAutoCompact: autoCompactNotices,
+      compactCoordinator: coordinator,
     })) {
-      // consume
+      events.push(event);
     }
 
     expect(llm.chat).toHaveBeenCalled();
     const requestMessages = (llm.chatStream as jest.Mock).mock.calls[0][0] as Message[];
     expect(requestMessages.length).toBeLessThan(originalLength);
-    expect(requestMessages.map(message => message.content).join('\n')).toContain('[Context Summary]');
+    expect(requestMessages.map(message => message.content).join('\n')).toContain(
+      '[Context Summary]'
+    );
+    expect(contextUpdates).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelId: 'gpt-4',
+        autoCompactThresholdPercent: 95,
+      })
+    );
+    expect(autoCompactNotices).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'predictive',
+        before: expect.objectContaining({ percent: 100 }),
+      })
+    );
+    const complete = events.find(
+      (event): event is Extract<QueryEvent, { type: 'complete' }> => event.type === 'complete'
+    );
+    expect(complete?.compact).toMatchObject({
+      mode: expect.stringMatching(/^(predictive|threshold)$/),
+      summary: { text: 'compact summary', source: 'llm' },
+      before: { percent: 100 },
+    });
+    expect(complete?.compact?.modelHistory.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: 'Answer',
+    });
   });
 
   test('increments turn counter correctly', async () => {
@@ -1220,7 +1415,11 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/1"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/1"}' },
+          },
         ],
       },
       { content: 'Final answer', model: 'test-model' },
@@ -1252,7 +1451,11 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'web_search', arguments: '{"query":"openhorse"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'web_search', arguments: '{"query":"openhorse"}' },
+          },
         ],
       },
       { content: 'Final answer', model: 'test-model' },
@@ -1278,11 +1481,13 @@ describe('query generator', () => {
     }
 
     expect(toolExecutor).toHaveBeenCalledWith('web_search', { query: 'openhorse' }, undefined);
-    expect(events).toContainEqual(expect.objectContaining({
-      type: 'tool_result',
-      name: 'web_search',
-      success: true,
-    }));
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'tool_result',
+        name: 'web_search',
+        success: true,
+      })
+    );
   });
 
   test('denies ask-permission tools when toolConfirmation is deny', async () => {
@@ -1291,7 +1496,11 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'web_search', arguments: '{"query":"openhorse"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'web_search', arguments: '{"query":"openhorse"}' },
+          },
         ],
       },
       { content: 'Final answer', model: 'test-model' },
@@ -1316,8 +1525,14 @@ describe('query generator', () => {
       events.push(event);
     }
 
-    const toolResult = events.find(event => event.type === 'tool_result') as Extract<QueryEvent, { type: 'tool_result' }>;
-    const complete = events.find(event => event.type === 'complete') as Extract<QueryEvent, { type: 'complete' }>;
+    const toolResult = events.find(event => event.type === 'tool_result') as Extract<
+      QueryEvent,
+      { type: 'tool_result' }
+    >;
+    const complete = events.find(event => event.type === 'complete') as Extract<
+      QueryEvent,
+      { type: 'complete' }
+    >;
     expect(toolExecutor).not.toHaveBeenCalled();
     expect(toolResult.success).toBe(false);
     expect(toolResult.error).toContain('toolConfirmation=deny');
@@ -1336,7 +1551,11 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"/missing"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"/missing"}' },
+          },
         ],
       },
       { content: 'The file is missing.', model: 'test-model' },
@@ -1350,11 +1569,12 @@ describe('query generator', () => {
     for await (const _event of query({
       messages,
       tools: [mockTool],
-      toolExecutor: async () => JSON.stringify({
-        success: false,
-        output: '',
-        error: 'not found',
-      }),
+      toolExecutor: async () =>
+        JSON.stringify({
+          success: false,
+          output: '',
+          error: 'not found',
+        }),
       llm,
     })) {
       // consume
@@ -1367,9 +1587,13 @@ describe('query generator', () => {
       'tool',
       'assistant',
     ]);
-    expect(messages.map(message => message.content).join('\n')).not.toContain('[System] Tool read_file failed');
+    expect(messages.map(message => message.content).join('\n')).not.toContain(
+      '[System] Tool read_file failed'
+    );
     const secondRequest = (llm.chatStream as jest.Mock).mock.calls[1][0] as Message[];
-    expect(secondRequest.map(message => message.content).join('\n')).not.toContain('[System] Tool read_file failed');
+    expect(secondRequest.map(message => message.content).join('\n')).not.toContain(
+      '[System] Tool read_file failed'
+    );
   });
 
   test('uses interactive confirmation hook for ask-permission tools', async () => {
@@ -1378,7 +1602,11 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'web_search', arguments: '{"query":"openhorse"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'web_search', arguments: '{"query":"openhorse"}' },
+          },
         ],
       },
       { content: 'Final answer', model: 'test-model' },
@@ -1405,15 +1633,21 @@ describe('query generator', () => {
       events.push(event);
     }
 
-    expect(confirmToolUse).toHaveBeenCalledWith(expect.objectContaining({
-      name: 'web_search',
-      args: { query: 'openhorse' },
-      reason: 'External query',
-    }));
+    expect(confirmToolUse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'web_search',
+        args: { query: 'openhorse' },
+        reason: 'External query',
+      })
+    );
     expect(toolExecutor).toHaveBeenCalledWith('web_search', { query: 'openhorse' }, undefined);
     const eventTypes = events.map(event => event.type);
-    expect(eventTypes.indexOf('permission_decision')).toBeGreaterThan(eventTypes.indexOf('tool_call'));
-    expect(eventTypes.indexOf('permission_decision')).toBeLessThan(eventTypes.indexOf('tool_result'));
+    expect(eventTypes.indexOf('permission_decision')).toBeGreaterThan(
+      eventTypes.indexOf('tool_call')
+    );
+    expect(eventTypes.indexOf('permission_decision')).toBeLessThan(
+      eventTypes.indexOf('tool_result')
+    );
     expect(events.find(event => event.type === 'permission_decision')).toMatchObject({
       type: 'permission_decision',
       name: 'web_search',
@@ -1433,7 +1667,11 @@ describe('query generator', () => {
         content: '',
         model: 'test-model',
         toolCalls: [
-          { id: 'call-1', type: 'function', function: { name: 'web_search', arguments: '{"query":"openhorse"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'web_search', arguments: '{"query":"openhorse"}' },
+          },
         ],
       },
       { content: 'Final answer', model: 'test-model' },
@@ -1459,9 +1697,18 @@ describe('query generator', () => {
       events.push(event);
     }
 
-    const toolResult = events.find(event => event.type === 'tool_result') as Extract<QueryEvent, { type: 'tool_result' }>;
-    const decision = events.find(event => event.type === 'permission_decision') as Extract<QueryEvent, { type: 'permission_decision' }>;
-    const complete = events.find(event => event.type === 'complete') as Extract<QueryEvent, { type: 'complete' }>;
+    const toolResult = events.find(event => event.type === 'tool_result') as Extract<
+      QueryEvent,
+      { type: 'tool_result' }
+    >;
+    const decision = events.find(event => event.type === 'permission_decision') as Extract<
+      QueryEvent,
+      { type: 'permission_decision' }
+    >;
+    const complete = events.find(event => event.type === 'complete') as Extract<
+      QueryEvent,
+      { type: 'complete' }
+    >;
     expect(toolExecutor).not.toHaveBeenCalled();
     expect(decision.decision).toMatchObject({
       behavior: 'ask',

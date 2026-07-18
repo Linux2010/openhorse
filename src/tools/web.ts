@@ -67,7 +67,12 @@ const MAX_CONTENT_LENGTH = 10 * 1024 * 1024;
 function isUrlSafeForSSRF(url: string): { safe: boolean; reason?: string } {
   try {
     const parsed = new URL(url);
-    const hostname = parsed.hostname.toLowerCase();
+    let hostname = parsed.hostname.toLowerCase();
+    // URL.hostname keeps brackets around IPv6 literals (e.g. "[::1]"); strip them
+    // so the BLOCKED_IP_PATTERNS anchors (^::1$, etc.) can match.
+    if (hostname.startsWith('[') && hostname.endsWith(']')) {
+      hostname = hostname.slice(1, -1);
+    }
 
     // 检查禁止的主机名
     if (BLOCKED_HOSTNAMES.includes(hostname)) {
@@ -78,6 +83,17 @@ function isUrlSafeForSSRF(url: string): { safe: boolean; reason?: string } {
     for (const pattern of BLOCKED_IP_PATTERNS) {
       if (pattern.test(hostname)) {
         return { safe: false, reason: `Blocked IP range: ${hostname}` };
+      }
+    }
+
+    // 检查 IP 编码绕过（十进制/十六进制/八进制/IPv6-mapped IPv4）。
+    // 这些形式在 fetch 时会被解析为内网地址，但字符串正则无法识别。
+    const normalizedV4 = parseIPv4Loose(hostname);
+    if (normalizedV4) {
+      for (const pattern of BLOCKED_IP_PATTERNS) {
+        if (pattern.test(normalizedV4)) {
+          return { safe: false, reason: `Blocked IP range: ${hostname} (resolves to ${normalizedV4})` };
+        }
       }
     }
 
@@ -92,6 +108,74 @@ function isUrlSafeForSSRF(url: string): { safe: boolean; reason?: string } {
     return { safe: false, reason: 'Invalid URL format' };
   }
 }
+
+/**
+ * 将各种 IPv4 编码形式归一化为点分十进制。
+ * 覆盖：纯十进制整数、十六进制、八进制、IPv6-mapped IPv4 (::ffff:a.b.c.d)。
+ * 无法识别时返回 null。
+ */
+function parseIPv4Loose(host: string): string | null {
+  // IPv6-mapped IPv4, dotted form: ::ffff:127.0.0.1 / ::ffff:0:127.0.0.1
+  const v6dotted = host.match(/::ffff:(?:0+:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
+  if (v6dotted) return normalizeDotted(v6dotted[1]);
+
+  // IPv6-mapped IPv4, hex form: ::ffff:7f00:1 (Node's URL canonicalizes to this)
+  const v6hex = host.match(/::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+  if (v6hex) {
+    const hi = parseInt(v6hex[1], 16);
+    const lo = parseInt(v6hex[2], 16);
+    return `${(hi >>> 8) & 255}.${hi & 255}.${(lo >>> 8) & 255}.${lo & 255}`;
+  }
+
+  // 单个十进制整数（如 2130706433 -> 127.0.0.1）
+  if (/^\d+$/.test(host)) {
+    const n = Number(host);
+    if (n <= 0xffffffff && Number.isSafeInteger(n)) {
+      return `${(n >>> 24) & 255}.${(n >>> 16) & 255}.${(n >>> 8) & 255}.${n & 255}`;
+    }
+  }
+
+  // 单个十六进制（如 0x7f000001）
+  if (/^0x[0-9a-f]+$/i.test(host)) {
+    const n = parseInt(host, 16);
+    if (n <= 0xffffffff) {
+      return `${(n >>> 24) & 255}.${(n >>> 16) & 255}.${(n >>> 8) & 255}.${n & 255}`;
+    }
+  }
+
+  // 点分形式，各段可为十进制/八进制/十六进制（如 0177.0.0.1）
+  if (host.includes('.')) {
+    const parts = host.split('.');
+    if (parts.length === 4) {
+      const octets = parts.map(parseOctet);
+      if (octets.every(o => o !== null && o >= 0 && o <= 255)) {
+        return octets.join('.');
+      }
+    }
+  }
+
+  return null;
+}
+
+function parseOctet(s: string): number | null {
+  if (/^0x[0-9a-f]+$/i.test(s)) return parseInt(s, 16);
+  if (/^0[0-7]+$/.test(s)) return parseInt(s, 8);
+  if (/^\d+$/.test(s)) return parseInt(s, 10);
+  return null;
+}
+
+function normalizeDotted(dotted: string): string | null {
+  const parts = dotted.split('.');
+  if (parts.length !== 4) return null;
+  const octets = parts.map(p => {
+    const n = parseInt(p, 10);
+    return Number.isFinite(n) && n >= 0 && n <= 255 ? n : null;
+  });
+  if (octets.some(o => o === null)) return null;
+  return octets.join('.');
+}
+
+export { isUrlSafeForSSRF };
 
 // ============================================================================
 // WebFetch Tool

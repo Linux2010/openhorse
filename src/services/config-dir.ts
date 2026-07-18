@@ -79,6 +79,11 @@ export function getUsageStatePath(): string {
   return join(getConfigHome(), 'usage.json');
 }
 
+/** Append-only model usage ledger used for cross-session cost accounting. */
+export function getUsageLedgerPath(): string {
+  return join(getConfigHome(), 'cost', 'usage-ledger.jsonl');
+}
+
 /** 用户级 Memory 文件路径 */
 export function getUserMemoryPath(): string {
   return join(getConfigHome(), 'OPENHORSE.md');
@@ -94,13 +99,20 @@ export function getProjectsDir(): string {
   return join(getConfigHome(), 'projects');
 }
 
-/** Encode an absolute project path into a stable, readable directory key. */
+/** Encode an absolute project path into a stable, readable directory key.
+ *
+ * Mixes a short hash of the original path into the key so that two distinct
+ * paths cannot collapse to the same key. Without the hash, paths that differ
+ * only in separator structure (e.g. "/a/b c" vs "/a/b-c") would both encode to
+ * "a-b-c" and silently share the same project store - a data-confusion bug.
+ */
 export function encodeProjectPath(projectPath: string): string {
   const normalized = projectPath.replace(/\\/g, '/');
   const encoded = normalized
     .replace(/[^A-Za-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
-  return encoded || 'root';
+  const suffix = createHash('sha256').update(normalized).digest('hex').slice(0, 8);
+  return `${encoded || 'root'}-${suffix}`;
 }
 
 /** Resolve a project path for storage identity without depending on session-storage. */
@@ -230,6 +242,11 @@ export function getProjectSessionMessagesPath(projectPath: string, sessionId: st
 /** 项目内单个会话 Harness sidecar 路径 */
 export function getProjectSessionHarnessPath(projectPath: string, sessionId: string): string {
   return join(getProjectSessionsDir(projectPath), `${sessionId}.harness.json`);
+}
+
+/** Latest durable compact checkpoint for a session. */
+export function getProjectSessionCompactPath(projectPath: string, sessionId: string): string {
+  return join(getProjectSessionsDir(projectPath), `${sessionId}.compact.json`);
 }
 
 /** 项目内单个会话 trace sidecar 路径 */

@@ -113,13 +113,32 @@ export interface TuiTheme {
   activitySuccess: TuiStyle;
   activityFailed: TuiStyle;
   muted: TuiStyle;
+  /** Optional additions keep themes authored against the original contract valid. */
+  userMarker?: TuiStyle;
+  userText?: TuiStyle;
+  userBackground?: TuiStyle;
+  inlineCode?: TuiStyle;
+  link?: TuiStyle;
+  toolRunning?: TuiStyle;
+  toolSuccess?: TuiStyle;
+  toolError?: TuiStyle;
+  toolSkipped?: TuiStyle;
+  toolName?: TuiStyle;
+  toolMeta?: TuiStyle;
+  systemText?: TuiStyle;
+  commandMarker?: TuiStyle;
+  commandText?: TuiStyle;
+  statusText?: TuiStyle;
 }
 
 /** Default dark-theme semantic tokens. */
 export const DEFAULT_THEME: TuiTheme = {
   assistantText: {},
   heading: { foreground: { kind: 'named', value: 'cyan' }, bold: true },
-  code: { foreground: { kind: 'named', value: 'white' }, dim: true },
+  code: {
+    foreground: { kind: 'named', value: 'white' },
+    background: { kind: 'rgb', r: 31, g: 35, b: 42 },
+  },
   diffAdded: { foreground: { kind: 'named', value: 'green' } },
   diffRemoved: { foreground: { kind: 'named', value: 'red' } },
   diffHunk: { foreground: { kind: 'named', value: 'cyan' }, dim: true },
@@ -129,6 +148,24 @@ export const DEFAULT_THEME: TuiTheme = {
   activitySuccess: { foreground: { kind: 'named', value: 'green' } },
   activityFailed: { foreground: { kind: 'named', value: 'red' } },
   muted: { dim: true },
+  userMarker: { foreground: { kind: 'rgb', r: 0, g: 96, b: 116 }, bold: true },
+  userText: { foreground: { kind: 'rgb', r: 32, g: 35, b: 40 } },
+  userBackground: { background: { kind: 'rgb', r: 218, g: 221, b: 226 } },
+  inlineCode: {
+    foreground: { kind: 'named', value: 'yellow' },
+    background: { kind: 'rgb', r: 43, g: 47, b: 54 },
+  },
+  link: { foreground: { kind: 'named', value: 'cyan' }, underline: true },
+  toolRunning: { foreground: { kind: 'named', value: 'yellow' } },
+  toolSuccess: { foreground: { kind: 'named', value: 'green' } },
+  toolError: { foreground: { kind: 'named', value: 'red' } },
+  toolSkipped: { dim: true },
+  toolName: { foreground: { kind: 'named', value: 'cyan' }, bold: true },
+  toolMeta: { foreground: { kind: 'named', value: 'white' }, dim: true },
+  systemText: { foreground: { kind: 'named', value: 'white' }, dim: true },
+  commandMarker: { foreground: { kind: 'named', value: 'cyan' }, bold: true },
+  commandText: { foreground: { kind: 'named', value: 'white' } },
+  statusText: { dim: true },
 };
 
 // ============================================================================

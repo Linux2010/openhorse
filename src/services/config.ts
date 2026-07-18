@@ -28,6 +28,7 @@ import {
   type SubagentUserConfig,
   type SubagentMode,
   type SubagentRole,
+  type CostConfig,
 } from './global-config';
 import { delimiter } from 'path';
 import {
@@ -48,6 +49,7 @@ export type {
   SubagentUserConfig,
   SubagentMode,
   SubagentRole,
+  CostConfig,
 };
 
 export const STABLE_UI_RENDERER: UIRenderer = 'terminal';
@@ -87,6 +89,8 @@ export interface OpenHorseCLIConfig {
   agentLoop?: AgentLoopConfig;
   /** Resolved subagent runtime configuration (v0.2.20 beta). */
   subagents?: SubagentConfig;
+  /** Cost-accounting overrides for custom or routed models. */
+  cost?: CostConfig;
 
   // ---- Agent 内部参数 (不由用户配置) ----
   /** 实例名称 */
@@ -263,6 +267,57 @@ function loadAgentLoopConfig(
   return Object.keys(budget).length > 0 ? { budget } : undefined;
 }
 
+function normalizePricing(value: unknown): CostConfig['defaultPricing'] | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const pricing = value as Record<string, unknown>;
+  const input = pricing.input;
+  const output = pricing.output;
+  const cachedInput = pricing.cachedInput;
+  if (
+    typeof input !== 'number'
+    || !Number.isFinite(input)
+    || input < 0
+    || typeof output !== 'number'
+    || !Number.isFinite(output)
+    || output < 0
+  ) {
+    return undefined;
+  }
+  return {
+    input,
+    output,
+    ...(typeof cachedInput === 'number' && Number.isFinite(cachedInput) && cachedInput >= 0
+      ? { cachedInput }
+      : {}),
+  };
+}
+
+function loadCostConfig(
+  globalConfig: GlobalConfig,
+  overrides: Partial<OpenHorseCLIConfig>,
+): CostConfig | undefined {
+  const sourceModels = {
+    ...(globalConfig.cost?.modelPricing ?? {}),
+    ...(overrides.cost?.modelPricing ?? {}),
+  };
+  const modelPricing = Object.fromEntries(
+    Object.entries(sourceModels)
+      .map(([model, pricing]) => [model, normalizePricing(pricing)] as const)
+      .filter((entry): entry is readonly [string, NonNullable<CostConfig['defaultPricing']>] =>
+        Boolean(entry[1]),
+      ),
+  );
+  const defaultPricing = normalizePricing(
+    overrides.cost?.defaultPricing ?? globalConfig.cost?.defaultPricing,
+  );
+
+  if (Object.keys(modelPricing).length === 0 && !defaultPricing) return undefined;
+  return {
+    ...(Object.keys(modelPricing).length > 0 ? { modelPricing } : {}),
+    ...(defaultPricing ? { defaultPricing } : {}),
+  };
+}
+
 function parseSubagentMode(value: unknown): SubagentMode | undefined {
   return value === 'off' || value === 'explicit' || value === 'auto' ? value : undefined;
 }
@@ -342,6 +397,7 @@ export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHor
     skills: loadSkillsConfig(globalConfig, overrides),
     agentLoop: loadAgentLoopConfig(globalConfig, overrides),
     subagents: loadSubagentConfig(globalConfig, overrides),
+    cost: loadCostConfig(globalConfig, overrides),
 
     // Agent 内部参数
     name:
