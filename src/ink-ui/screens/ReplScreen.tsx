@@ -10,6 +10,7 @@ import {
   createEditPreviewPickerState,
   createFilePickerState,
   createPermissionDecisionPickerState,
+  createSessionRestoredView,
   getFileMentionQuery,
   subtaskEventToTimelineEntry,
   type SubtaskTimelineEntry,
@@ -219,17 +220,27 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
     showPermissionRequest: request => setOverlay({ type: 'permission', selectedIndex: 0, request }),
     setProcessing,
     sessionRestored: event => {
-      const shortId = event.sessionId.slice(0, 8);
-      const total = event.messageCount !== event.restoredMessages
-        ? ` (${event.messageCount} total)`
-        : '';
+      const view = createSessionRestoredView(event);
+      const lines = [view.headline];
+      if (view.summary) lines.push(`Summary: ${view.summary}`);
+      if (view.summaryGeneratedAt) {
+        lines.push(
+          `Generated: ${new Date(view.summaryGeneratedAt).toLocaleString()} (${view.checkpointId ? 'compact checkpoint' : 'generated on resume'})`
+        );
+      }
+      if (typeof view.summaryCoveredMessages === 'number') {
+        lines.push(`Covers: ${view.summaryCoveredMessages} source messages`);
+      }
+      lines.push(
+        `✔ Restored ${event.restoredMessages} model-context messages / ${event.transcriptMessages ?? event.messageCount ?? event.restoredMessages} transcript messages`
+      );
       dispatchTranscript({
         type: 'append',
         entry: {
           id: `resume-${event.sessionId}`,
           role: 'status',
           title: 'resume',
-          content: `Resumed session ${shortId} · restored ${event.restoredMessages}${total} messages`,
+          content: lines.join('\n'),
           errorLayer: undefined,
         },
       });

@@ -27,13 +27,15 @@
  */
 
 import { renderStyledFrameRow, type TuiFrame } from '../tui-core/frame';
-import { encodeStyleToSgr, SGR_RESET, shouldSuppressColor } from '../tui-core/style';
+import { encodeStyleToSgr, SGR_RESET, shouldSuppressColor, styleKey } from '../tui-core/style';
 
 /** Minimal output stream interface. */
+export type SurfaceOutputEvent = 'drain' | 'error' | 'close';
+
 export interface SurfaceOutput {
   write(chunk: string | Uint8Array): boolean;
-  on(event: 'drain', listener: () => void): this;
-  off(event: 'drain', listener: () => void): this;
+  on(event: SurfaceOutputEvent, listener: (error?: unknown) => void): this;
+  off(event: SurfaceOutputEvent, listener: (error?: unknown) => void): this;
   readonly writable: boolean;
 }
 
@@ -49,7 +51,9 @@ export interface InlineSurfaceState {
   phase: SurfacePhase;
   width: number;
   height: number;
-  /** Rows reserved for the live region (only grows during a mount lifecycle). */
+  /** Height of the bottom live band. */
+  liveBandRows: number;
+  /** Rows currently owned by the inline live block. */
   liveRegionCapacity: number;
   cursorRow: number;
   cursorColumn: number;
@@ -88,6 +92,9 @@ const HIDE_CURSOR = '\x1b[?25l';
 const DISABLE_AUTOWRAP = '\x1b[?7l';
 const ENABLE_AUTOWRAP = '\x1b[?7h';
 
+/** Fraction of the terminal height occupied by the bottom live band. */
+const LIVE_BAND_RATIO = 0.75;
+
 function cursorUp(n: number): string {
   return n > 0 ? `\x1b[${n}A` : '';
 }
@@ -99,10 +106,17 @@ export class InlineTerminalSurface {
   private phase: SurfacePhase = 'idle';
   private width = 0;
   private height = 0;
+  /** Height of the bottom live band (status + prompt + live tail). */
+  private liveBandRows = 0;
   private liveRegionCapacity = 0;
   private cursorRow = 0;
   private cursorColumn = 0;
   private previousFrame: TuiFrame | null = null;
+  /** Suppress stale-width live paints between SIGWINCH and the resize repaint. */
+  private resizePending = false;
+  private pendingResizeWidth: number | null = null;
+  private resizeGeneration = 0;
+  private resizeWaiters: Array<() => void> = [];
   private readonly output: SurfaceOutput;
   private readonly now: () => number;
   private readonly suppressColor: boolean;
@@ -116,16 +130,54 @@ export class InlineTerminalSurface {
     this.suppressColor = shouldSuppressColor();
   }
 
+  /** Compute the live band height (~75% of screen, min 8, max height-1). */
+  private static computeBandRows(height: number): number {
+    const h = Math.max(1, Math.floor(height));
+    const minBand = 8;
+    const maxBand = Math.max(minBand, h - 1); // leave >=1 history row when possible
+    const desired = Math.round(h * LIVE_BAND_RATIO);
+    return Math.max(minBand, Math.min(maxBand, desired));
+  }
+
+  /** Live band height for the runner to size its live frame. */
+  getLiveBandRows(): number {
+    return this.liveBandRows;
+  }
+
+  /** History area rows above the band (recently scrolled committed lines). */
+  get historyAreaRows(): number {
+    return Math.max(0, this.height - this.liveBandRows);
+  }
+
   getState(): InlineSurfaceState {
     return {
       phase: this.phase,
       width: this.width,
       height: this.height,
+      liveBandRows: this.liveBandRows,
       liveRegionCapacity: this.liveRegionCapacity,
       cursorRow: this.cursorRow,
       cursorColumn: this.cursorColumn,
       previousFrame: this.previousFrame,
     };
+  }
+
+  /** Mark the terminal as resizing before the debounced layout pass runs. */
+  beginResize(width = this.width): number {
+    this.resizeGeneration += 1;
+    this.resizePending = true;
+    this.pendingResizeWidth = Math.max(1, Math.floor(width));
+    return this.resizeGeneration;
+  }
+
+  /**
+   * Await completion of all queued operations.
+   * Because the queue is strictly FIFO, enqueueing a no-op and awaiting it
+   * guarantees every operation enqueued before this call has finished. Used by
+   * tests to deterministically observe the terminal after a burst of renders.
+   */
+  whenIdle(): Promise<void> {
+    return this.enqueue(async () => {});
   }
 
   /** Safe content width: never write the last column (avoid pending-wrap). */
@@ -169,106 +221,160 @@ export class InlineTerminalSurface {
       if (this.phase !== 'idle') return;
       this.width = Math.max(1, Math.floor(width));
       this.height = Math.max(1, Math.floor(height));
+      this.liveBandRows = InlineTerminalSurface.computeBandRows(this.height);
       this.phase = 'mounted';
       this.liveRegionCapacity = 0;
       this.cursorRow = 0;
       this.cursorColumn = 0;
-      this.writeRaw(`${ENABLE_BRACKETED_PASTE}${HIDE_CURSOR}`);
+      await this.writeRaw(`${ENABLE_BRACKETED_PASTE}${HIDE_CURSOR}`);
     });
   }
 
   /**
-   * Commit finalized transcript entries to scrollback (append-only).
-   * Protocol: clear live region -> commit rows -> rebuild live frame.
+   * Commit finalized transcript entries to native scrollback.
+   *
+   * Protocol:
+   *  1. Erase only the live rows owned by this surface and return to their top.
+   *  2. Release that block and write finalized rows as ordinary line-oriented
+   *     shell output. The terminal decides when those lines enter scrollback.
+   *  3. Allocate a fresh live block from the resulting cursor and repaint the
+   *     latest live frame below the committed output.
    */
   async commit(batch: TranscriptCommitBatch, getLatestLiveFrame: LiveFrameProvider): Promise<TuiTerminalRenderResult> {
     let output = '';
-    await this.enqueue(async () => {
-      const chunks: string[] = [];
-      // 1. Move to live top and clear live region.
-      chunks.push(this.clearLiveRegion());
-      // 2. Commit each entry's rows with SGR0 after each row.
-      for (const entry of batch.entries) {
-        for (const row of entry.rows) {
-          for (const span of row) {
-            if (span.style) {
-              const sgr = encodeStyleToSgr(span.style, this.suppressColor);
-              if (sgr) chunks.push(sgr);
-            }
-            chunks.push(span.text);
-          }
-          chunks.push(SGR_RESET);
-          chunks.push('\n'); // hard line boundary, never rely on pending wrap
+    for (;;) {
+      let retryAfterResize = false;
+      await this.enqueue(async () => {
+        if (this.resizePending) {
+          retryAfterResize = true;
+          return;
         }
-      }
-      // 3. Reset live region capacity and rebuild live frame.
-      this.liveRegionCapacity = 0;
-      this.previousFrame = null;
-      const liveFrame = getLatestLiveFrame();
-      if (liveFrame) {
-        chunks.push(this.renderLiveInternal(liveFrame));
-      }
-      output = chunks.join('');
-      this.writeRaw(output);
-    });
+
+        // Committed output behaves like ordinary shell output. Keeping
+        // autowrap enabled preserves an already-queued old-width batch if the
+        // terminal changes size immediately before this operation executes.
+        const chunks: string[] = [this.clearOwnedLiveRegion(), ENABLE_AUTOWRAP];
+        this.releaseLiveRegion();
+
+        for (const entry of batch.entries) {
+          for (const row of entry.rows) {
+            chunks.push(CR);
+            for (const [index, span] of row.entries()) {
+              if (index > 0) chunks.push(SGR_RESET);
+              if (span.style) {
+                const sgr = encodeStyleToSgr(span.style, this.suppressColor);
+                if (sgr) chunks.push(sgr);
+              }
+              chunks.push(span.text);
+            }
+            chunks.push(SGR_RESET);
+            chunks.push('\n');
+          }
+        }
+
+        const liveFrame = getLatestLiveFrame();
+        if (liveFrame) {
+          chunks.push(this.renderLiveInternal(liveFrame));
+        }
+        output = chunks.join('');
+        await this.writeRaw(output);
+      });
+      if (!retryAfterResize) break;
+      await this.waitForResizeCompletion();
+    }
     return { output, committedEntries: batch.entries.length };
   }
 
   /** Render the live region frame (relative addressing, changed-row diff). */
   async renderLive(frame: TuiFrame): Promise<string> {
     let output = '';
+    const requestedDuringResize = this.resizePending;
     await this.enqueue(async () => {
+      if (requestedDuringResize || this.resizePending) return;
       output = this.renderLiveInternal(frame);
-      this.writeRaw(output);
+      await this.writeRaw(output);
     });
     return output;
   }
 
   private renderLiveInternal(frame: TuiFrame): string {
     const chunks: string[] = [];
-    const requiredRows = Math.min(frame.height, Math.max(1, this.height - 1));
+    const requiredRows = Math.min(frame.height, Math.max(1, this.liveBandRows));
 
-    // Ensure capacity for the live region.
+    // Allocate or resize the cursor-owned live block from the current cursor.
     chunks.push(this.ensureCapacity(requiredRows));
 
-    // Move to live top.
-    chunks.push(cursorUp(this.cursorRow));
-    this.cursorRow = 0;
+    // Disable autowrap while painting band rows: a row that fills the last
+    // column (e.g. the full-width prompt border ┌─...─┐) would otherwise leave
+    // the terminal in a pending-wrap state that corrupts the next row's
+    // repaint. Re-enabled at the end of the batch.
+    chunks.push(DISABLE_AUTOWRAP);
 
-    // Clear all capacity rows, then write frame rows.
-    for (let i = 0; i < this.liveRegionCapacity; i++) {
-      chunks.push(CR, EL2);
-      if (i < this.liveRegionCapacity - 1) chunks.push(cursorDown(1));
-    }
-    // Back to top.
-    chunks.push(cursorUp(this.liveRegionCapacity - 1));
+    const capacity = this.liveRegionCapacity;
+    const prev = this.previousFrame;
+    let row = this.cursorRow;
 
-    // Write frame rows.
-    for (let r = 0; r < Math.min(frame.height, this.liveRegionCapacity); r++) {
-      const spans = renderStyledFrameRow(frame.rows[r] ?? []);
-      let emittedSgr = false;
-      for (const span of spans) {
-        const sgr = encodeStyleToSgr(span.style, this.suppressColor);
-        if (sgr) {
-          chunks.push(sgr);
-          emittedSgr = true;
+    // Only diff when the previous frame shares the same geometry (height and
+    // capacity). Any geometry change (resize, first frame) triggers a full
+    // repaint so we never leave stale rows behind.
+    const canDiff = prev !== null && prev.height === capacity && frame.height === capacity;
+
+    if (!canDiff) {
+      // Full repaint: move to band top, clear every band row, then write every
+      // frame row. Track the real cursor row in `row` so the final positioning
+      // block below is exact.
+      chunks.push(cursorUp(row));
+      for (let i = 0; i < capacity; i++) {
+        chunks.push(CR, EL2);
+        if (i < capacity - 1) {
+          chunks.push(cursorDown(1));
+          row += 1;
         }
-        chunks.push(span.text);
       }
-      if (emittedSgr) chunks.push(SGR_RESET);
-      if (r < Math.min(frame.height, this.liveRegionCapacity) - 1) {
-        chunks.push(CR, cursorDown(1));
+      chunks.push(cursorUp(capacity - 1));
+      row = 0;
+      const frameRows = Math.min(frame.height, capacity);
+      for (let r = 0; r < frameRows; r++) {
+        chunks.push(...this.renderRowChunks(frame.rows[r] ?? []));
+        if (r < frameRows - 1) {
+          chunks.push(CR, cursorDown(1));
+          row += 1;
+        }
+      }
+    } else {
+      // Changed-row diff: only repaint rows whose styled content differs from
+      // the previous frame. Navigation moves the real cursor to the changed
+      // row, clears it, and redraws — avoiding a full-band flicker on every
+      // tick (e.g. while a tool is running and only the status line changes).
+      for (let r = 0; r < capacity; r++) {
+        const newRow = r < frame.height ? frame.rows[r] : [];
+        const oldRow = r < prev!.height ? prev!.rows[r] : [];
+        if (this.renderRowString(newRow) === this.renderRowString(oldRow)) continue;
+        if (r < row) {
+          chunks.push(cursorUp(row - r));
+          row = r;
+        } else if (r > row) {
+          chunks.push(cursorDown(r - row));
+          row = r;
+        }
+        chunks.push(CR, EL2);
+        chunks.push(...this.renderRowChunks(newRow));
       }
     }
 
-    // Position cursor at frame cursor.
+    // Position cursor at frame cursor using the precisely-tracked `row`.
     const targetRow = Math.min(frame.cursor.row, this.liveRegionCapacity - 1);
     const targetCol = Math.min(frame.cursor.column, Math.max(0, this.width - 1));
-    chunks.push(cursorUp(this.cursorRow));
-    chunks.push(cursorDown(targetRow));
+    if (targetRow < row) {
+      chunks.push(cursorUp(row - targetRow));
+      row = targetRow;
+    } else if (targetRow > row) {
+      chunks.push(cursorDown(targetRow - row));
+      row = targetRow;
+    }
     chunks.push(CR);
     if (targetCol > 0) chunks.push(`\x1b[${targetCol}C`);
-    this.cursorRow = targetRow;
+    this.cursorRow = row;
     this.cursorColumn = targetCol;
 
     chunks.push(frame.cursor.visible ? SHOW_CURSOR : HIDE_CURSOR);
@@ -278,20 +384,73 @@ export class InlineTerminalSurface {
     return chunks.join('');
   }
 
-  /** Ensure the live region has at least requiredRows capacity (grows only). */
-  private ensureCapacity(requiredRows: number): string {
-    const target = Math.min(requiredRows, Math.max(1, this.height - 1));
+  /** Render a single styled frame row to ANSI chunks (text + SGR + reset). */
+  private renderRowChunks(row: TuiFrame['rows'][number]): string[] {
     const chunks: string[] = [];
-    while (this.liveRegionCapacity < target) {
-      chunks.push('\n'); // hard line boundary
-      this.liveRegionCapacity += 1;
-      this.cursorRow = this.liveRegionCapacity;
+    const spans = renderStyledFrameRow(this.trimDefaultTrailingCells(row));
+    let emittedSgr = false;
+    for (const [index, span] of spans.entries()) {
+      if (index > 0) chunks.push(SGR_RESET);
+      const sgr = encodeStyleToSgr(span.style, this.suppressColor);
+      if (sgr) {
+        chunks.push(sgr);
+        emittedSgr = true;
+      }
+      chunks.push(span.text);
+    }
+    if (emittedSgr || spans.length > 1) chunks.push(SGR_RESET);
+    return chunks;
+  }
+
+  /** Stable string form of a styled row, used for changed-row comparison. */
+  private renderRowString(row: TuiFrame['rows'][number]): string {
+    return this.renderRowChunks(row).join('');
+  }
+
+  private trimDefaultTrailingCells(
+    row: TuiFrame['rows'][number],
+  ): TuiFrame['rows'][number] {
+    let end = row.length;
+    while (end > 0) {
+      const cell = row[end - 1];
+      if (cell.char !== ' ' || styleKey(cell.style) !== '') break;
+      end -= 1;
+    }
+    return row.slice(0, end);
+  }
+
+  private renderedRowWidth(row: TuiFrame['rows'][number]): number {
+    return this.trimDefaultTrailingCells(row)
+      .reduce((total, cell) => total + cell.width, 0);
+  }
+
+  /**
+   * Ensure the surface owns exactly `requiredRows` rows starting at the current
+   * cursor. Allocation uses ordinary newlines, so existing shell output is
+   * preserved and may naturally move into terminal scrollback.
+   */
+  private ensureCapacity(requiredRows: number): string {
+    const target = Math.min(requiredRows, Math.max(1, this.liveBandRows));
+    const chunks: string[] = [];
+    if (this.liveRegionCapacity !== target) {
+      if (this.liveRegionCapacity > 0) {
+        chunks.push(this.clearLiveRegion());
+        this.releaseLiveRegion();
+      }
+      chunks.push(CR);
+      for (let i = 1; i < target; i++) chunks.push('\n');
+      chunks.push(cursorUp(target - 1), CR);
+      this.liveRegionCapacity = target;
+      this.cursorRow = 0;
+      this.cursorColumn = 0;
+      this.previousFrame = null;
     }
     return chunks.join('');
   }
 
-  /** Clear the live region rows (relative, no absolute addressing). */
+  /** Clear the live band rows (relative, no absolute addressing). */
   private clearLiveRegion(): string {
+    if (this.liveRegionCapacity === 0) return '';
     const chunks: string[] = [];
     chunks.push(cursorUp(this.cursorRow));
     for (let i = 0; i < this.liveRegionCapacity; i++) {
@@ -300,22 +459,92 @@ export class InlineTerminalSurface {
     }
     chunks.push(cursorUp(this.liveRegionCapacity - 1));
     this.cursorRow = 0;
+    this.cursorColumn = 0;
     return chunks.join('');
   }
 
-  /** Resize: only handle live region; committed history goes to terminal reflow. */
-  async resize(width: number, height: number, getLatestLiveFrame: LiveFrameProvider): Promise<void> {
+  /**
+   * Clear the old live block after the terminal has already adopted a new
+   * width. A previously full row can occupy multiple physical rows after
+   * reflow, so tracked logical rows are not sufficient during resize.
+   */
+  private clearReflowedLiveRegion(nextWidth: number): string {
+    if (this.liveRegionCapacity === 0) return '';
+    if (!this.previousFrame) return this.clearLiveRegion();
+
+    const physicalWidth = Math.max(1, Math.floor(nextWidth));
+    const frame = this.previousFrame;
+    const rowPhysicalHeights = Array.from(
+      { length: this.liveRegionCapacity },
+      (_, row) => {
+        const cells = frame.rows[row] ?? [];
+        const writtenWidth = this.renderedRowWidth(cells);
+        return Math.max(1, Math.ceil(Math.max(1, writtenWidth) / physicalWidth));
+      },
+    );
+    const logicalCursorRow = Math.min(this.cursorRow, rowPhysicalHeights.length - 1);
+    const cursorPhysicalRow = rowPhysicalHeights
+      .slice(0, logicalCursorRow)
+      .reduce((total, rows) => total + rows, 0)
+      + Math.floor(Math.max(0, this.cursorColumn) / physicalWidth);
+    const physicalRows = rowPhysicalHeights.reduce((total, rows) => total + rows, 0);
+
+    const chunks: string[] = [cursorUp(cursorPhysicalRow)];
+    for (let row = 0; row < physicalRows; row += 1) {
+      chunks.push(CR, EL2);
+      if (row < physicalRows - 1) chunks.push(cursorDown(1));
+    }
+    chunks.push(cursorUp(physicalRows - 1));
+    this.cursorRow = 0;
+    this.cursorColumn = 0;
+    return chunks.join('');
+  }
+
+  private clearOwnedLiveRegion(): string {
+    return this.resizePending && this.pendingResizeWidth !== null
+      ? this.clearReflowedLiveRegion(this.pendingResizeWidth)
+      : this.clearLiveRegion();
+  }
+
+  private waitForResizeCompletion(): Promise<void> {
+    if (!this.resizePending) return Promise.resolve();
+    return new Promise<void>(resolve => this.resizeWaiters.push(resolve));
+  }
+
+  private completeResize(): void {
+    this.resizePending = false;
+    this.pendingResizeWidth = null;
+    const waiters = this.resizeWaiters.splice(0);
+    for (const resolve of waiters) resolve();
+  }
+
+  private releaseLiveRegion(): void {
+    this.liveRegionCapacity = 0;
+    this.cursorRow = 0;
+    this.cursorColumn = 0;
+    this.previousFrame = null;
+  }
+
+  /** Resize: erase only the owned block, then rebuild from the current cursor. */
+  async resize(
+    width: number,
+    height: number,
+    getLatestLiveFrame: LiveFrameProvider,
+    generation = this.resizePending ? this.resizeGeneration : this.beginResize(width),
+  ): Promise<void> {
     await this.enqueue(async () => {
+      if (generation !== this.resizeGeneration) return;
+      const chunks: string[] = [this.clearReflowedLiveRegion(width)];
+      this.releaseLiveRegion();
       this.width = Math.max(1, Math.floor(width));
       this.height = Math.max(1, Math.floor(height));
-      // Reset capacity and rebuild live frame.
-      this.liveRegionCapacity = 0;
-      this.cursorRow = 0;
-      this.previousFrame = null;
+      this.liveBandRows = InlineTerminalSurface.computeBandRows(this.height);
       const liveFrame = getLatestLiveFrame();
       if (liveFrame) {
-        this.writeRaw(this.renderLiveInternal(liveFrame));
+        chunks.push(this.renderLiveInternal(liveFrame));
       }
+      await this.writeRaw(chunks.join(''));
+      if (generation === this.resizeGeneration) this.completeResize();
     });
   }
 
@@ -323,11 +552,12 @@ export class InlineTerminalSurface {
   async suspend(): Promise<void> {
     await this.enqueue(async () => {
       if (this.phase !== 'mounted') return;
-      this.writeRaw(this.clearLiveRegion());
-      this.writeRaw(`${SGR_RESET}${SHOW_CURSOR}${DISABLE_BRACKETED_PASTE}${ENABLE_AUTOWRAP}`);
+      await this.writeRaw(
+        `${this.clearOwnedLiveRegion()}${SGR_RESET}${SHOW_CURSOR}${DISABLE_BRACKETED_PASTE}${ENABLE_AUTOWRAP}`,
+      );
       this.phase = 'suspended';
-      this.liveRegionCapacity = 0;
-      this.previousFrame = null;
+      this.releaseLiveRegion();
+      this.completeResize();
     });
   }
 
@@ -336,11 +566,12 @@ export class InlineTerminalSurface {
     await this.enqueue(async () => {
       if (this.phase !== 'suspended') return;
       this.phase = 'mounted';
-      this.writeRaw(`${ENABLE_BRACKETED_PASTE}${HIDE_CURSOR}${DISABLE_AUTOWRAP}`);
+      const chunks = [`${ENABLE_BRACKETED_PASTE}${HIDE_CURSOR}`];
       const liveFrame = getLatestLiveFrame();
       if (liveFrame) {
-        this.writeRaw(this.renderLiveInternal(liveFrame));
+        chunks.push(this.renderLiveInternal(liveFrame));
       }
+      await this.writeRaw(chunks.join(''));
     });
   }
 
@@ -348,13 +579,12 @@ export class InlineTerminalSurface {
   async unmount(): Promise<void> {
     await this.enqueue(async () => {
       if (this.phase === 'unmounted') return;
-      this.writeRaw(this.clearLiveRegion());
-      this.writeRaw(`${SGR_RESET}${SHOW_CURSOR}${DISABLE_BRACKETED_PASTE}${ENABLE_AUTOWRAP}`);
-      // Final newline so shell prompt starts on a clean line.
-      this.writeRaw('\n');
+      await this.writeRaw(
+        `${this.clearOwnedLiveRegion()}${SGR_RESET}${SHOW_CURSOR}${DISABLE_BRACKETED_PASTE}${ENABLE_AUTOWRAP}\n`,
+      );
       this.phase = 'unmounted';
-      this.liveRegionCapacity = 0;
-      this.previousFrame = null;
+      this.releaseLiveRegion();
+      this.completeResize();
     });
   }
 
@@ -365,22 +595,63 @@ export class InlineTerminalSurface {
     }
   }
 
-  private writeRaw(chunk: string): void {
-    if (this.phase === 'failed' || this.phase === 'unmounted') return;
-    try {
-      this.output.write(chunk);
-    } catch {
-      this.phase = 'failed';
+  private async writeRaw(chunk: string): Promise<void> {
+    if (!chunk) return;
+    if (this.output.writable === false) {
+      throw new Error('terminal output is not writable');
     }
+
+    let accepted: boolean;
+    try {
+      accepted = this.output.write(chunk);
+    } catch (error) {
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+    // Node streams return a boolean. A few compatible/test streams return
+    // void; only an explicit false means backpressure.
+    if (accepted !== false) return;
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const cleanup = (): void => {
+        this.output.off('drain', onDrain);
+        this.output.off('error', onError);
+        this.output.off('close', onClose);
+      };
+      const settle = (error?: Error): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (error) reject(error);
+        else resolve();
+      };
+      const onDrain = (): void => {
+        if (this.output.writable === false) {
+          settle(new Error('terminal output closed before drain'));
+          return;
+        }
+        settle();
+      };
+      const onError = (error?: unknown): void => {
+        settle(error instanceof Error ? error : new Error(String(error ?? 'terminal output error')));
+      };
+      const onClose = (): void => settle(new Error('terminal output closed before drain'));
+      this.output.on('drain', onDrain);
+      this.output.on('error', onError);
+      this.output.on('close', onClose);
+    });
   }
 
   /** Reset for tests. */
   reset(): void {
     this.phase = 'idle';
+    this.liveBandRows = 0;
     this.liveRegionCapacity = 0;
     this.cursorRow = 0;
     this.cursorColumn = 0;
     this.previousFrame = null;
+    this.completeResize();
+    this.resizeGeneration = 0;
     this.queue = [];
     this.processing = false;
   }
@@ -393,19 +664,19 @@ export class InlineTerminalSurface {
 export class MemoryOutput implements SurfaceOutput {
   chunks: string[] = [];
   writable = true;
-  private drainListeners: Array<() => void> = [];
+  private drainListeners: Array<(error?: unknown) => void> = [];
 
   write(chunk: string | Uint8Array): boolean {
     this.chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
     return true;
   }
 
-  on(event: 'drain', listener: () => void): this {
+  on(event: SurfaceOutputEvent, listener: (error?: unknown) => void): this {
     if (event === 'drain') this.drainListeners.push(listener);
     return this;
   }
 
-  off(event: 'drain', listener: () => void): this {
+  off(event: SurfaceOutputEvent, listener: (error?: unknown) => void): this {
     if (event === 'drain') {
       this.drainListeners = this.drainListeners.filter(l => l !== listener);
     }

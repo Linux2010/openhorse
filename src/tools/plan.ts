@@ -49,7 +49,14 @@ This tool finalizes the plan and returns to execution mode.`,
     required: ['plan'],
   },
   execute: async (args) => {
-    const plan = args.plan as string;
+    const plan = args.plan;
+    if (typeof plan !== 'string' || plan.trim().length === 0) {
+      return {
+        success: false,
+        output: '',
+        error: 'exit_plan_mode requires a non-empty plan parameter',
+      };
+    }
     setToolState({ planMode: false, currentPlan: plan });
     return {
       success: true,

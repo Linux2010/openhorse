@@ -11,11 +11,13 @@ import { TOOLS } from '../src/tools';
 import { loadConfig } from '../src/services/config';
 import {
   appendSessionMessage,
+  commitSessionCompactCheckpoint,
   createSession,
   type SessionMeta,
 } from '../src/services/session-storage';
 import type { CommandContext } from '../src/commands/types';
 import type { RuntimeSessionRestoredEvent } from '../src/runtime/ui-events';
+import { createContextUsageSnapshot } from '../src/services/model-context';
 
 describe('session commands', () => {
   const testConfigDir = mkdtempSync(join(tmpdir(), 'openhorse-session-commands-'));
@@ -174,5 +176,60 @@ describe('session commands', () => {
         ],
       },
     ]);
+  });
+
+  test('/resume reports persisted compact summary provenance and restore counts', async () => {
+    const session = createRestorableSession('checkpoint source one');
+    appendSessionMessage(session.id, {
+      role: 'assistant',
+      content: 'checkpoint source two',
+      timestamp: Date.now(),
+    });
+    const beforeUsage = createContextUsageSnapshot({
+      modelId: 'gpt-4o',
+      usedTokens: 110000,
+      outputReserveTokens: 4096,
+    });
+    const afterUsage = createContextUsageSnapshot({
+      modelId: 'gpt-4o',
+      usedTokens: 1000,
+      outputReserveTokens: 4096,
+    });
+    const checkpoint = commitSessionCompactCheckpoint({
+      sessionId: session.id,
+      mode: 'threshold',
+      modelId: 'gpt-4o',
+      sourceMessageCount: 2,
+      transcriptStartMessageIndex: 1,
+      modelHistory: [{ role: 'user', content: '[Context Summary]\ndurable summary' }],
+      summary: {
+        text: 'durable summary',
+        generatedAt: 123456789,
+        source: 'llm',
+      },
+      beforeUsage,
+      afterUsage,
+    });
+    const { ctx, sessionRestored, store } = makeContext('terminal');
+
+    const result = await findCommand('resume')!.execute(ctx, session.id);
+
+    expect(result.success).toBe(true);
+    expect(sessionRestored[0]).toMatchObject({
+      summary: 'durable summary',
+      summaryGeneratedAt: 123456789,
+      summarySource: 'llm',
+      summaryCoveredMessages: 2,
+      checkpointId: checkpoint.checkpointId,
+      restoredMessages: 1,
+      transcriptMessages: 1,
+    });
+    expect(store.getSnapshot().conversationHistory).toEqual([
+      { role: 'user', content: '[Context Summary]\ndurable summary' },
+    ]);
+    const printed = logSpy.mock.calls.flat().join('\n');
+    expect(printed).toContain('(compact checkpoint)');
+    expect(printed).toContain('Covers: 2 source messages');
+    expect(printed).toContain('Restored 1 model-context messages / 1 transcript messages');
   });
 });

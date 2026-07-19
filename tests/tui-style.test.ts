@@ -79,26 +79,32 @@ describe('tui style: SGR encoding', () => {
   });
 
   it('encodes named foreground color', () => {
-    expect(encodeStyleToSgr({ foreground: { kind: 'named', value: 'red' } })).toBe('\x1b[31m');
+    expect(encodeStyleToSgr({ foreground: { kind: 'named', value: 'red' } }, false)).toBe('\x1b[31m');
   });
 
   it('encodes multiple attributes in order', () => {
-    const sgr = encodeStyleToSgr({ bold: true, foreground: { kind: 'named', value: 'green' } });
+    const sgr = encodeStyleToSgr(
+      { bold: true, foreground: { kind: 'named', value: 'green' } },
+      false,
+    );
     expect(sgr).toBe('\x1b[1;32m');
   });
 
   it('encodes indexed color', () => {
-    const sgr = encodeStyleToSgr({ foreground: { kind: 'indexed', value: 208 } });
+    const sgr = encodeStyleToSgr({ foreground: { kind: 'indexed', value: 208 } }, false);
     expect(sgr).toBe('\x1b[38;5;208m');
   });
 
   it('encodes rgb color', () => {
-    const sgr = encodeStyleToSgr({ foreground: { kind: 'rgb', r: 10, g: 20, b: 30 } });
+    const sgr = encodeStyleToSgr(
+      { foreground: { kind: 'rgb', r: 10, g: 20, b: 30 } },
+      false,
+    );
     expect(sgr).toBe('\x1b[38;2;10;20;30m');
   });
 
   it('encodes background', () => {
-    const sgr = encodeStyleToSgr({ background: { kind: 'named', value: 'blue' } });
+    const sgr = encodeStyleToSgr({ background: { kind: 'named', value: 'blue' } }, false);
     expect(sgr).toBe('\x1b[44m');
   });
 
@@ -107,6 +113,16 @@ describe('tui style: SGR encoding', () => {
     // bold preserved, color suppressed
     expect(sgr).toBe('\x1b[1m');
     expect(sgr).not.toContain('31');
+  });
+
+  it('suppresses semantic foreground and background while preserving attributes', () => {
+    const sgr = encodeStyleToSgr({
+      ...DEFAULT_THEME.userMarker,
+      ...DEFAULT_THEME.userBackground,
+    }, true);
+    expect(sgr).toBe('\x1b[1m');
+    expect(sgr).not.toContain('38');
+    expect(sgr).not.toContain('48');
   });
 
   it('SGR_RESET is the reset sequence', () => {
@@ -257,6 +273,21 @@ describe('tui style: theme', () => {
     expect(DEFAULT_THEME.activitySuccess).toBeDefined();
     expect(DEFAULT_THEME.activityFailed).toBeDefined();
     expect(DEFAULT_THEME.muted).toBeDefined();
+    expect(DEFAULT_THEME.userMarker).toBeDefined();
+    expect(DEFAULT_THEME.userText).toBeDefined();
+    expect(DEFAULT_THEME.userBackground).toBeDefined();
+    expect(DEFAULT_THEME.inlineCode).toBeDefined();
+    expect(DEFAULT_THEME.link).toBeDefined();
+    expect(DEFAULT_THEME.toolRunning).toBeDefined();
+    expect(DEFAULT_THEME.toolSuccess).toBeDefined();
+    expect(DEFAULT_THEME.toolError).toBeDefined();
+    expect(DEFAULT_THEME.toolSkipped).toBeDefined();
+    expect(DEFAULT_THEME.toolName).toBeDefined();
+    expect(DEFAULT_THEME.toolMeta).toBeDefined();
+    expect(DEFAULT_THEME.systemText).toBeDefined();
+    expect(DEFAULT_THEME.commandMarker).toBeDefined();
+    expect(DEFAULT_THEME.commandText).toBeDefined();
+    expect(DEFAULT_THEME.statusText).toBeDefined();
   });
 
   it('heading is bold cyan', () => {
@@ -267,5 +298,23 @@ describe('tui style: theme', () => {
   it('diffAdded is green, diffRemoved is red', () => {
     expect(DEFAULT_THEME.diffAdded.foreground).toEqual({ kind: 'named', value: 'green' });
     expect(DEFAULT_THEME.diffRemoved.foreground).toEqual({ kind: 'named', value: 'red' });
+  });
+
+  it('uses restrained backgrounds for user messages and code', () => {
+    expect(DEFAULT_THEME.userBackground?.background?.kind).toBe('rgb');
+    expect(DEFAULT_THEME.userBackground?.background).toEqual({
+      kind: 'rgb',
+      r: 218,
+      g: 221,
+      b: 226,
+    });
+    expect(DEFAULT_THEME.userText?.foreground).toEqual({
+      kind: 'rgb',
+      r: 32,
+      g: 35,
+      b: 40,
+    });
+    expect(DEFAULT_THEME.code.background?.kind).toBe('rgb');
+    expect(DEFAULT_THEME.inlineCode?.background?.kind).toBe('rgb');
   });
 });

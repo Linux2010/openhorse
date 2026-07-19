@@ -91,6 +91,27 @@ describe('loadConfig', () => {
     expect(config.ui).toEqual({ renderer: 'ink', confirmations: 'interactive' });
   });
 
+  test('loads valid custom model pricing and drops invalid rates', () => {
+    jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
+      defaultModel: 'routed-model',
+      cost: {
+        modelPricing: {
+          'routed-model': { input: 1.5, output: 6, cachedInput: 0.5 },
+          invalid: { input: -1, output: 2 },
+        },
+      },
+    });
+
+    const config = loadConfig();
+
+    expect(config.cost?.modelPricing?.['routed-model']).toEqual({
+      input: 1.5,
+      output: 6,
+      cachedInput: 0.5,
+    });
+    expect(config.cost?.modelPricing?.invalid).toBeUndefined();
+  });
+
   test('env vars are used when no overrides and no globalConfig', () => {
     jest.spyOn(require('../src/services/global-config'), 'loadGlobalConfig').mockReturnValue({
       defaultModel: undefined as any,

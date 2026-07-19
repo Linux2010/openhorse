@@ -208,15 +208,24 @@ export function isReadOnlyCommand(cmd: string): boolean {
   // Check if command starts with a read-only command
   const baseCmd = trimmedCmd.split(' ')[0];
   if (READ_ONLY_COMMANDS.includes(baseCmd)) {
-    // Additional checks for commands that might modify files
+    // Additional checks for commands that might modify files or execute code.
     if (baseCmd === 'sed' && trimmedCmd.includes('-i')) {
       return false; // sed -i modifies files
     }
-    if (baseCmd === 'curl' && trimmedCmd.includes('>')) {
-      return false; // curl with output redirect writes file
+    if (baseCmd === 'curl' && (trimmedCmd.includes('>') || /(^|\s)-o\b/.test(trimmedCmd) || /(^|\s)--output\b/.test(trimmedCmd))) {
+      return false; // curl with file output (-o/--output/>) writes a file
     }
-    if (baseCmd === 'wget' && /-O|--output-document/.test(trimmedCmd)) {
-      return false; // wget -O writes file
+    if (baseCmd === 'wget' && (trimmedCmd.includes('>') || /(^|\s)-O\b/.test(trimmedCmd) || /(^|\s)--output-document\b/.test(trimmedCmd))) {
+      return false; // wget with file output writes a file
+    }
+    if (baseCmd === 'find' && /(^|\s)-(exec|execdir|ok|okdir|delete)\b/.test(trimmedCmd)) {
+      return false; // find -exec/-ok runs arbitrary commands; -delete removes files
+    }
+    if (baseCmd === 'awk' && (/\bsystem\s*\(/.test(trimmedCmd) || /\bgetline\b/.test(trimmedCmd) || trimmedCmd.includes('>'))) {
+      return false; // awk can exec (system/getline) or write files (>)
+    }
+    if (baseCmd === 'sort' && (/(^|\s)-o\b/.test(trimmedCmd) || trimmedCmd.includes('>'))) {
+      return false; // sort -o / redirect writes a file
     }
     return true;
   }

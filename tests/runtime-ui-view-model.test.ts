@@ -10,6 +10,7 @@ import {
   createSessionRestoredView,
   createSessionPickerState,
   createStatusSnapshot,
+  contextUsageStatusText,
   formatToolActivityTranscript,
   getFileMentionQuery,
   movePickerPageOffset,
@@ -23,7 +24,11 @@ import {
   toolActivityFromStarted,
   transcriptEntryToBlock,
 } from '../src/runtime/ui-view-model';
-import type { RuntimeToolFinishedEvent, RuntimeToolStartedEvent, TranscriptEntry } from '../src/runtime/ui-events';
+import type {
+  RuntimeToolFinishedEvent,
+  RuntimeToolStartedEvent,
+  TranscriptEntry,
+} from '../src/runtime/ui-events';
 import type { SlashCommand } from '../src/commands/types';
 
 describe('runtime UI view model', () => {
@@ -56,14 +61,16 @@ describe('runtime UI view model', () => {
       hasPreviousPage: false,
       hasNextPage: false,
     });
-    expect(state.visibleItems.map(item => ({
-      value: item.value,
-      label: item.label,
-      description: item.description,
-      categoryLabel: item.categoryLabel,
-      aliases: item.aliases,
-      matchRank: item.matchRank,
-    }))).toEqual([
+    expect(
+      state.visibleItems.map(item => ({
+        value: item.value,
+        label: item.label,
+        description: item.description,
+        categoryLabel: item.categoryLabel,
+        aliases: item.aliases,
+        matchRank: item.matchRank,
+      }))
+    ).toEqual([
       {
         value: 'status',
         label: '/status (s)',
@@ -94,10 +101,12 @@ describe('runtime UI view model', () => {
       ],
     });
 
-    expect(state.visibleItems.map(item => ({
-      value: item.value,
-      rank: item.matchRank,
-    }))).toEqual([
+    expect(
+      state.visibleItems.map(item => ({
+        value: item.value,
+        rank: item.matchRank,
+      }))
+    ).toEqual([
       { value: 'resume', rank: 1 },
       { value: 'status', rank: 2 },
       { value: 'sessions', rank: 2 },
@@ -182,33 +191,39 @@ describe('runtime UI view model', () => {
   });
 
   it('tracks prompt history navigation state without owning renderer history storage', () => {
-    expect(createPromptState({
-      value: '',
-      historyIndex: -1,
-      historySize: 3,
-    }).history).toEqual({
+    expect(
+      createPromptState({
+        value: '',
+        historyIndex: -1,
+        historySize: 3,
+      }).history
+    ).toEqual({
       index: -1,
       size: 3,
       active: false,
       canMovePrevious: true,
       canMoveNext: false,
     });
-    expect(createPromptState({
-      value: 'older',
-      historyIndex: 1,
-      historySize: 3,
-    }).history).toEqual({
+    expect(
+      createPromptState({
+        value: 'older',
+        historyIndex: 1,
+        historySize: 3,
+      }).history
+    ).toEqual({
       index: 1,
       size: 3,
       active: true,
       canMovePrevious: true,
       canMoveNext: true,
     });
-    expect(createPromptState({
-      value: 'oldest',
-      historyIndex: 2,
-      historySize: 3,
-    }).history.canMovePrevious).toBe(false);
+    expect(
+      createPromptState({
+        value: 'oldest',
+        historyIndex: 2,
+        historySize: 3,
+      }).history.canMovePrevious
+    ).toBe(false);
   });
 
   it('creates renderer-neutral model picker state with current model markers', () => {
@@ -304,12 +319,14 @@ describe('runtime UI view model', () => {
       page: 1,
       pageCount: 1,
     });
-    expect(state?.visibleItems.map(item => ({
-      value: item.value,
-      label: item.label,
-      description: item.description,
-      isDirectory: item.isDirectory,
-    }))).toEqual([
+    expect(
+      state?.visibleItems.map(item => ({
+        value: item.value,
+        label: item.label,
+        description: item.description,
+        isDirectory: item.isDirectory,
+      }))
+    ).toEqual([
       {
         value: 'src/components/',
         label: 'dir src/components/',
@@ -326,10 +343,12 @@ describe('runtime UI view model', () => {
   });
 
   it('pages file picker state and returns null when no active file mention exists', () => {
-    expect(createFilePickerState({
-      input: 'plain text',
-      files: [{ path: 'src/index.ts', isDirectory: false }],
-    })).toBeNull();
+    expect(
+      createFilePickerState({
+        input: 'plain text',
+        files: [{ path: 'src/index.ts', isDirectory: false }],
+      })
+    ).toBeNull();
 
     const first = createFilePickerState({
       input: '@',
@@ -364,14 +383,17 @@ describe('runtime UI view model', () => {
   });
 
   it('creates renderer-neutral permission prompt state for command approvals', () => {
-    const state = createPermissionPromptState({
-      id: 'perm-1',
-      name: 'exec_command',
-      args: {
-        command: 'npm test -- --runInBand tests/status-command.test.ts',
+    const state = createPermissionPromptState(
+      {
+        id: 'perm-1',
+        name: 'exec_command',
+        args: {
+          command: 'npm test -- --runInBand tests/status-command.test.ts',
+        },
+        reason: 'Command execution needs approval',
       },
-      reason: 'Command execution needs approval',
-    }, '/repo');
+      '/repo'
+    );
 
     expect(state).toEqual({
       requestId: 'perm-1',
@@ -390,47 +412,63 @@ describe('runtime UI view model', () => {
         deny: 'n=no',
       },
     });
-    expect(permissionScopeDisplayValue(state.scope)).toBe('cmd=$ npm test -- --runInBand tests/status-command.test.ts');
+    expect(permissionScopeDisplayValue(state.scope)).toBe(
+      'cmd=$ npm test -- --runInBand tests/status-command.test.ts'
+    );
     expect(permissionRiskDisplayValue(state.risk)).toBe('low: Command execution needs approval');
   });
 
   it('creates permission prompt state for file-oriented and path-list approvals', () => {
-    const edit = createPermissionPromptState({
-      id: 'perm-2',
-      name: 'edit_file',
-      args: { path: 'src/terminal-ui/launch.ts' },
-    }, '/repo');
+    const edit = createPermissionPromptState(
+      {
+        id: 'perm-2',
+        name: 'edit_file',
+        args: { path: 'src/terminal-ui/launch.ts' },
+      },
+      '/repo'
+    );
     expect(edit.scope).toEqual({ kind: 'path', value: 'src/terminal-ui/launch.ts' });
     expect(edit.risk).toEqual({ level: 'high', reason: 'approval required' });
     expect(permissionScopeDisplayValue(edit.scope)).toBe('path=src/terminal-ui/launch.ts');
 
-    const readMany = createPermissionPromptState({
-      id: 'perm-3',
-      name: 'batch_read',
-      args: { paths: ['a.ts', 'b.ts'] },
-    }, '/repo');
+    const readMany = createPermissionPromptState(
+      {
+        id: 'perm-3',
+        name: 'batch_read',
+        args: { paths: ['a.ts', 'b.ts'] },
+      },
+      '/repo'
+    );
     expect(readMany.scope).toEqual({ kind: 'paths', count: 2 });
     expect(readMany.risk).toEqual({ level: 'low', reason: 'approval required' });
     expect(permissionScopeDisplayValue(readMany.scope)).toBe('paths=2');
   });
 
   it('falls back to compact args or unknown permission scope when needed', () => {
-    const withArgs = createPermissionPromptState({
-      id: 'perm-4',
-      name: 'custom_tool',
-      args: { query: 'hello', nested: { value: true } },
-    }, '/repo');
+    const withArgs = createPermissionPromptState(
+      {
+        id: 'perm-4',
+        name: 'custom_tool',
+        args: { query: 'hello', nested: { value: true } },
+      },
+      '/repo'
+    );
     expect(withArgs.scope).toEqual({
       kind: 'args',
       value: 'query=hello nested={"value":true}',
     });
-    expect(permissionScopeDisplayValue(withArgs.scope)).toBe('args=query=hello nested={"value":true}');
+    expect(permissionScopeDisplayValue(withArgs.scope)).toBe(
+      'args=query=hello nested={"value":true}'
+    );
 
-    const unknown = createPermissionPromptState({
-      id: 'perm-5',
-      name: 'custom_tool',
-      args: {},
-    }, '/repo');
+    const unknown = createPermissionPromptState(
+      {
+        id: 'perm-5',
+        name: 'custom_tool',
+        args: {},
+      },
+      '/repo'
+    );
     expect(unknown.scope).toEqual({ kind: 'unknown' });
     expect(permissionScopeDisplayValue(unknown.scope)).toBe('scope=unknown');
   });
@@ -581,14 +619,16 @@ describe('runtime UI view model', () => {
       hasPreviousPage: false,
       hasNextPage: true,
     });
-    expect(firstPage.visibleItems.map(item => ({
-      globalIndex: item.globalIndex,
-      shortId: item.shortId,
-      title: item.title,
-      messageCount: item.messageCount,
-      historySizeBytes: item.historySizeBytes,
-      showProject: item.showProject,
-    }))).toEqual([
+    expect(
+      firstPage.visibleItems.map(item => ({
+        globalIndex: item.globalIndex,
+        shortId: item.shortId,
+        title: item.title,
+        messageCount: item.messageCount,
+        historySizeBytes: item.historySizeBytes,
+        showProject: item.showProject,
+      }))
+    ).toEqual([
       {
         globalIndex: 1,
         shortId: '11111111',
@@ -608,7 +648,10 @@ describe('runtime UI view model', () => {
     ]);
 
     const secondPageOffset = movePickerPageOffset(firstPage, 1);
-    const secondPage = createSessionPickerState({ title: 'Pick a Session', sessions, maxVisibleItems: 2 }, secondPageOffset);
+    const secondPage = createSessionPickerState(
+      { title: 'Pick a Session', sessions, maxVisibleItems: 2 },
+      secondPageOffset
+    );
     expect(secondPage.visibleStart).toBe(2);
     expect(secondPage.page).toBe(2);
     expect(secondPage.visibleItems).toHaveLength(1);
@@ -630,14 +673,16 @@ describe('runtime UI view model', () => {
       hasPreviousPage: false,
       hasNextPage: false,
     });
-    expect(sessionPickerTitle({
-      id: 'session-id',
-      projectPath: '/tmp/project',
-      model: 'glm-5',
-      startTime: 1,
-      tokenCount: 0,
-      cost: 0,
-    })).toBe('(untitled)');
+    expect(
+      sessionPickerTitle({
+        id: 'session-id',
+        projectPath: '/tmp/project',
+        model: 'glm-5',
+        startTime: 1,
+        tokenCount: 0,
+        cost: 0,
+      })
+    ).toBe('(untitled)');
   });
 
   it('normalizes invalid session picker visible limits defensively', () => {
@@ -651,21 +696,27 @@ describe('runtime UI view model', () => {
       taskSummary: `task ${index + 1}`,
     }));
 
-    expect(createSessionPickerState({
-      title: 'Pick',
-      sessions,
-      maxVisibleItems: Number.NaN,
-    }).visibleLimit).toBe(3);
-    expect(createSessionPickerState({
-      title: 'Pick',
-      sessions,
-      maxVisibleItems: -1,
-    }).visibleLimit).toBe(3);
-    expect(createSessionPickerState({
-      title: 'Pick',
-      sessions,
-      maxVisibleItems: 1.8,
-    }).visibleLimit).toBe(1);
+    expect(
+      createSessionPickerState({
+        title: 'Pick',
+        sessions,
+        maxVisibleItems: Number.NaN,
+      }).visibleLimit
+    ).toBe(3);
+    expect(
+      createSessionPickerState({
+        title: 'Pick',
+        sessions,
+        maxVisibleItems: -1,
+      }).visibleLimit
+    ).toBe(3);
+    expect(
+      createSessionPickerState({
+        title: 'Pick',
+        sessions,
+        maxVisibleItems: 1.8,
+      }).visibleLimit
+    ).toBe(1);
   });
 
   it('creates renderer-neutral status snapshots with capability labels', () => {
@@ -709,6 +760,22 @@ describe('runtime UI view model', () => {
     ]);
   });
 
+  it('formats context pressure with compact reminders and automatic threshold state', () => {
+    const base = {
+      modelId: 'gpt-4o',
+      usedTokens: 1000,
+      contextWindow: 128000,
+      source: 'estimated' as const,
+      warningThresholdPercent: 80,
+      autoCompactThresholdPercent: 95,
+      autoCompactEnabled: true,
+    };
+
+    expect(contextUsageStatusText({ ...base, percent: 79 })).toBe('ctx=79%');
+    expect(contextUsageStatusText({ ...base, percent: 80 })).toBe('ctx=80% /compact');
+    expect(contextUsageStatusText({ ...base, percent: 95 })).toBe('ctx=95% auto-compact');
+  });
+
   it('creates renderer-neutral runtime capability summaries', () => {
     const base = createRuntimeCapabilitySummary();
     expect(base).toEqual({
@@ -725,10 +792,7 @@ describe('runtime UI view model', () => {
       projectInstructionsContent: 'Follow repo rules.',
       skillsContent: 'Available skills: code-review',
       memoryContent: 'Project memory',
-      tools: [
-        { name: 'read_file' },
-        { name: 'mcp__github__search_issues' },
-      ],
+      tools: [{ name: 'read_file' }, { name: 'mcp__github__search_issues' }],
       webSearchConfigured: true,
     });
 
@@ -777,11 +841,13 @@ describe('runtime UI view model', () => {
       'assistant-spacing',
       'abort-notice',
     ]);
-    expect(snapshot.loop).toEqual(expect.objectContaining({
-      llmRequests: 2,
-      toolCalls: 3,
-      finishReason: 'completed',
-    }));
+    expect(snapshot.loop).toEqual(
+      expect.objectContaining({
+        llmRequests: 2,
+        toolCalls: 3,
+        finishReason: 'completed',
+      })
+    );
   });
 
   it('maps transcript entries into renderer-neutral blocks', () => {
@@ -851,10 +917,12 @@ describe('runtime UI view model', () => {
     const activity = toolActivityFromStarted(event, 'ignored for exec');
 
     expect(toolActivityBatchLabel(activity)).toBe('Batch 1/2 · ');
-    expect(formatToolActivityTranscript(activity)).toBe([
-      'Batch 1/2 · Running exec_command',
-      '  $ npm test -- --runInBand tests/status-command.test.ts',
-    ].join('\n'));
+    expect(formatToolActivityTranscript(activity)).toBe(
+      [
+        'Batch 1/2 · Running exec_command',
+        '  $ npm test -- --runInBand tests/status-command.test.ts',
+      ].join('\n')
+    );
   });
 
   it('formats finished tool activity with artifact, output bytes, and errors', () => {
@@ -870,12 +938,14 @@ describe('runtime UI view model', () => {
       sequence: 2,
     };
 
-    expect(formatToolActivityTranscript(toolActivityFromFinished(event, 'src/index.ts'))).toBe([
-      '✗ read_file src/index.ts (12ms)',
-      '  Full output: /artifacts show read_file-abc123 --full (1.2 KB)',
-      'Error: failed to read',
-      '  Details: /last-tool or /trace latest',
-    ].join('\n'));
+    expect(formatToolActivityTranscript(toolActivityFromFinished(event, 'src/index.ts'))).toBe(
+      [
+        '✗ read_file src/index.ts (12ms)',
+        '  Full output: /artifacts show read_file-abc123 --full (1.2 KB)',
+        'Error: failed to read',
+        '  Details: /last-tool or /trace latest',
+      ].join('\n')
+    );
   });
 
   it('formats skipped tool activity for permission-denied tools', () => {
@@ -892,33 +962,41 @@ describe('runtime UI view model', () => {
 
     const activity = toolActivityFromFinished(event);
     expect(activity.state).toBe('skipped');
-    expect(formatToolActivityTranscript(activity)).toBe([
-      'Skipped write_file',
-      'Error: permission denied',
-      '  Details: /last-tool or /trace latest',
-    ].join('\n'));
+    expect(formatToolActivityTranscript(activity)).toBe(
+      [
+        'Skipped write_file',
+        'Error: permission denied',
+        '  Details: /last-tool or /trace latest',
+      ].join('\n')
+    );
   });
 
   it('adds inspection hints when tool arguments are compacted', () => {
-    expect(formatToolActivityTranscript({
-      name: 'grep',
-      state: 'running',
-      detail: '/Users/hope/very/long/path/.../target.ts',
-    })).toBe([
-      'Running grep /Users/hope/very/long/path/.../target.ts',
-      '  Details: /last-tool or /trace latest',
-    ].join('\n'));
+    expect(
+      formatToolActivityTranscript({
+        name: 'grep',
+        state: 'running',
+        detail: '/Users/hope/very/long/path/.../target.ts',
+      })
+    ).toBe(
+      [
+        'Running grep /Users/hope/very/long/path/.../target.ts',
+        '  Details: /last-tool or /trace latest',
+      ].join('\n')
+    );
   });
 
   it('ignores invalid batch metadata in formatted activity', () => {
     expect(toolActivityBatchLabel({ batchCount: 2, batchIndex: 7 })).toBe('');
-    expect(formatToolActivityTranscript({
-      name: 'read_file',
-      state: 'success',
-      detail: 'src/a.ts',
-      durationMs: 3,
-      batchCount: 2,
-      batchIndex: 7,
-    })).toBe('✓ read_file src/a.ts (3ms)');
+    expect(
+      formatToolActivityTranscript({
+        name: 'read_file',
+        state: 'success',
+        detail: 'src/a.ts',
+        durationMs: 3,
+        batchCount: 2,
+        batchIndex: 7,
+      })
+    ).toBe('✓ read_file src/a.ts (3ms)');
   });
 });

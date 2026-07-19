@@ -50,6 +50,7 @@ export function classifyCommandSafety(command: string): CommandSafetyClassificat
     { pattern: /\bkubectl\b/, reason: 'manages Kubernetes resources' },
     { pattern: /\bcurl\s+.*\|\s*sh\b/, reason: 'pipes remote content to shell' },
     { pattern: /\beval\b/, reason: 'evaluates arbitrary shell expressions' },
+    { pattern: /\bnode\s+-e\b/, reason: 'evaluates arbitrary Node.js code' },
   ];
 
   for (const { pattern, reason } of highRiskPatterns) {
@@ -84,7 +85,6 @@ export function classifyCommandSafety(command: string): CommandSafetyClassificat
     { pattern: /\becho\b/, reason: 'prints text to output' },
     { pattern: /\bgit\s+status\b/, reason: 'shows repository status' },
     { pattern: /\bgit\s+diff\b/, reason: 'shows file differences' },
-    { pattern: /\bnode\s+-e\b/, reason: 'evaluates a Node.js expression' },
   ];
 
   for (const { pattern, reason } of lowRiskPatterns) {
@@ -253,7 +253,8 @@ export function summarizeVerificationState(
     failedCommands,
     missingCommands,
     claimAllowed: !profile.required
-      || (expectedCommands.length > 0 && missingCommands.length === 0 && failedCommands.length === 0),
+      || expectedCommands.length === 0
+      || (missingCommands.length === 0 && failedCommands.length === 0),
     skippedReason,
   };
 }

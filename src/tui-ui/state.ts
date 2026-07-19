@@ -1,6 +1,7 @@
 import type {
   EditPreviewRequest,
   RuntimeSubtaskEvent,
+  RuntimeSessionRestoredEvent,
   RuntimeToolFinishedEvent,
   RuntimeToolStartedEvent,
   SessionPickerRequest,
@@ -11,6 +12,7 @@ import type {
 } from '../runtime/ui-events';
 import {
   createPromptState,
+  createSessionRestoredView,
   subtaskEventToTimelineEntry,
   type PromptState,
   type StatusSnapshot,
@@ -60,7 +62,6 @@ export interface TuiUiState {
   queuedTranscriptCount: number;
   committedTranscriptCount: number;
   transcriptGeneration: number;
-  transcriptScrollOffset: number;
   prompt: TuiPromptState;
   statusMessage: string;
   /** Structured status (v0.2.21 slice 5). */
@@ -76,7 +77,6 @@ export type TuiUiAction =
   | { type: 'removeTranscript'; id: string }
   | { type: 'replaceTranscript'; entries: TranscriptEntry[] }
   | { type: 'clearTranscript' }
-  | { type: 'scrollTranscript'; delta: number }
   | { type: 'setPrompt'; value: string; cursor?: number }
   | { type: 'setStatus'; message: string }
   | { type: 'setStatusSnapshot'; snapshot: StatusSnapshot; phase?: TuiStatusState['phase']; message?: string }
@@ -101,7 +101,6 @@ export const initialTuiUiState: TuiUiState = {
   queuedTranscriptCount: 0,
   committedTranscriptCount: 0,
   transcriptGeneration: 0,
-  transcriptScrollOffset: 0,
   prompt: { value: '', cursor: 0 },
   statusMessage: '',
   statusState: {
@@ -122,7 +121,6 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
       void _live;
       return commitStaticTranscriptPrefix({
         ...state,
-        transcriptScrollOffset: 0,
         transcript: [
           ...state.transcript,
           {
@@ -137,7 +135,6 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
     case 'updateTranscript':
       return {
         ...state,
-        transcriptScrollOffset: 0,
         transcript: state.transcript.map(entry => (
           entry.id === action.id
             ? { ...entry, ...action.patch, revision: entry.revision + 1 }
@@ -148,10 +145,14 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
     case 'finalizeTranscript':
       return commitStaticTranscriptPrefix({
         ...state,
-        transcriptScrollOffset: 0,
         transcript: state.transcript.map(entry => (
           entry.id === action.id
-            ? { ...entry, ...action.patch, finalized: true }
+            ? {
+              ...entry,
+              ...action.patch,
+              finalized: true,
+              revision: entry.revision + (action.patch ? 1 : 0),
+            }
             : entry
         )),
       });
@@ -159,20 +160,25 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
     case 'removeTranscript':
       return recomputeStaticTranscriptPrefix({
         ...state,
-        transcriptScrollOffset: 0,
         transcript: state.transcript.filter(entry => entry.id !== action.id),
       });
 
-    case 'replaceTranscript':
+    case 'replaceTranscript': {
+      // Restored history is immutable. Mark every entry finalized so no stale
+      // live tail can permanently block commits from subsequent turns.
       return {
         ...state,
-        transcript: action.entries.map(entry => ({ ...entry, finalized: true, revision: 1 })),
+        transcript: action.entries.map(entry => ({
+          ...entry,
+          finalized: true,
+          revision: 1,
+        })),
         committableTranscriptCount: action.entries.length,
         queuedTranscriptCount: 0,
         committedTranscriptCount: 0,
         transcriptGeneration: state.transcriptGeneration + 1,
-        transcriptScrollOffset: 0,
       };
+    }
 
     case 'clearTranscript':
       return {
@@ -182,17 +188,6 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
         queuedTranscriptCount: 0,
         committedTranscriptCount: 0,
         transcriptGeneration: state.transcriptGeneration + 1,
-        transcriptScrollOffset: 0,
-      };
-
-    case 'scrollTranscript':
-      return {
-        ...state,
-        transcriptScrollOffset: clampNumber(
-          state.transcriptScrollOffset + action.delta,
-          0,
-          Number.MAX_SAFE_INTEGER
-        ),
       };
 
     case 'setPrompt':
@@ -335,16 +330,30 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
 }
 
 export function staticTuiTranscriptEntries(state: TuiUiState): TranscriptEntry[] {
-  return state.transcript.slice(0, state.committableTranscriptCount).map(stripRecord);
+  return staticTuiTranscriptRecords(state).map(stripRecord);
 }
 
 export function liveTuiTranscriptEntries(state: TuiUiState): TranscriptEntry[] {
-  return state.transcript.slice(state.committableTranscriptCount).map(stripRecord);
+  return liveTuiTranscriptRecords(state).map(stripRecord);
 }
 
 /** Entries ready to commit (committable but not yet queued). */
 export function pendingCommitEntries(state: TuiUiState): TranscriptEntry[] {
-  return state.transcript.slice(state.queuedTranscriptCount, state.committableTranscriptCount).map(stripRecord);
+  return pendingCommitRecords(state).map(stripRecord);
+}
+
+/** Renderer-local records retain revision/finalized metadata for styled layout and caching. */
+export function staticTuiTranscriptRecords(state: TuiUiState): TuiTranscriptRecord[] {
+  return state.transcript.slice(0, state.committableTranscriptCount);
+}
+
+export function liveTuiTranscriptRecords(state: TuiUiState): TuiTranscriptRecord[] {
+  return state.transcript.slice(state.committableTranscriptCount);
+}
+
+/** Renderer-local records ready to commit (committable but not yet queued). */
+export function pendingCommitRecords(state: TuiUiState): TuiTranscriptRecord[] {
+  return state.transcript.slice(state.queuedTranscriptCount, state.committableTranscriptCount);
 }
 
 /** Advance the queued boundary after enqueueing a commit batch. */
@@ -381,15 +390,50 @@ export function createTuiUiEventSink(
     showPermissionRequest: request => dispatch({ type: 'showPermissionRequest', request }),
     toolStarted: event => dispatch({ type: 'toolStarted', event }),
     toolFinished: event => dispatch({ type: 'toolFinished', event }),
+    sessionRestored: (event: RuntimeSessionRestoredEvent) => {
+      const view = createSessionRestoredView(event);
+      const lines = [view.headline];
+      if (view.summary) lines.push(`Summary: ${view.summary}`);
+      if (view.summaryGeneratedAt) {
+        lines.push(
+          `Generated: ${new Date(view.summaryGeneratedAt).toLocaleString()} (${view.checkpointId ? 'compact checkpoint' : 'generated on resume'})`
+        );
+      }
+      if (typeof view.summaryCoveredMessages === 'number') {
+        lines.push(`Covers: ${view.summaryCoveredMessages} source messages`);
+      }
+      lines.push(
+        `✔ Restored ${event.restoredMessages} model-context messages / ${event.transcriptMessages ?? event.messageCount ?? event.restoredMessages} transcript messages`
+      );
+      const id = idFactory();
+      dispatch({
+        type: 'appendTranscript',
+        entry: {
+          id,
+          role: 'status',
+          title: 'resume',
+          content: lines.join('\n'),
+        },
+      });
+    },
     subtaskEvent: event => dispatch({ type: 'subtaskEvent', event }),
     setProcessing: processing => dispatch({ type: 'setProcessing', processing }),
   };
 }
 
 function appendRuntimeToolEvent(state: TuiUiState, event: TuiRuntimeToolEvent): TuiUiState {
+  // Keyed by (callId, type) so a re-emitted event (e.g. a status update that
+  // re-fires `started`) replaces its prior copy instead of appending a
+  // duplicate, while the distinct started/finished lifecycle events for the
+  // same callId are both retained. Active-tool counting (countActiveTools)
+  // already relies on the callId/type pairing, so this keeps the feed and the
+  // count consistent.
+  const key = `${event.callId}:${event.type}`;
+  const withoutDuplicate = state.runtimeToolEvents.filter(e => `${e.callId}:${e.type}` !== key);
+  const next = [...withoutDuplicate, event];
   return {
     ...state,
-    runtimeToolEvents: [...state.runtimeToolEvents, event].slice(-100),
+    runtimeToolEvents: next.slice(-100),
   };
 }
 

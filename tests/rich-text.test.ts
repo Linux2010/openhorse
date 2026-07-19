@@ -3,6 +3,7 @@ import { layoutRichText } from '../src/runtime/rich-text/layout';
 import { sanitizeRichTextInput } from '../src/runtime/rich-text/sanitizer';
 import { DEFAULT_THEME } from '../src/tui-core/style';
 import type { RichTextThemeResolver } from '../src/runtime/rich-text/types';
+import { MAX_RICH_TEXT_INPUT_BYTES } from '../src/runtime/rich-text/types';
 import stringWidth from 'string-width';
 
 const themeResolver: RichTextThemeResolver = (token) => {
@@ -10,6 +11,8 @@ const themeResolver: RichTextThemeResolver = (token) => {
     case 'assistantText': return DEFAULT_THEME.assistantText;
     case 'heading': return DEFAULT_THEME.heading;
     case 'code': return DEFAULT_THEME.code;
+    case 'inlineCode': return DEFAULT_THEME.inlineCode ?? DEFAULT_THEME.code;
+    case 'link': return DEFAULT_THEME.link ?? DEFAULT_THEME.assistantText;
     case 'diffAdded': return DEFAULT_THEME.diffAdded;
     case 'diffRemoved': return DEFAULT_THEME.diffRemoved;
     case 'diffHunk': return DEFAULT_THEME.diffHunk;
@@ -59,11 +62,12 @@ describe('rich-text parser', () => {
   });
 
   it('parses code block', () => {
-    const doc = parseRichText('```\ncode line\n```');
+    const doc = parseRichText('```typescript\ncode line\n```');
     const code = doc.blocks.find(b => b.type === 'code');
     expect(code).toBeDefined();
     if (code?.type === 'code') {
       expect(code.lines).toContain('code line');
+      expect(code.language).toBe('typescript');
     }
   });
 
@@ -119,6 +123,21 @@ describe('rich-text parser', () => {
     }
   });
 
+  it('preserves nested bold and italic without leaking Markdown markers', () => {
+    const doc = parseRichText('***both*** and **bold [link](https://example.com)**');
+    const para = doc.blocks.find(b => b.type === 'paragraph');
+    expect(para?.type).toBe('paragraph');
+    if (para?.type === 'paragraph') {
+      expect(para.spans).toContainEqual({ text: 'both', bold: true, italic: true });
+      expect(para.spans.some(span => span.text.includes('**'))).toBe(false);
+      expect(para.spans).toContainEqual({
+        text: 'link',
+        bold: true,
+        linkUrl: 'https://example.com',
+      });
+    }
+  });
+
   it('parses inline code', () => {
     const doc = parseRichText('`code`');
     const para = doc.blocks.find(b => b.type === 'paragraph');
@@ -151,6 +170,15 @@ describe('rich-text parser', () => {
     expect(() => parseRichText('#'.repeat(10000))).not.toThrow();
     expect(() => parseRichText('``')).not.toThrow();
     expect(() => parseRichText('[[[[')).not.toThrow();
+  });
+
+  it('deterministically truncates oversized input', () => {
+    const doc = parseRichText('x'.repeat(MAX_RICH_TEXT_INPUT_BYTES + 100));
+    const text = doc.blocks
+      .flatMap(block => block.type === 'paragraph' ? block.spans.map(span => span.text) : [])
+      .join('');
+
+    expect(text.length).toBe(MAX_RICH_TEXT_INPUT_BYTES);
   });
 
   it('strips ANSI from model content before parsing', () => {
@@ -187,6 +215,50 @@ describe('rich-text layout', () => {
     expect(rows.length).toBeGreaterThan(1);
   });
 
+  it('fills code block rows with a semantic background', () => {
+    const doc = parseRichText('```ts\nconst value = 1;\n\n```');
+    const rows = layoutRichText(doc, { width: 24, theme: themeResolver });
+
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    for (const row of rows) {
+      expect(stringWidth(row.map(span => span.text).join(''))).toBe(24);
+      expect(row.every(span => span.style.background !== undefined)).toBe(true);
+    }
+  });
+
+  it('renders a dim language label as code-block metadata', () => {
+    const doc = parseRichText('```typescript\nconst value = 1;\n```');
+    const rows = layoutRichText(doc, { width: 24, theme: themeResolver });
+
+    expect(rows[0].map(span => span.text).join('').trim()).toBe('typescript');
+    expect(rows[0].every(span => span.style.background !== undefined)).toBe(true);
+    expect(rows[0].every(span => span.style.dim)).toBe(true);
+    expect(stringWidth(rows[0].map(span => span.text).join(''))).toBe(24);
+  });
+
+  it('aligns nested list continuation rows under their content', () => {
+    const doc = parseRichText([
+      '- parent',
+      '  - child with enough words to wrap across several rows',
+    ].join('\n'));
+    const rows = layoutRichText(doc, { width: 18, theme: themeResolver });
+    const textRows = rows.map(row => row.map(span => span.text).join(''));
+    const childIndex = textRows.findIndex(row => row.startsWith('  - child'));
+
+    expect(childIndex).toBeGreaterThanOrEqual(0);
+    expect(textRows[childIndex + 1]).toMatch(/^ {4}\S/);
+    for (const row of textRows) expect(stringWidth(row)).toBeLessThanOrEqual(18);
+  });
+
+  it('uses distinct semantic styles for inline code and links', () => {
+    const doc = parseRichText('Use `openhorse` and [docs](https://example.com).');
+    const rows = layoutRichText(doc, { width: 80, theme: themeResolver });
+    const spans = rows.flat();
+
+    expect(spans.find(span => span.text.includes('openhorse'))?.style.background).toBeDefined();
+    expect(spans.find(span => span.text.includes('docs'))?.style.underline).toBe(true);
+  });
+
   it('layouts diff with colored prefixes', () => {
     const doc = parseRichText('```diff\n+added\n-removed\n```');
     const rows = layoutRichText(doc, { width: 40, theme: themeResolver });
@@ -216,6 +288,32 @@ describe('rich-text layout', () => {
     for (const row of rows) {
       const rowWidth = stringWidth(row.map(s => s.text).join(''));
       expect(rowWidth).toBeLessThanOrEqual(10);
+    }
+  });
+
+  it.each([24, 40, 120])('keeps complex Markdown within %i columns', width => {
+    const markdown = [
+      '# Heading',
+      '',
+      '> quote with **bold** text',
+      '',
+      '- first list item with a long continuation',
+      '- second item',
+      '',
+      '| Name | Value |',
+      '| --- | --- |',
+      '| 你好 | emoji 👨‍👩‍👧 |',
+      '',
+      '```diff',
+      '+added line',
+      '-removed line',
+      '```',
+    ].join('\n');
+    const rows = layoutRichText(parseRichText(markdown), { width, theme: themeResolver });
+
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(stringWidth(row.map(span => span.text).join(''))).toBeLessThanOrEqual(width);
     }
   });
 });

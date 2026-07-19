@@ -19,6 +19,8 @@ import {
   appendSessionMessage,
   appendSessionMessages,
   createSession,
+  loadSessionCompactCheckpoint,
+  loadSessionHistory,
   readSessionMessages,
   readSessionTraceEvents,
   updateSessionHarnessState,
@@ -30,6 +32,7 @@ import { loadConfig } from '../src/services/config';
 import { listArtifacts, retrieveArtifact } from '../src/core/tool-artifacts';
 import { listCheckpoints } from '../src/core/checkpoint';
 import { createContextHarness } from '../src/harness';
+import { CompactCoordinator } from '../src/services/compact/coordinator';
 import { findCommand } from '../src/commands';
 import type { CommandContext } from '../src/commands/types';
 import { makeToolStartedEvent, makeToolFinishedEvent, resetToolEventSequence } from './test-helpers';
@@ -282,7 +285,8 @@ describe('AgentRuntimeController', () => {
 
       await expect(controller.runInput('/compact 2')).resolves.toBeUndefined();
       const persistedAfterCompact = readSessionMessages(session.id);
-      expect(persistedAfterCompact.length).toBeGreaterThan(history.length);
+      expect(persistedAfterCompact).toHaveLength(history.length);
+      expect(loadSessionCompactCheckpoint(session.id)).not.toBeNull();
 
       await expect(controller.runInput(`/resume ${session.id}`)).resolves.toBeUndefined();
       expect(store.getSnapshot().conversationHistory.map(message => message.content).join('\n'))
@@ -304,7 +308,84 @@ describe('AgentRuntimeController', () => {
     });
   });
 
-  it('routes /skill commands through chat with active skill injection', async () => {
+  it('persists automatic compact context and reuses it after runtime restart', async () => {
+    await withTempConfig(async ({ projectDir }) => {
+      const config = loadConfig({ apiKey: 'test-key', model: 'test-model' });
+      const oldHiddenMessage = `old-hidden-${'x'.repeat(16000)}`;
+      const history = Array.from({ length: 30 }, (_, index) => ({
+        role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+        content: index === 0 ? oldHiddenMessage : `large-${index}-${'x'.repeat(16000)}`,
+      }));
+      const session = createSession(projectDir, 'test-model');
+      appendSessionMessages(
+        session.id,
+        history.map((message, index) => ({ ...message, timestamp: 1000 + index }))
+      );
+      const llm = {
+        getModel: jest.fn(() => 'test-model'),
+        getMaxTokens: jest.fn(() => 8192),
+        chat: jest.fn(async () => ({ content: 'durable automatic summary', model: 'test-model' })),
+        chatStream: jest.fn(async () => ({
+          content: 'automatic compact answer',
+          model: 'test-model',
+          usage: { promptTokens: 90000, completionTokens: 20 },
+        })),
+      };
+      const makeRuntimeWithStore = (store: Store) => {
+        const coordinator = new CompactCoordinator({
+          modelId: 'test-model',
+          llm: llm as any,
+          outputReserveTokens: 8192,
+        });
+        return createRuntime({
+          cwd: projectDir,
+          config,
+          store,
+          llm: llm as any,
+          compactCoordinator: coordinator,
+          isConfigured: true,
+          ensureSession: jest.fn(() => session),
+          getSession: jest.fn(() => session),
+          setSession: jest.fn(),
+        });
+      };
+      const firstStore = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
+      firstStore.setState({ conversationHistory: history });
+      const firstController = new AgentChatController(
+        makeRuntimeWithStore(firstStore),
+        createEvents().events
+      );
+
+      await firstController.runInput('trigger automatic compact', { turnId: 'auto-compact-turn' });
+
+      const checkpoint = loadSessionCompactCheckpoint(session.id);
+      expect(checkpoint).not.toBeNull();
+      expect(checkpoint?.mode).toBe('predictive');
+      expect(readSessionMessages(session.id)).toHaveLength(32);
+      expect(firstStore.getSnapshot().conversationHistory).toEqual(checkpoint?.modelHistory);
+      expect(loadSessionHistory(session.id).map(message => message.content).join('\n'))
+        .not.toContain(oldHiddenMessage);
+
+      const restartedStore = new Store({ config, tools: TOOLS, currentModel: 'test-model' });
+      const restartedRuntime = makeRuntimeWithStore(restartedStore);
+      const restartedController = new AgentChatController(
+        restartedRuntime,
+        createEvents().events
+      );
+      await restartedController.runInput(`/resume ${session.id}`);
+      expect(restartedStore.getSnapshot().conversationHistory).toEqual(checkpoint?.modelHistory);
+
+      await restartedController.runInput('continue after restart', { turnId: 'after-restart' });
+      const resumedRequest = (llm.chatStream as jest.Mock).mock.calls.at(-1)?.[0] as Array<{
+        content: string;
+      }>;
+      expect(resumedRequest.map(message => message.content).join('\n')).not.toContain(
+        oldHiddenMessage
+      );
+    });
+  });
+
+  it('routes /skill commands and absolute path prompts through chat', async () => {
     await withTempConfig(async ({ projectDir }) => {
       mkdirSync(projectDir, { recursive: true });
       const config = loadConfig({
@@ -363,6 +444,15 @@ describe('AgentRuntimeController', () => {
       expect(scopedTools).toBeDefined();
       expect(scopedTools!.map((tool: { function: { name: string } }) => tool.function.name).sort())
         .toEqual(['glob', 'grep', 'read_file']);
+
+      const pathPrompt = '/Users/hope/linux2010/my-skills/vendor/skills 做啥的？';
+      await expect(controller.runInput(pathPrompt)).resolves.toBeUndefined();
+
+      expect(llm.chatStream).toHaveBeenCalledTimes(2);
+      const [pathMessages] = llm.chatStream.mock.calls[1];
+      expect(pathMessages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: 'user', content: pathPrompt }),
+      ]));
       expect(appended).not.toEqual(expect.arrayContaining([
         expect.objectContaining({ role: 'error', content: expect.stringContaining('Unknown command') }),
       ]));
@@ -3587,7 +3677,8 @@ describe('AgentRuntimeController', () => {
       // Compact the long session
       await expect(controller.runInput('/compact 2')).resolves.toBeUndefined();
       const persistedAfterCompact = readSessionMessages(session.id);
-      expect(persistedAfterCompact.length).toBeGreaterThan(history.length);
+      expect(persistedAfterCompact).toHaveLength(history.length);
+      expect(loadSessionCompactCheckpoint(session.id)).not.toBeNull();
 
       // Resume the compacted session
       await expect(controller.runInput(`/resume ${session.id}`)).resolves.toBeUndefined();

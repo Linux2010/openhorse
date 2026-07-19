@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import errno
+import codecs
 import fcntl
+import hashlib
 import json
 import os
 import pty
@@ -32,10 +34,14 @@ class TerminalModel:
         self.cols = cols
         self.row = 0
         self.col = 0
+        self.autowrap = True
+        self.pending_wrap = False
+        self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self.scrollback: list[list[str]] = []
         self.screen = [[" "] * cols for _ in range(rows)]
 
     def feed(self, data: bytes) -> None:
-        text = data.decode("utf-8", errors="replace")
+        text = self.decoder.decode(data)
         index = 0
         while index < len(text):
             char = text[index]
@@ -44,6 +50,7 @@ class TerminalModel:
                 continue
             if char == "\r":
                 self.col = 0
+                self.pending_wrap = False
             elif char == "\n":
                 self._line_feed()
             elif char == "\b":
@@ -55,19 +62,34 @@ class TerminalModel:
     def lines(self) -> list[str]:
         return ["".join(row) for row in self.screen]
 
+    def scrollback_lines(self) -> list[str]:
+        return ["".join(row) for row in self.scrollback]
+
+    def all_lines(self) -> list[str]:
+        return [*self.scrollback_lines(), *self.lines()]
+
     def resize(self, rows: int, cols: int) -> None:
         old_lines = self.lines()
+        old_rows = self.rows
         self.rows = rows
         self.cols = cols
-        kept = old_lines[:rows]
+        if rows < old_rows:
+            removed_count = old_rows - rows
+            self.scrollback.extend([list(line) for line in old_lines[:removed_count]])
+            kept = old_lines[removed_count:]
+            self.row = max(0, self.row - removed_count)
+        else:
+            added_count = rows - old_rows
+            kept = (["" for _ in range(added_count)] + old_lines)
+            self.row += added_count
         self.screen = []
         for line in kept:
             chars = list(line[:cols])
             self.screen.append(chars + [" "] * (cols - len(chars)))
-        while len(self.screen) < rows:
-            self.screen.append([" "] * cols)
+        self.screen = self.screen[-rows:]
         self.row = min(self.row, rows - 1)
         self.col = min(self.col, cols - 1)
+        self.pending_wrap = False
 
     def _consume_escape(self, text: str, index: int) -> int:
         if index + 1 >= len(text):
@@ -90,10 +112,13 @@ class TerminalModel:
 
         if final == "A":
             self.row = max(0, self.row - count)
+            self.pending_wrap = False
         elif final == "B":
             self.row = min(self.rows - 1, self.row + count)
+            self.pending_wrap = False
         elif final == "C":
             self.col = min(self.cols - 1, self.col + count)
+            self.pending_wrap = False
         elif final == "D":
             self.col = max(0, self.col - count)
         elif final == "G":
@@ -108,6 +133,10 @@ class TerminalModel:
             end_col = self.col + 1 if first == 1 else self.cols
             for col in range(start, end_col):
                 self.screen[self.row][col] = " "
+            self.pending_wrap = False
+        elif final in ("h", "l") and text[index + 2:end] == "?7":
+            self.autowrap = final == "h"
+            self.pending_wrap = False
         elif final == "J":
             if first in (2, 3):
                 self.screen = [[" "] * self.cols for _ in range(self.rows)]
@@ -122,9 +151,10 @@ class TerminalModel:
         return end + 1
 
     def _line_feed(self) -> None:
+        self.pending_wrap = False
         self.row += 1
         if self.row >= self.rows:
-            self.screen.pop(0)
+            self.scrollback.append(self.screen.pop(0))
             self.screen.append([" "] * self.cols)
             self.row = self.rows - 1
 
@@ -132,16 +162,19 @@ class TerminalModel:
         width = char_width(char)
         if width <= 0:
             return
-        if self.col >= self.cols:
+        if self.pending_wrap and self.autowrap:
             self.col = 0
             self._line_feed()
+        self.pending_wrap = False
         self.screen[self.row][self.col] = char
         for offset in range(1, width):
             if self.col + offset < self.cols:
                 self.screen[self.row][self.col + offset] = " "
-        self.col += width
-        if self.col >= self.cols:
+        if self.col + width >= self.cols:
+            self.pending_wrap = self.autowrap
             self.col = self.cols - 1
+        else:
+            self.col += width
 
 
 def char_width(char: str) -> int:
@@ -202,6 +235,17 @@ def assert_ordered(haystack: str, needles: list[str]) -> None:
         if index < 0:
             raise AssertionError(f"Missing ordered text {needle!r}. Tail:\n{haystack[-3000:]}")
         cursor = index + len(needle)
+
+
+def assert_retained(needle: str, label: str, model: TerminalModel) -> None:
+    """Assert finalized content remains in visible rows or native scrollback."""
+    terminal_text = "\n".join(model.all_lines())
+    if needle not in terminal_text:
+        raise AssertionError(
+            f"{label}: finalized content {needle!r} is absent from visible rows and scrollback\n"
+            f"--- scrollback tail ---\n{chr(10).join(model.scrollback_lines()[-20:])}\n"
+            f"--- visible ---\n{chr(10).join(model.lines())}"
+        )
 
 
 def prompt_frame_rows(visible: str) -> tuple[list[int], list[int], list[int]]:
@@ -268,6 +312,8 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
                 self.write_text_stream(["tool-final-response "], delay=0.05)
             elif "tool order test" in last_user:
                 self.write_tool_call_stream()
+            elif "markdown render test" in last_user:
+                self.write_markdown_stream()
             elif "long output test" in last_user:
                 self.write_long_tool_output_stream()
             elif "permission test" in last_user:
@@ -340,6 +386,40 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
             usage={"prompt_tokens": 12, "completion_tokens": 4},
         )
 
+    def write_markdown_stream(self) -> None:
+        markdown = """# Markdown Heading
+
+## Secondary Heading
+
+**bold** and *italic* with `inline code` and [docs](https://example.com)
+
+> quoted text
+
+- list item
+
+1. first ordered item
+2. second ordered item
+
+```javascript
+const answer = 42;
+```
+
+```python
+print("python block")
+```
+
+```diff
++added line
+-removed line
+@@ -1 +1 @@
+```
+
+| Key | Value | Status |
+| --- | --- | --- |
+| one | two | ready |
+"""
+        self.write_text_stream([markdown], delay=0.05)
+
     def write_permission_tool_stream(self) -> None:
         """Generate text that may trigger permission. For PTY we verify the
         permission overlay renders without crashing, even if the tool is
@@ -371,8 +451,10 @@ def start_mock_openai_server() -> tuple[ThreadingHTTPServer, str]:
 
 
 def encode_project_path(project_path: Path) -> str:
-    encoded = re.sub(r"[^A-Za-z0-9]+", "-", str(project_path).replace("\\", "/")).strip("-")
-    return encoded or "root"
+    normalized = str(project_path).replace("\\", "/")
+    encoded = re.sub(r"[^A-Za-z0-9]+", "-", normalized).strip("-")
+    suffix = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:8]
+    return f"{encoded or 'root'}-{suffix}"
 
 
 def seed_resume_sessions(config_dir: str, repo: Path) -> list[str]:
@@ -386,6 +468,25 @@ def seed_resume_sessions(config_dir: str, repo: Path) -> list[str]:
         session_id = str(uuid.uuid4())
         session_ids.append(session_id)
         updated_at = base_time - index * 1000
+        # The third fixture (index 2) carries a LONG history so the smoke test
+        # exercises the v0.2.21-fix1 /resume blank-page regression: after
+        # resume the most-recent tail must stay visible in the live region
+        # (not scrolled into scrollback leaving a blank page).
+        if index == 2:
+            messages = [
+                {
+                    "role": "user",
+                    "content": f"long-resume-{i:03d}",
+                    "timestamp": updated_at - (60 - i) * 1000,
+                }
+                for i in range(60)
+            ]
+        else:
+            messages = [{
+                "role": "user",
+                "content": f"resume fixture {index + 1} content",
+                "timestamp": updated_at,
+            }]
         meta = {
             "id": session_id,
             "projectPath": str(project_path),
@@ -396,20 +497,18 @@ def seed_resume_sessions(config_dir: str, repo: Path) -> list[str]:
             "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(updated_at / 1000)),
             "updatedAt": updated_at,
             "updatedAtIso": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(updated_at / 1000)),
-            "messageCount": 1,
-            "historySizeBytes": 0,
+            "messageCount": len(messages),
+            "historySizeBytes": sum(len(json.dumps(m)) for m in messages),
             "tokenCount": 0,
             "cost": 0,
             "name": f"resume fixture {index + 1}",
             "taskSummary": f"resume fixture {index + 1}",
         }
-        message = {
-            "role": "user",
-            "content": f"resume fixture {index + 1} content",
-            "timestamp": updated_at,
-        }
         (sessions_dir / f"{session_id}.json").write_text(json.dumps(meta), encoding="utf-8")
-        (sessions_dir / f"{session_id}.jsonl").write_text(json.dumps(message) + "\n", encoding="utf-8")
+        (sessions_dir / f"{session_id}.jsonl").write_text(
+            "\n".join(json.dumps(message) for message in messages) + "\n",
+            encoding="utf-8",
+        )
 
     return session_ids
 
@@ -481,6 +580,47 @@ def main() -> int:
         consumed = len(raw)
         return "\n".join(model.lines())
 
+    def expect_prompt_frame(label: str, expected_input: str | None = None, timeout: float = 5.0) -> None:
+        """Poll the live screen until exactly one stable prompt frame is visible.
+
+        The renderer paints asynchronously (scheduler + inline-surface FIFO
+        queue + PTY delivery), so a single read can land mid-repaint. Wait for
+        the frame to settle instead of assuming synchronous completion.
+        """
+        deadline = time.time() + timeout
+        last_exc: Exception | None = None
+        while time.time() < deadline:
+            visible = sync_screen()
+            try:
+                assert_single_prompt_frame(visible, model, label, expected_input)
+                return
+            except AssertionError as exc:
+                last_exc = exc
+                time.sleep(0.05)
+        assert last_exc is not None
+        raise last_exc
+
+    def tab_complete(label: str, expect_substr: str, timeout: float = 3.0) -> None:
+        """Send Tab and poll until the picker completion text appears.
+
+        The picker opens and populates asynchronously; a single Tab + fixed
+        sleep can land before the completion is rendered. Poll instead so the
+        check only fails when completion genuinely never happens.
+        """
+        sync_screen()
+        time.sleep(0.1)
+        os.write(master, b"\t")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            visible = sync_screen()
+            if expect_substr in visible:
+                return
+            time.sleep(0.1)
+        visible = sync_screen()
+        raise AssertionError(
+            f"TUI {label} Tab completion did not update the prompt:\n{visible}"
+        )
+
     try:
         wait_for(master, output, "OPENHORSE v", timeout=20)
         wait_for(master, output, "/ commands", timeout=20)
@@ -491,13 +631,21 @@ def main() -> int:
         os.write(master, "开源小？事收到".encode("utf-8"))
         wait_for(master, output, "开源小？事收到", timeout=5)
         os.write(master, b"\x7f")
-        time.sleep(0.25)
-
-        visible = sync_screen()
-        compact_visible = visible.replace(" ", "")
-        if "开源小？事收到" in compact_visible or "开源小？事收" not in compact_visible:
+        # Backspace + re-render are async; poll until the prompt shows the
+        # truncated value and no longer the full string.
+        deadline = time.time() + 3.0
+        backspace_ok = False
+        while time.time() < deadline:
+            visible = sync_screen()
+            compact_visible = visible.replace(" ", "")
+            if "开源小？事收" in compact_visible and "开源小？事收到" not in compact_visible:
+                backspace_ok = True
+                break
+            time.sleep(0.1)
+        if not backspace_ok:
+            visible = sync_screen()
             raise AssertionError(f"TUI Backspace did not update the visible prompt:\n{visible}")
-        assert_single_prompt_frame(visible, model, "after CJK backspace", "开源小？事收")
+        expect_prompt_frame("after CJK backspace", "开源小？事收")
 
         # --- v0.2.19 completion: multiline paste ---
         os.write(master, b"\x15")  # Ctrl+U to clear
@@ -507,25 +655,17 @@ def main() -> int:
         bracketed = b"\x1b[200~" + paste_content + b"\x1b[201~"
         os.write(master, bracketed)
         time.sleep(0.3)
-        visible = sync_screen()
-        # Prompt frame must still be intact after paste
-        if "┌" not in visible or "└" not in visible:
-            raise AssertionError(f"TUI prompt frame broken after multiline paste:\n{visible}")
+        expect_prompt_frame("after multiline paste")
         # The paste should NOT auto-submit; prompt should hold the value
         # (We verify by checking the prompt frame is still showing input, not empty)
         # Now submit with Enter
         os.write(master, b"\r")
         wait_for(master, output, "Completed with mock-tui-stream", timeout=10)
-        visible = sync_screen()
-        assert_single_prompt_frame(visible, model, "after multiline paste submit")
+        expect_prompt_frame("after multiline paste submit")
 
         os.write(master, b"\x15/sta")
         wait_for(master, output, 'Commands "sta"', timeout=5)
-        os.write(master, b"\t")
-        time.sleep(0.25)
-        visible = sync_screen()
-        if "/status" not in visible:
-            raise AssertionError(f"TUI slash command Tab completion did not update the prompt:\n{visible}")
+        tab_complete("slash command", "/status")
 
         os.write(master, b"\x15?")
         wait_for(master, output, "Shortcuts", timeout=5)
@@ -536,22 +676,37 @@ def main() -> int:
         os.write(master, b"\x15@READ")
         wait_for(master, output, 'Files "READ"', timeout=5)
         wait_for(master, output, "README.md", timeout=5)
-        os.write(master, b"\t")
-        time.sleep(0.25)
-        visible = sync_screen()
-        if "@README.md" not in visible:
-            raise AssertionError(f"TUI file picker Tab completion did not update the prompt:\n{visible}")
+        tab_complete("file picker", "@README.md")
 
         os.write(master, b"\x15/resume\r")
         wait_for(master, output, "Sessions: Pick a Session", timeout=8)
         wait_for(master, output, "resume fixture 3", timeout=8)
         os.write(master, target_resume_session_id.encode("ascii") + b"\r")
         wait_for(master, output, "Restored", timeout=8)
-        wait_for(master, output, "resume fixture 3 content", timeout=8)
-        visible = sync_screen()
-        if "resume fixture 3 content" not in visible:
-            raise AssertionError(f"TUI did not restore the selected session into transcript:\n{visible}")
+        wait_for(master, output, "long-resume-059", timeout=8)
+        sync_screen()
+        assert_retained("long-resume-059", "TUI did not restore the selected session into transcript", model)
 
+        # v0.2.21-fix1 regression: after /resume with a long history the most
+        # recent restored content must be visible in the live region WITHOUT
+        # scrolling up (the screen must not be blank). Poll the visible screen
+        # because rendering settles asynchronously.
+        deadline = time.time() + 6.0
+        tail_visible = False
+        while time.time() < deadline:
+            visible = sync_screen()
+            if "long-resume-059" in visible:
+                tail_visible = True
+                break
+            time.sleep(0.1)
+        if not tail_visible:
+            visible = sync_screen()
+            raise AssertionError(
+                f"TUI /resume left a blank live region (tail not visible):\n{visible}"
+            )
+        expect_prompt_frame("after resume long history")
+
+        revision_start = len(b"".join(output))
         os.write(master, b"\x15stream revise\r")
         wait_for(master, output, "first-response-part-1", timeout=8)
         os.write(master, "修正目标".encode("utf-8"))
@@ -559,57 +714,118 @@ def main() -> int:
         os.write(master, b"\r")
         wait_for(master, output, "Revision received. Interrupting current response", timeout=8)
         wait_for(master, output, "revision-final-response", timeout=10)
-        wait_for(master, output, "Completed with mock-tui-stream", timeout=8)
-        visible = sync_screen()
-        if "revision-final-response" not in visible:
-            raise AssertionError(f"TUI did not keep the restarted response visible:\n{visible}")
+        wait_for(
+            master,
+            output,
+            "Completed with mock-tui-stream",
+            timeout=8,
+            start_offset=revision_start,
+        )
+        expect_prompt_frame("after revised response")
+        sync_screen()
+        assert_retained("revision-final-response", "TUI did not keep the restarted response visible", model)
 
         tool_start = len(b"".join(output))
         os.write(master, b"tool order test\r")
         wait_for(master, output, "tool-intro-before-call", timeout=8)
-        wait_for(master, output, "Running list_files .", timeout=8)
-        wait_for(master, output, "list . (", timeout=8)
+        wait_for(master, output, "● list_files", timeout=8)
+        wait_for(master, output, "✓ list_files", timeout=8)
         wait_for(master, output, "tool-final-response", timeout=8)
+        wait_for(
+            master,
+            output,
+            "Completed with mock-tui-stream",
+            timeout=8,
+            start_offset=tool_start,
+        )
         tool_output = strip_ansi(b"".join(output)[tool_start:].decode("utf-8", errors="replace"))
         assert_ordered(tool_output, [
             "tool-intro-before-call",
-            "Running list_files .",
-            "list . (",
+            "● list_files",
+            "✓ list_files",
             "tool-final-response",
         ])
-        visible = sync_screen()
-        if "tool-final-response" not in visible:
-            os.write(master, b"\x1b[5~")
-            time.sleep(0.25)
-            visible = sync_screen()
-            if "tool-final-response" not in visible:
-                raise AssertionError(f"TUI did not keep the tool final response in scrollback:\n{visible}")
+        expect_prompt_frame("after tool final response")
+        sync_screen()
+        assert_retained("tool-final-response", "TUI did not keep the tool final response in scrollback", model)
+
+        # --- v0.2.22 Markdown semantic rendering ---
+        markdown_start = len(b"".join(output))
+        os.write(master, b"markdown render test\r")
+        wait_for(master, output, "Markdown Heading", timeout=10, start_offset=markdown_start)
+        wait_for(master, output, "const answer = 42;", timeout=10, start_offset=markdown_start)
+        wait_for(
+            master,
+            output,
+            "Completed with mock-tui-stream",
+            timeout=10,
+            start_offset=markdown_start,
+        )
+        sync_screen()
+        rendered_markdown = "\n".join(model.all_lines())
+        for expected in (
+            "Markdown Heading",
+            "Secondary Heading",
+            "bold",
+            "italic",
+            "inline code",
+            "docs",
+            "const answer = 42;",
+            'print("python block")',
+            "added line",
+            "removed line",
+            "Status",
+            "ready",
+        ):
+            if expected not in rendered_markdown:
+                raise AssertionError(
+                    f"TUI Markdown rendering lost {expected!r}:\n{rendered_markdown[-4000:]}"
+                )
+        for source_marker in (
+            "# Markdown Heading",
+            "## Secondary Heading",
+            "**bold**",
+            "```javascript",
+            "```python",
+            "```diff",
+            "| --- | --- | --- |",
+        ):
+            if source_marker in rendered_markdown:
+                raise AssertionError(
+                    f"TUI leaked Markdown source marker {source_marker!r}:\n"
+                    f"{rendered_markdown[-4000:]}"
+                )
+        expect_prompt_frame("after Markdown rendering")
 
         # --- v0.2.19 切片5: rapid resize ---
-        for new_rows, new_cols in [(30, 120), (12, 60), (24, 80), (8, 40)]:
+        for new_rows, new_cols in [(30, 120), (12, 40), (24, 80)]:
+            model.resize(rows=new_rows, cols=new_cols)
             set_window_size(slave, rows=new_rows, cols=new_cols)
+            os.killpg(process.pid, signal.SIGWINCH)
             time.sleep(0.35)
-            visible = sync_screen()
-            assert_single_prompt_frame(visible, model, f"after resize to {new_rows}x{new_cols}")
+            expect_prompt_frame(f"after resize to {new_rows}x{new_cols}")
 
         # Restore to standard size
+        model.resize(rows=24, cols=100)
         set_window_size(slave, rows=24, cols=100)
+        os.killpg(process.pid, signal.SIGWINCH)
         time.sleep(0.35)
-        visible = sync_screen()
-        assert_single_prompt_frame(visible, model, "after restore to 24x100")
+        expect_prompt_frame("after restore to 24x100")
 
         # --- 窄宽 + 低高度验证 ---
-        set_window_size(slave, rows=8, cols=30)
+        model.resize(rows=8, cols=24)
+        set_window_size(slave, rows=8, cols=24)
+        os.killpg(process.pid, signal.SIGWINCH)
         time.sleep(0.35)
         visible = sync_screen()
         # Prompt frame must still be present at this minimal size
-        if "┌" not in visible or "└" not in visible:
-            raise AssertionError(f"TUI prompt frame missing at 8x30:\n{visible}")
+        expect_prompt_frame("after resize to 8x24")
         # Resize back to normal
+        model.resize(rows=24, cols=100)
         set_window_size(slave, rows=24, cols=100)
+        os.killpg(process.pid, signal.SIGWINCH)
         time.sleep(0.35)
-        visible = sync_screen()
-        assert_single_prompt_frame(visible, model, "after restore from 8x30")
+        expect_prompt_frame("after restore from 8x24")
 
         # --- 长输出 scrollback ---
         long_output_start = len(b"".join(output))
@@ -622,11 +838,27 @@ def main() -> int:
             timeout=15,
             start_offset=long_output_start,
         )
-        # Page-up to verify scrollback works with long output
-        os.write(master, b"\x1b[5~")
-        time.sleep(0.25)
-        visible = sync_screen()
-        assert_single_prompt_frame(visible, model, "after page-up scrollback in long output")
+        # Feed the terminal emulator and verify finalized rows remain in its
+        # visible screen or scrollback. Raw PTY bytes are not sufficient: text
+        # can be emitted once and then erased by a later repaint.
+        sync_screen()
+        assert_retained(
+            "line-0000",
+            "TUI lost the earliest committed line - native scrollback not accumulating",
+            model,
+        )
+        assert_retained(
+            "line-0039",
+            "TUI lost the latest committed line - native scrollback not accumulating",
+            model,
+        )
+        scrollback_text = "\n".join(model.scrollback_lines())
+        if "┌" in scrollback_text or "└" in scrollback_text or "│ ›" in scrollback_text:
+            raise AssertionError(
+                "TUI leaked an ephemeral prompt frame into native scrollback:\n"
+                + scrollback_text[-3000:]
+            )
+        expect_prompt_frame("after long-output scrollback validation")
 
         # --- Permission / exec tool smoke (may auto-allow due to exec ask=off) ---
         permission_start = len(b"".join(output))
@@ -649,8 +881,7 @@ def main() -> int:
             start_offset=permission_start,
         )
         # Permission/exec smoke passed — verify prompt frame still stable
-        visible = sync_screen()
-        assert_single_prompt_frame(visible, model, "after permission/exec test")
+        expect_prompt_frame("after permission/exec test")
 
         # --- Repeated interrupt / alternate screen restore ---
         for _ in range(4):

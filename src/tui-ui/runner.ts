@@ -1,4 +1,5 @@
 import { renderFrameRows, type TuiFrame } from '../tui-core/frame';
+import type { StyledRow, TuiTheme } from '../tui-core/style';
 import {
   isLikelyUnbracketedMultilinePaste,
   normalizePastedText,
@@ -6,11 +7,20 @@ import {
   type TuiInputEvent,
   type TuiKey,
 } from '../tui-core/input-parser';
-import { TuiTerminalWriter, type TuiTerminalRenderResult } from '../tui-core/terminal-writer';
 import type { UiEventSink } from '../runtime/ui-events';
 import { getCommands } from '../commands';
-import { renderTuiUiFrame } from './layout';
+import {
+  measureTuiLiveFrameHeight,
+  renderTuiLiveFrame,
+  renderTuiUiFrame,
+} from './layout';
 import { getFileQuery, visibleCommandItems, visibleFileItems, type TuiPickerItem } from './pickers';
+import {
+  InlineTerminalSurface,
+  type CommittedEntry,
+  type LiveFrameProvider,
+  type TranscriptCommitBatch,
+} from './inline-surface';
 import {
   createTuiRenderScheduler,
   type TuiRenderScheduler,
@@ -19,10 +29,29 @@ import {
 import {
   createTuiUiEventSink,
   initialTuiUiState,
+  markTranscriptQueued,
+  markTranscriptCommitted,
+  pendingCommitRecords,
   tuiUiReducer,
   type TuiUiAction,
+  type TuiTranscriptRecord,
   type TuiUiState,
 } from './state';
+import { TranscriptLayoutCache } from './transcript-cache';
+import { layoutTranscriptEntry } from './transcript-layout';
+import {
+  DEFAULT_TUI_THEME_ID,
+  resolveTuiTheme,
+  type ResolvedTuiTheme,
+} from './theme';
+import {
+  initialHistoryState,
+  historyCurrentValue,
+  historyNext,
+  historyPrevious,
+  pushHistoryEntry,
+  type InputHistoryState,
+} from '../runtime/composer/history';
 
 /** Actions that should use 'stream' priority (FPS-capped). */
 const STREAM_ACTIONS: ReadonlySet<string> = new Set([
@@ -44,42 +73,54 @@ export interface TuiRunnerOptions {
   onPermissionDecision?: (requestId: string, approved: boolean) => void | Promise<void>;
   /** Inject scheduler deps for testing (fake timers). */
   schedulerDeps?: Partial<TuiRenderSchedulerDeps>;
-  /** Disable scheduler for backward-compat synchronous tests (default: true). */
-  noScheduler?: boolean;
+  /** Inline surface for committed scrollback + live region rendering. */
+  surface?: InlineTerminalSurface;
+  /** Fatal surface failures must restore terminal ownership and stop the renderer. */
+  onSurfaceError?: (error: unknown) => void;
+  /** Immutable transcript theme for this runner instance. */
+  theme?: TuiTheme;
+  themeId?: string;
 }
 
 export interface TuiRunnerCounters {
   layoutCount: number;
   paintCount: number;
   changedRows: number;
+  commitCount: number;
 }
 
 export class TuiRunner {
   readonly events: UiEventSink;
   private readonly parser = new TuiInputParser();
-  private readonly writer: TuiTerminalWriter;
-  private readonly scheduler: TuiRenderScheduler | null;
+  private readonly scheduler: TuiRenderScheduler;
+  private readonly surface: InlineTerminalSurface | null;
+  private readonly transcriptCache = new TranscriptLayoutCache();
+  private readonly theme: ResolvedTuiTheme;
+  private readonly themeId: string;
+  private history: InputHistoryState = initialHistoryState;
+  private surfaceFailed = false;
   private state: TuiUiState = initialTuiUiState;
   private width: number;
   private height: number;
   private lastFrame: TuiFrame | null = null;
-  private lastRenderResult: TuiTerminalRenderResult | null = null;
-  readonly counters: TuiRunnerCounters = { layoutCount: 0, paintCount: 0, changedRows: 0 };
+  private surfaceResizePending = false;
+  private resizeEpoch = 0;
+  private surfaceResizeGeneration = 0;
+  readonly counters: TuiRunnerCounters = { layoutCount: 0, paintCount: 0, changedRows: 0, commitCount: 0 };
 
   constructor(private readonly options: TuiRunnerOptions) {
     this.width = options.width;
     this.height = options.height;
-    this.writer = new TuiTerminalWriter(options.output);
-    if (options.noScheduler !== false) {
-      this.scheduler = null;
-    } else {
-      this.scheduler = createTuiRenderScheduler(
-        () => this.render(),
-        options.schedulerDeps,
-      );
-    }
+    this.surface = options.surface ?? null;
+    this.theme = resolveTuiTheme(options.theme);
+    this.themeId = options.themeId ?? DEFAULT_TUI_THEME_ID;
+    this.scheduler = createTuiRenderScheduler(
+      () => this.renderLive(),
+      options.schedulerDeps,
+    );
     this.events = createTuiUiEventSink(action => this.dispatch(action));
-    this.render();
+    // Initial render: paint the live region immediately.
+    this.renderLive();
   }
 
   getState(): TuiUiState {
@@ -90,34 +131,70 @@ export class TuiRunner {
     return this.lastFrame;
   }
 
-  getLastRenderResult(): TuiTerminalRenderResult | null {
-    return this.lastRenderResult;
-  }
-
   getVisibleRows(): string[] {
     return this.lastFrame ? renderFrameRows(this.lastFrame) : [];
   }
 
+  /** Get the scheduler for external lifecycle management (flush, stop). */
+  getScheduler(): TuiRenderScheduler {
+    return this.scheduler;
+  }
+
+  /** Stop stale-width paints as soon as the terminal reports SIGWINCH. */
+  beginResize(width = this.width): void {
+    if (!this.surface || this.surfaceFailed) return;
+    this.surfaceResizePending = true;
+    this.resizeEpoch += 1;
+    this.surfaceResizeGeneration = this.surface.beginResize(width);
+  }
+
   resize(width: number, height: number): void {
+    this.beginResize(width);
+    const resizeEpoch = this.resizeEpoch;
+    const surfaceResizeGeneration = this.surfaceResizeGeneration;
     this.width = width;
     this.height = height;
-    this.writer.reset();
-    if (this.scheduler) {
-      this.scheduler.request('immediate');
-      this.scheduler.flush();
-    } else {
-      this.render();
+    // Invalidate transcript cache on resize so committed entries are re-laid-out
+    // at the new width.
+    this.transcriptCache.invalidate(
+      this.state.transcriptGeneration,
+      this.transcriptWidth,
+      this.themeId,
+    );
+    if (this.surface && !this.surfaceFailed) {
+      // Surface resize is async (serialized FIFO); fire-and-forget is safe
+      // because subsequent renders go through the surface queue too.
+      void this.surface
+        .resize(width, height, () => {
+          const frame = this.buildLiveFrame(width);
+          this.lastFrame = frame;
+          this.counters.layoutCount += 1;
+          this.counters.paintCount += 1;
+          return frame;
+        }, surfaceResizeGeneration)
+        .then(() => {
+          if (resizeEpoch !== this.resizeEpoch) return;
+          this.surfaceResizePending = false;
+          this.tryCommit(this.state, true);
+          this.scheduler.request('immediate');
+          this.scheduler.flush();
+        })
+        .catch(error => this.handleSurfaceError(error));
+      return;
     }
+    this.scheduler.request('immediate');
+    this.scheduler.flush();
   }
 
   dispatch(action: TuiUiAction): void {
+    const prevState = this.state;
     this.state = tuiUiReducer(this.state, action);
-    if (this.scheduler) {
-      const priority = STREAM_ACTIONS.has(action.type) ? 'stream' : 'immediate';
-      this.scheduler.request(priority);
-    } else {
-      this.render();
-    }
+
+    // Check if any transcript entries became committable (finalized).
+    this.tryCommit(prevState);
+
+    const priority = STREAM_ACTIONS.has(action.type) ? 'stream' : 'immediate';
+    this.scheduler.request(priority);
   }
 
   feedInput(chunk: Buffer | string): TuiInputEvent[] {
@@ -135,18 +212,175 @@ export class TuiRunner {
     return events;
   }
 
-  render(): TuiTerminalRenderResult {
+  /**
+   * Render the full frame (legacy path for tests without surface).
+   * Uses renderTuiUiFrame which includes both static and live transcript.
+   */
+  renderFullFrame(): TuiFrame {
     this.counters.layoutCount += 1;
     const frame = renderTuiUiFrame(this.state, {
       width: this.width,
       height: this.height,
+      ...this.transcriptLayoutOptions(),
     });
-    const result = this.writer.render(frame);
     this.lastFrame = frame;
-    this.lastRenderResult = result;
     this.counters.paintCount += 1;
-    this.counters.changedRows += result.diff.changedRows.length;
-    return result;
+    return frame;
+  }
+
+  /**
+   * Render the live region via InlineTerminalSurface.
+   * When surface is available, only ephemeral content (live transcript, overlay,
+   * status, prompt) is painted into the live region.
+   * When no surface (test mode), renders the full frame including committed
+   * transcript so tests can inspect complete content via getLastFrame().
+   */
+  private renderLive(): void {
+    if (this.surface && !this.surfaceFailed) {
+      if (this.surfaceResizePending) return;
+      this.counters.layoutCount += 1;
+      // Production path: render only the live region for inline surface.
+      const frame = this.buildLiveFrame(this.width);
+      this.lastFrame = frame;
+      this.counters.paintCount += 1;
+      // Surface renderLive is async (serialized FIFO), but for production use
+      // we fire-and-forget because the next render will also go through the queue.
+      void this.surface.renderLive(frame).catch(error => this.handleSurfaceError(error));
+    } else {
+      this.counters.layoutCount += 1;
+      // Test path (no surface): render the full frame so getLastFrame() /
+      // getVisibleRows() return complete content including committed transcript.
+      const frame = renderTuiUiFrame(this.state, {
+        width: this.width,
+        height: this.height,
+        ...this.transcriptLayoutOptions(),
+      });
+      this.lastFrame = frame;
+      this.counters.paintCount += 1;
+    }
+  }
+
+  /** Build a compact live-region frame that grows only for active content. */
+  private buildLiveFrame(terminalWidth: number): TuiFrame {
+    const width = this.surface
+      ? Math.max(1, Math.floor(terminalWidth) - 1)
+      : Math.max(1, Math.floor(terminalWidth));
+    const height = this.surface
+      ? measureTuiLiveFrameHeight(
+        this.state,
+        width,
+        this.surface.getLiveBandRows(),
+        this.transcriptLayoutOptions(),
+      )
+      : this.height - 1;
+    return renderTuiLiveFrame(this.state, {
+      width,
+      height,
+      ...this.transcriptLayoutOptions(),
+    });
+  }
+
+  /**
+   * Try to commit any newly-finalized transcript entries to scrollback.
+   * Called after each dispatch. Only commits entries that are committable
+   * but not yet queued.
+   */
+  private tryCommit(prevState: TuiUiState, force = false): void {
+    if (!this.surface || this.surfaceResizePending) return;
+
+    const prevCommittable = prevState.committableTranscriptCount;
+    const currCommittable = this.state.committableTranscriptCount;
+    const generationChanged = this.state.transcriptGeneration !== prevState.transcriptGeneration;
+
+    if (!force && !generationChanged && currCommittable <= prevCommittable) return;
+    if (currCommittable <= this.state.queuedTranscriptCount) return;
+
+    // Gather entries to commit: from queued boundary to new committable boundary.
+    const entriesToCommit = pendingCommitRecords(this.state);
+    if (entriesToCommit.length === 0) return;
+
+    // Advance the queued boundary so we don't double-commit.
+    this.state = markTranscriptQueued(this.state, entriesToCommit.length);
+
+    // Build the commit batch.
+    const committedEntries: CommittedEntry[] = entriesToCommit.map(entry => ({
+      displayKey: entry.id,
+      rows: this.layoutTranscriptRecord(entry, this.transcriptWidth),
+    }));
+
+    const batch: TranscriptCommitBatch = {
+      generation: this.state.transcriptGeneration,
+      reason: 'finalize',
+      entries: committedEntries,
+    };
+
+    // The LiveFrameProvider ensures the live frame is rebuilt after commit
+    // with the latest state (where committed entries are no longer in the
+    // live region).
+    const generation = batch.generation;
+    const getLatestLiveFrame: LiveFrameProvider = () => this.buildLiveFrame(this.width);
+
+    // Surface commit is async (serialized FIFO). Fire-and-forget: the
+    // commit's internal getLatestLiveFrame already rebuilds the live region,
+    // so no additional scheduler paint is needed here.
+    void this.surface
+      .commit(batch, getLatestLiveFrame)
+      .then(() => {
+        if (this.state.transcriptGeneration !== generation) return;
+        this.state = markTranscriptCommitted(this.state, entriesToCommit.length);
+        this.counters.commitCount += 1;
+      })
+      .catch(error => this.handleSurfaceError(error));
+  }
+
+  /** Layout a transcript record once per revision/width/theme combination. */
+  private layoutTranscriptRecord(entry: TuiTranscriptRecord, width: number): StyledRow[] {
+    const cached = this.transcriptCache.get(
+      entry.id,
+      entry.revision,
+      this.state.transcriptGeneration,
+      width,
+      this.themeId,
+    );
+    if (cached) return cached;
+
+    const rows = layoutTranscriptEntry(entry, { width, theme: this.theme });
+    this.transcriptCache.set(
+      entry.id,
+      entry.revision,
+      rows,
+      this.state.transcriptGeneration,
+      width,
+      this.themeId,
+    );
+    return rows;
+  }
+
+  private get transcriptWidth(): number {
+    return this.surface
+      ? Math.max(1, this.width - 1)
+      : Math.max(1, this.width);
+  }
+
+  private transcriptLayoutOptions() {
+    return {
+      transcriptWidth: this.transcriptWidth,
+      theme: this.theme,
+      layoutTranscriptRecord: (entry: TuiTranscriptRecord, width: number) => (
+        this.layoutTranscriptRecord(entry, width)
+      ),
+    };
+  }
+
+  private handleSurfaceError(error: unknown): void {
+    if (this.surfaceFailed) return;
+    this.surfaceFailed = true;
+    const message = error instanceof Error ? error.message : String(error);
+    this.state = tuiUiReducer(this.state, {
+      type: 'setStatus',
+      message: `TUI output error: ${message}`,
+    });
+    this.options.onSurfaceError?.(error);
   }
 
   private applyInputEvent(event: TuiInputEvent): void {
@@ -312,6 +546,9 @@ export class TuiRunner {
       case 'enter':
         this.submitPrompt();
         return;
+      case 'newline':
+        this.updatePrompt(insertAtCursor(value, cursor, '\n'));
+        return;
       case 'backspace':
         this.updatePrompt(deleteBeforeCursor(value, cursor));
         return;
@@ -325,10 +562,10 @@ export class TuiRunner {
         this.dispatch({ type: 'setPrompt', value, cursor: nextBoundary(value, cursor) });
         return;
       case 'home':
-        this.dispatch({ type: 'setPrompt', value, cursor: 0 });
+        this.moveCursorLineHome();
         return;
       case 'end':
-        this.dispatch({ type: 'setPrompt', value, cursor: value.length });
+        this.moveCursorLineEnd();
         return;
       case 'ctrl+u':
         this.dispatch({ type: 'setPrompt', value: '', cursor: 0 });
@@ -351,20 +588,88 @@ export class TuiRunner {
         }
         return;
       case 'up':
+        this.moveCursorUpOrHistory();
+        return;
       case 'down':
-        return;
-      case 'pageup':
-        this.dispatch({ type: 'scrollTranscript', delta: Math.max(1, this.height - 5) });
-        return;
-      case 'pagedown':
-        this.dispatch({ type: 'scrollTranscript', delta: -Math.max(1, this.height - 5) });
+        this.moveCursorDownOrHistory();
         return;
     }
+  }
+
+  /** Navigate to previous history entry. */
+  private historyBack(): void {
+    if (this.state.overlay) return; // overlay handles up/down itself
+    const { value, cursor } = this.state.prompt;
+    const next = historyPrevious(this.history, value);
+    this.history = next;
+    const displayValue = historyCurrentValue(next, value);
+    this.dispatch({ type: 'setPrompt', value: displayValue, cursor: displayValue.length });
+  }
+
+  /** Navigate to next history entry (or back to draft). */
+  private historyForward(): void {
+    if (this.state.overlay) return;
+    const { value } = this.state.prompt;
+    const next = historyNext(this.history);
+    this.history = next;
+    const displayValue = historyCurrentValue(next, value);
+    this.dispatch({ type: 'setPrompt', value: displayValue, cursor: displayValue.length });
+  }
+
+  /**
+   * Up in a multi-line prompt moves the cursor to the previous visual line;
+   * only at the first line does it fall back to command history (matching
+   * shell/editor behaviour). Single-line prompts behave exactly as before.
+   */
+  private moveCursorUpOrHistory(): void {
+    if (this.state.overlay) return;
+    const { value, cursor } = this.state.prompt;
+    const { line, col } = lineColOfCursor(value, cursor);
+    if (line > 0) {
+      this.dispatch({ type: 'setPrompt', value, cursor: cursorOfLineCol(value, line - 1, col) });
+    } else {
+      this.historyBack();
+    }
+  }
+
+  /**
+   * Down in a multi-line prompt moves the cursor to the next visual line;
+   * only at the last line does it fall back to command history.
+   */
+  private moveCursorDownOrHistory(): void {
+    if (this.state.overlay) return;
+    const { value, cursor } = this.state.prompt;
+    const lines = value.split('\n');
+    const { line, col } = lineColOfCursor(value, cursor);
+    if (line < lines.length - 1) {
+      this.dispatch({ type: 'setPrompt', value, cursor: cursorOfLineCol(value, line + 1, col) });
+    } else {
+      this.historyForward();
+    }
+  }
+
+  /** Home: move to the start of the current visual line (not whole buffer). */
+  private moveCursorLineHome(): void {
+    if (this.state.overlay) return;
+    const { value, cursor } = this.state.prompt;
+    const { line } = lineColOfCursor(value, cursor);
+    this.dispatch({ type: 'setPrompt', value, cursor: cursorOfLineCol(value, line, 0) });
+  }
+
+  /** End: move to the end of the current visual line (not whole buffer). */
+  private moveCursorLineEnd(): void {
+    if (this.state.overlay) return;
+    const { value, cursor } = this.state.prompt;
+    const { line } = lineColOfCursor(value, cursor);
+    const lines = value.split('\n');
+    this.dispatch({ type: 'setPrompt', value, cursor: cursorOfLineCol(value, line, lines[line].length) });
   }
 
   private submitPrompt(options: { allowEmpty?: boolean } = {}): void {
     const input = this.state.prompt.value;
     if (!input.trim() && !options.allowEmpty) return;
+    // Push to history before clearing.
+    this.history = pushHistoryEntry(this.history, input);
     this.dispatch({ type: 'setPrompt', value: '', cursor: 0 });
     try {
       const submission = this.options.onSubmit?.(input);
@@ -524,4 +829,31 @@ function graphemeBoundaries(value: string): number[] {
 function clampCursor(value: string, cursor: number): number {
   if (!Number.isFinite(cursor)) return value.length;
   return Math.min(Math.max(0, Math.floor(cursor)), value.length);
+}
+
+/** Map an absolute character cursor to {line, col} within a multi-line value. */
+function lineColOfCursor(value: string, cursor: number): { line: number; col: number } {
+  const lines = value.split('\n');
+  const safeCursor = clampCursor(value, cursor);
+  let offset = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const lineLen = lines[i].length;
+    if (safeCursor <= offset + lineLen) {
+      return { line: i, col: safeCursor - offset };
+    }
+    offset += lineLen + 1; // +1 for the newline separator
+  }
+  const last = lines.length - 1;
+  return { line: last, col: lines[last].length };
+}
+
+/** Map a {line, col} back to an absolute character cursor within a multi-line value. */
+function cursorOfLineCol(value: string, line: number, col: number): number {
+  const lines = value.split('\n');
+  const safeLine = Math.max(0, Math.min(line, lines.length - 1));
+  let offset = 0;
+  for (let i = 0; i < safeLine; i++) {
+    offset += lines[i].length + 1;
+  }
+  return offset + Math.max(0, Math.min(col, lines[safeLine].length));
 }

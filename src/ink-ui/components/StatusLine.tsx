@@ -32,7 +32,6 @@ export function StatusLine({ runtime, running, statusMessage, width = 80, errorL
   const snapshot = runtime.store.getSnapshot();
   const usage = snapshot.tokenUsage;
   const totalTokens = usage ? usage.promptTokens + usage.completionTokens : 0;
-  const costStats = snapshot.costTracker.getSessionStats();
   const session = runtime.getSession();
   const mcpStatus = mcpManager.getStatus();
   const connectedMcp = mcpStatus.filter(item => item.connected).length;
@@ -43,7 +42,6 @@ export function StatusLine({ runtime, running, statusMessage, width = 80, errorL
     `model=${snapshot.currentModel}`,
     `session=${session?.id.slice(0, 8) ?? 'none'}`,
     `tokens=${(totalTokens / 1000).toFixed(1)}K`,
-    `cost=$${costStats.totalCost.toFixed(4)}`,
     `ctx=${ctxPercent}%`,
     mcpStatus.length > 0 ? `mcp=${connectedMcp}/${mcpStatus.length}` : '',
   ].filter(Boolean).join('  ');

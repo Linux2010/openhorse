@@ -1,7 +1,7 @@
 /**
  * openhorse - 状态栏组件
  *
- * 实时显示 token 数、成本、上下文百分比。
+ * 实时显示 token 数和上下文百分比。成本只通过 /cost 按需查询。
  */
 
 import chalk from 'chalk';
@@ -38,7 +38,6 @@ export function renderStatusBar(stats: StatusBarStats): string {
     `OpenHorse`,
     `${ACCENT(stats.model)}`,
     `${formatTokens(stats.tokens)}`,
-    `${formatCost(stats.cost)}`,
     `${formatCtx(stats.ctxPercent)}`,  // 添加 ctxPercent 显示
   ];
 
@@ -57,10 +56,9 @@ export function renderStatusBar(stats: StatusBarStats): string {
  */
 export function renderCompactStatusBar(stats: StatusBarStats): string {
   const tokenStr = stats.tokens > 0 ? `${ACCENT(formatTokens(stats.tokens))}` : '';
-  const costStr = stats.cost > 0 ? `${DIM('$' + stats.cost.toFixed(4))}` : '';
   const ctxStr = stats.ctxPercent > 0 ? `${DIM(stats.ctxPercent + '% ctx')}` : '';
 
-  const parts = [tokenStr, costStr, ctxStr].filter(Boolean);
+  const parts = [tokenStr, ctxStr].filter(Boolean);
   return parts.length > 0 ? DIM('  ') + parts.join(DIM(' ')) : '';
 }
 
@@ -101,17 +99,6 @@ function formatTokens(tokens: number): string {
     return `${(tokens / 1000).toFixed(1)}K tok`;
   }
   return `${tokens} tok`;
-}
-
-function formatCost(cost: number): string {
-  if (cost === 0) return '';
-  if (cost < 0.01) {
-    return `$${cost.toFixed(4)}`;
-  }
-  if (cost < 1) {
-    return `$${cost.toFixed(2)}`;
-  }
-  return `$${cost.toFixed(1)}`;
 }
 
 function formatCtx(percent: number): string {

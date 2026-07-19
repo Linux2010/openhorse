@@ -23,8 +23,10 @@ import {
   inferTerminalErrorLayer,
   normalizeTerminalAnswer,
   parseEditInput,
+  promptText,
   renderTerminalBanner,
   renderTerminalCapabilitySummary,
+  renderTerminalContextStatus,
   renderTerminalShortcuts,
   resolveTerminalSessionPickerInput,
   terminalContentWidth,
@@ -36,11 +38,13 @@ import { createToolEventPresenter } from '../src/runtime/chat-controller';
 import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
 import type { AppState } from '../src/framework/store';
 
-function makeRawEditor(options: {
-  cwd?: string;
-  onSubmit?: (input: string) => void;
-  onNotice?: (message: string) => void;
-} = {}) {
+function makeRawEditor(
+  options: {
+    cwd?: string;
+    onSubmit?: (input: string) => void;
+    onNotice?: (message: string) => void;
+  } = {}
+) {
   const writes: string[] = [];
   const input = Object.assign(new EventEmitter(), {
     isTTY: true,
@@ -59,11 +63,12 @@ function makeRawEditor(options: {
   const output = Object.assign(new EventEmitter(), {
     isTTY: true,
     columns: 80,
+    rows: 24,
     write: (chunk: string | Uint8Array) => {
       writes.push(String(chunk));
       return true;
     },
-  }) as NodeJS.WriteStream & EventEmitter & { columns: number };
+  }) as NodeJS.WriteStream & EventEmitter & { columns: number; rows: number };
 
   const editor = new RawTerminalEditor({
     cwd: options.cwd ?? process.cwd(),
@@ -77,10 +82,12 @@ function makeRawEditor(options: {
   return { editor, input, output, writes, emitResize: () => output.emit('resize') };
 }
 
-function makeRuntime(overrides: {
-  state?: Partial<AppState>;
-  config?: Partial<OpenHorseUiRuntime['config']>;
-} = {}): OpenHorseUiRuntime {
+function makeRuntime(
+  overrides: {
+    state?: Partial<AppState>;
+    config?: Partial<OpenHorseUiRuntime['config']>;
+  } = {}
+): OpenHorseUiRuntime {
   const state = {
     tools: [],
     memoryContent: '',
@@ -176,6 +183,26 @@ describe('terminal UI renderer adapter', () => {
     expect(banner).toContain('Capabilities scrollback, CJK input, paste/edit, trace');
   });
 
+  it('shows context percentage and compact reminder in the terminal prompt', () => {
+    const runtime = makeRuntime({
+      state: {
+        contextUsage: {
+          modelId: 'gpt-4o',
+          usedTokens: 108800,
+          contextWindow: 128000,
+          percent: 85,
+          source: 'estimated',
+          warningThresholdPercent: 80,
+          autoCompactThresholdPercent: 95,
+          autoCompactEnabled: true,
+        },
+      },
+    });
+
+    expect(stripAnsi(renderTerminalContextStatus(runtime))).toBe('ctx=85% /compact');
+    expect(stripAnsi(promptText(runtime))).toBe('[new] ctx=85% /compact › ');
+  });
+
   it('summarizes loaded runtime capabilities in the startup banner', () => {
     const runtime = makeRuntime({
       config: {
@@ -188,10 +215,7 @@ describe('terminal UI renderer adapter', () => {
         projectInstructionsContent: 'Follow repo rules.',
         skillsContent: 'Available skills: code-review',
         memoryContent: 'Project memory',
-        tools: [
-          { name: 'read_file' },
-          { name: 'mcp__github__search_issues' },
-        ] as AppState['tools'],
+        tools: [{ name: 'read_file' }, { name: 'mcp__github__search_issues' }] as AppState['tools'],
       },
     });
 
@@ -207,9 +231,11 @@ describe('terminal UI renderer adapter', () => {
 
   it('keeps startup capability summary safe with a minimal store snapshot', () => {
     const runtime = makeRuntime();
-    runtime.store.getSnapshot = jest.fn(() => ({} as AppState));
+    runtime.store.getSnapshot = jest.fn(() => ({}) as AppState);
 
-    expect(renderTerminalCapabilitySummary(runtime)).toBe('scrollback, CJK input, paste/edit, trace');
+    expect(renderTerminalCapabilitySummary(runtime)).toBe(
+      'scrollback, CJK input, paste/edit, trace'
+    );
   });
 
   it('keeps startup banner rows within very narrow terminal widths', () => {
@@ -505,18 +531,23 @@ describe('terminal UI renderer adapter', () => {
   });
 
   it('formats session picker rows to fit narrow terminals', () => {
-    const row = withStdoutColumns(48, () => formatTerminalSessionPickerItem({
-      session: {} as never,
-      globalIndex: 12,
-      sessionId: 'abcdef12-3456-7890-abcd-ef1234567890',
-      shortId: 'abcdef12',
-      title: 'very long terminal user interface polishing session title',
-      messageCount: 128,
-      historySizeBytes: 153600,
-      model: 'bailian/qwen3.7-plus',
-      projectPath: '/Users/hope/ai-project/openhorse',
-      showProject: true,
-    }, terminalContentWidth(120)));
+    const row = withStdoutColumns(48, () =>
+      formatTerminalSessionPickerItem(
+        {
+          session: {} as never,
+          globalIndex: 12,
+          sessionId: 'abcdef12-3456-7890-abcd-ef1234567890',
+          shortId: 'abcdef12',
+          title: 'very long terminal user interface polishing session title',
+          messageCount: 128,
+          historySizeBytes: 153600,
+          model: 'bailian/qwen3.7-plus',
+          projectPath: '/Users/hope/ai-project/openhorse',
+          showProject: true,
+        },
+        terminalContentWidth(120)
+      )
+    );
 
     const plain = stripAnsi(row);
     expect(visibleLength(plain)).toBeLessThanOrEqual(48);
@@ -525,12 +556,14 @@ describe('terminal UI renderer adapter', () => {
   });
 
   it('formats session picker headers to fit narrow terminals', () => {
-    const header = withStdoutColumns(32, () => formatTerminalSessionPickerHeader(
-      'A very long all-project session picker heading',
-      12,
-      30,
-      terminalContentWidth(120)
-    ));
+    const header = withStdoutColumns(32, () =>
+      formatTerminalSessionPickerHeader(
+        'A very long all-project session picker heading',
+        12,
+        30,
+        terminalContentWidth(120)
+      )
+    );
     const plain = stripAnsi(header);
 
     expect(visibleLength(plain)).toBeLessThanOrEqual(32);
@@ -540,23 +573,25 @@ describe('terminal UI renderer adapter', () => {
   it('keeps session picker output within narrow terminal widths', () => {
     const { sink, writes } = makeTerminalSink();
 
-    withStdoutColumns(48, () => sink.showSessionPicker({
-      title: 'A very long all-project session picker heading',
-      showProject: true,
-      sessions: [
-        {
-          id: '11111111-aaaa-bbbb-cccc-111111111111',
-          projectPath: '/Users/hope/ai-project/openhorse',
-          model: 'bailian/qwen3.7-plus',
-          startTime: 1,
-          tokenCount: 0,
-          cost: 0,
-          messageCount: 128,
-          historySizeBytes: 153600,
-          taskSummary: 'very long terminal user interface polishing session title',
-        },
-      ],
-    }));
+    withStdoutColumns(48, () =>
+      sink.showSessionPicker({
+        title: 'A very long all-project session picker heading',
+        showProject: true,
+        sessions: [
+          {
+            id: '11111111-aaaa-bbbb-cccc-111111111111',
+            projectPath: '/Users/hope/ai-project/openhorse',
+            model: 'bailian/qwen3.7-plus',
+            startTime: 1,
+            tokenCount: 0,
+            cost: 0,
+            messageCount: 128,
+            historySizeBytes: 153600,
+            taskSummary: 'very long terminal user interface polishing session title',
+          },
+        ],
+      })
+    );
 
     const rows = stripAnsi(writes.join('')).split('\n').filter(Boolean);
     expect(rows.every(row => visibleLength(row) <= 48)).toBe(true);
@@ -705,7 +740,8 @@ describe('terminal UI renderer adapter', () => {
   it('keeps the full exec command visible after tool completion', () => {
     const { sink, writes } = makeTerminalSink();
     const presenter = createToolEventPresenter(sink);
-    const command = 'cd /Users/hope/ai-project/a2a-python && export PATH="$HOME/.local/bin:$PATH" && uv run pytest tests/test_url_validator.py --cov=a2a --cov-report=term-missing';
+    const command =
+      'cd /Users/hope/ai-project/a2a-python && export PATH="$HOME/.local/bin:$PATH" && uv run pytest tests/test_url_validator.py --cov=a2a --cov-report=term-missing';
 
     presenter.start({
       type: 'tool_call',
@@ -719,7 +755,11 @@ describe('terminal UI renderer adapter', () => {
       name: 'exec_command',
       args: { command },
       result: JSON.stringify({ success: true, output: 'ok', summary: '🔧 exec (2B output)' }),
-      modelVisibleResult: JSON.stringify({ success: true, output: 'ok', summary: '🔧 exec (2B output)' }),
+      modelVisibleResult: JSON.stringify({
+        success: true,
+        output: 'ok',
+        summary: '🔧 exec (2B output)',
+      }),
       success: true,
       duration: 12,
       summary: '🔧 exec (2B output)',
@@ -843,8 +883,12 @@ describe('terminal UI renderer adapter', () => {
     expect(inferTerminalErrorLayer('Error: No frontmatter in skill file')).toBe('skills');
     expect(inferTerminalErrorLayer('Error: terminal resize failed')).toBe('renderer');
     expect(inferTerminalErrorLayer('Error: unexpected state transition')).toBe('runtime');
-    expect(formatTerminalErrorMessage('Error [provider]: existing layer')).toBe('Error [provider]: existing layer');
-    expect(formatTerminalErrorMessage('Error: [provider] existing layer')).toBe('Error: [provider] existing layer');
+    expect(formatTerminalErrorMessage('Error [provider]: existing layer')).toBe(
+      'Error [provider]: existing layer'
+    );
+    expect(formatTerminalErrorMessage('Error: [provider] existing layer')).toBe(
+      'Error: [provider] existing layer'
+    );
   });
 
   it('formats edit preview rows within narrow terminal widths', () => {
@@ -857,11 +901,13 @@ describe('terminal UI renderer adapter', () => {
       isReplaceAll: false,
     };
 
-    const row = withStdoutColumns(48, () => formatTerminalEditPreviewCandidate(
-      candidate,
-      'const message = "replacement with a very long value";',
-      terminalContentWidth(120)
-    ));
+    const row = withStdoutColumns(48, () =>
+      formatTerminalEditPreviewCandidate(
+        candidate,
+        'const message = "replacement with a very long value";',
+        terminalContentWidth(120)
+      )
+    );
 
     expect(visibleLength(stripAnsi(row))).toBeLessThanOrEqual(48);
     expect(row).toContain('line  42');
@@ -913,14 +959,38 @@ describe('terminal UI renderer adapter', () => {
     expect(output).not.toContain('› Resumed session');
   });
 
+  it('renders compact checkpoint provenance and detailed restore counts', () => {
+    const rendered = stripAnsi(
+      formatTerminalSessionRestored({
+        sessionId: '2571b283-9c8b-4501-a86e-5d2256e6db73',
+        projectPath: '/Users/hope/ai-project/openhorse',
+        model: 'glm-5',
+        restoredMessages: 8,
+        messageCount: 25,
+        transcriptMessages: 20,
+        summary: 'durable summary',
+        summaryGeneratedAt: 123456789,
+        summarySource: 'llm',
+        summaryCoveredMessages: 25,
+        checkpointId: 'checkpoint-1',
+      })
+    );
+
+    expect(rendered).toContain('restored 8 model-context / 20 transcript messages');
+    expect(rendered).toContain('(compact checkpoint)');
+    expect(rendered).toContain('Covers: 25 source messages');
+  });
+
   it('bounds restored session marker width and redacts summary secrets', () => {
-    const rendered = withStdoutColumns(72, () => formatTerminalSessionRestored({
-      sessionId: 'abcdef0123456789',
-      projectPath: '/Users/hope/very/long/project/path/that/should/be/truncated/openhorse',
-      model: 'test-model',
-      restoredMessages: 3,
-      summary: 'Authorization: Bearer secret-token-123456 should not leak',
-    }));
+    const rendered = withStdoutColumns(72, () =>
+      formatTerminalSessionRestored({
+        sessionId: 'abcdef0123456789',
+        projectPath: '/Users/hope/very/long/project/path/that/should/be/truncated/openhorse',
+        model: 'test-model',
+        restoredMessages: 3,
+        summary: 'Authorization: Bearer secret-token-123456 should not leak',
+      })
+    );
     const lines = stripAnsi(rendered).split('\n');
 
     expect(lines.every(line => visibleLength(line) <= 72)).toBe(true);
@@ -941,10 +1011,12 @@ describe('terminal UI renderer adapter', () => {
   });
 
   it('formats terminal status lines within narrow terminal widths', () => {
-    const status = withStdoutColumns(40, () => formatTerminalStatusMessage(
-      'Working: running 12 tools with a very long provider diagnostic status message',
-      terminalContentWidth(120)
-    ));
+    const status = withStdoutColumns(40, () =>
+      formatTerminalStatusMessage(
+        'Working: running 12 tools with a very long provider diagnostic status message',
+        terminalContentWidth(120)
+      )
+    );
 
     expect(visibleLength(status)).toBeLessThanOrEqual(40);
     expect(status).toContain('...');
@@ -954,7 +1026,9 @@ describe('terminal UI renderer adapter', () => {
     const { sink, writes } = makeTerminalSink();
 
     withStdoutColumns(40, () => {
-      sink.setStatus('Working: running 12 tools with a very long provider diagnostic status message');
+      sink.setStatus(
+        'Working: running 12 tools with a very long provider diagnostic status message'
+      );
     });
 
     const output = stripAnsi(writes.join('')).trim();
@@ -979,9 +1053,10 @@ describe('terminal UI renderer adapter', () => {
 
     expect(rows).not.toContain('Terminal shortcuts');
     expect(rows).toContain('Shortcuts');
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(7);
     expect(rows.every(row => visibleLength(row) <= 50)).toBe(true);
     expect(shortcuts).toContain('Ctrl+C');
+    expect(shortcuts).toContain('Alt+Enter/Ctrl+J');
     expect(shortcuts).toContain('/last-tool');
     expect(shortcuts).toContain('/trace');
   });
@@ -990,21 +1065,27 @@ describe('terminal UI renderer adapter', () => {
     const shortcuts = withStdoutColumns(32, () => renderTerminalShortcuts());
     const rows = stripAnsi(shortcuts).split('\n').filter(Boolean);
 
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(7);
     expect(rows.every(row => visibleLength(row) <= 32)).toBe(true);
     expect(shortcuts).toContain('Enter');
+    expect(shortcuts).toContain('Ctrl+J');
     expect(shortcuts).toContain('/resume');
   });
 
   it('formats terminal permission prompts with scope, cwd, risk, and options', () => {
-    const prompt = withStdoutColumns(180, () => formatTerminalPermissionPrompt({
-      id: 'perm-1',
-      name: 'exec_command',
-      args: {
-        command: 'echo Authorization: Bearer secret-token-123456',
-      },
-      reason: 'Command execution needs approval',
-    }, '/tmp/openhorse-terminal-renderer'));
+    const prompt = withStdoutColumns(180, () =>
+      formatTerminalPermissionPrompt(
+        {
+          id: 'perm-1',
+          name: 'exec_command',
+          args: {
+            command: 'echo Authorization: Bearer secret-token-123456',
+          },
+          reason: 'Command execution needs approval',
+        },
+        '/tmp/openhorse-terminal-renderer'
+      )
+    );
     const rendered = stripAnsi(prompt);
 
     expect(visibleLength(rendered)).toBeLessThanOrEqual(180);
@@ -1018,11 +1099,18 @@ describe('terminal UI renderer adapter', () => {
   });
 
   it('formats path-oriented permission prompts without changing runtime policy', () => {
-    const prompt = withStdoutColumns(120, () => stripAnsi(formatTerminalPermissionPrompt({
-      id: 'perm-2',
-      name: 'edit_file',
-      args: { path: 'src/terminal-ui/launch.ts' },
-    }, '/repo')));
+    const prompt = withStdoutColumns(120, () =>
+      stripAnsi(
+        formatTerminalPermissionPrompt(
+          {
+            id: 'perm-2',
+            name: 'edit_file',
+            args: { path: 'src/terminal-ui/launch.ts' },
+          },
+          '/repo'
+        )
+      )
+    );
 
     expect(prompt).toContain('Allow tool edit_file?');
     expect(prompt).toContain('path=src/terminal-ui/launch.ts');
@@ -1033,14 +1121,21 @@ describe('terminal UI renderer adapter', () => {
 
   it('bounds terminal permission prompts to the active terminal width', () => {
     for (const columns of [80, 60, 40, 24]) {
-      const prompt = withStdoutColumns(columns, () => stripAnsi(formatTerminalPermissionPrompt({
-        id: 'perm-width',
-        name: 'exec_command',
-        args: {
-          command: `npm test -- --runInBand ${'very-long-argument '.repeat(8)}`,
-        },
-        reason: 'Command execution needs approval',
-      }, '/tmp/openhorse-terminal-renderer/with/a/very/long/path')));
+      const prompt = withStdoutColumns(columns, () =>
+        stripAnsi(
+          formatTerminalPermissionPrompt(
+            {
+              id: 'perm-width',
+              name: 'exec_command',
+              args: {
+                command: `npm test -- --runInBand ${'very-long-argument '.repeat(8)}`,
+              },
+              reason: 'Command execution needs approval',
+            },
+            '/tmp/openhorse-terminal-renderer/with/a/very/long/path'
+          )
+        )
+      );
 
       expect(visibleLength(prompt)).toBeLessThanOrEqual(columns);
       expect(prompt).toContain('[y=yes n=no]');
@@ -1049,14 +1144,21 @@ describe('terminal UI renderer adapter', () => {
 
   it('does not overflow extremely narrow terminal permission prompts', () => {
     for (const columns of [18, 12, 10, 1]) {
-      const prompt = withStdoutColumns(columns, () => stripAnsi(formatTerminalPermissionPrompt({
-        id: 'perm-tiny-width',
-        name: 'exec_command',
-        args: {
-          command: `npm test -- --runInBand ${'very-long-argument '.repeat(8)}`,
-        },
-        reason: 'Command execution needs approval',
-      }, '/tmp/openhorse-terminal-renderer/with/a/very/long/path')));
+      const prompt = withStdoutColumns(columns, () =>
+        stripAnsi(
+          formatTerminalPermissionPrompt(
+            {
+              id: 'perm-tiny-width',
+              name: 'exec_command',
+              args: {
+                command: `npm test -- --runInBand ${'very-long-argument '.repeat(8)}`,
+              },
+              reason: 'Command execution needs approval',
+            },
+            '/tmp/openhorse-terminal-renderer/with/a/very/long/path'
+          )
+        )
+      );
 
       expect(visibleLength(prompt)).toBeLessThanOrEqual(columns);
     }
@@ -1166,14 +1268,17 @@ describe('raw terminal editor', () => {
   it('keeps bracketed multiline paste in the buffer and submits it once', () => {
     const submitted: string[] = [];
     const notices: string[] = [];
-    const { editor, writes } = makeRawEditor({ onSubmit: input => submitted.push(input), onNotice: message => notices.push(message) });
+    const { editor, writes } = makeRawEditor({
+      onSubmit: input => submitted.push(input),
+      onNotice: message => notices.push(message),
+    });
     editor.setPrompt('› ');
 
     editor.feed(Buffer.from('\x1b[200~first line\nsecond line\x1b[201~', 'utf8'));
 
     expect(submitted).toEqual([]);
     expect(editor.getBuffer().value).toBe('first line\nsecond line');
-    expect(writes.join('')).toContain('first line⏎ second line');
+    expect(stripAnsi(writes.join(''))).toContain('› first line\r\n  second line');
     expect(notices).toEqual(['Pasted 2 lines. Enter sends once; Ctrl+U clears.']);
 
     editor.feed(Buffer.from('\r'));
@@ -1182,10 +1287,97 @@ describe('raw terminal editor', () => {
     expect(editor.getBuffer().value).toBe('');
   });
 
+  it('inserts real newlines with Alt+Enter and submits the full buffer with Enter', () => {
+    const submitted: string[] = [];
+    const { editor, writes } = makeRawEditor({ onSubmit: input => submitted.push(input) });
+    editor.setPrompt('› ');
+
+    editor.feed(Buffer.from('first line\x1b\rsecond line', 'utf8'));
+
+    expect(submitted).toEqual([]);
+    expect(editor.getBuffer().value).toBe('first line\nsecond line');
+    expect(stripAnsi(writes.join(''))).toContain('› first line\r\n  second line');
+
+    editor.feed(Buffer.from('\r'));
+    expect(submitted).toEqual(['first line\nsecond line']);
+  });
+
+  it('inserts a newline when Escape and Enter arrive in separate chunks', () => {
+    const { editor } = makeRawEditor();
+    editor.setPrompt('› ');
+
+    editor.feed(Buffer.from('first'));
+    editor.feed(Buffer.from('\x1b'));
+    editor.feed(Buffer.from('\r'));
+    editor.feed(Buffer.from('second'));
+
+    expect(editor.getBuffer().value).toBe('first\nsecond');
+  });
+
+  it('uses Ctrl+J as a newline without submitting', () => {
+    const submitted: string[] = [];
+    const { editor } = makeRawEditor({ onSubmit: input => submitted.push(input) });
+    editor.setPrompt('› ');
+
+    editor.feed(Buffer.from('first\nsecond'));
+
+    expect(submitted).toEqual([]);
+    expect(editor.getBuffer().value).toBe('first\nsecond');
+  });
+
+  it('navigates logical lines with arrows and keeps Home/End line-local', () => {
+    const { editor } = makeRawEditor();
+    editor.setPrompt('› ');
+    editor.feed(Buffer.from('\x1b[200~abcd\nxy\n12345\x1b[201~'));
+
+    editor.feed(Buffer.from('\x1b[A'));
+    expect(editor.getBuffer().cursor).toBe(7);
+    editor.feed(Buffer.from('\x1b[A'));
+    expect(editor.getBuffer().cursor).toBe(2);
+    editor.feed(Buffer.from('\x1b[B'));
+    expect(editor.getBuffer().cursor).toBe(7);
+    editor.feed(Buffer.from('\x1b[H'));
+    expect(editor.getBuffer().cursor).toBe(5);
+    editor.feed(Buffer.from('\x1b[F'));
+    expect(editor.getBuffer().cursor).toBe(7);
+  });
+
+  it('keeps large single-line input bounded and visible without throwing', () => {
+    const notices: string[] = [];
+    const { editor, writes } = makeRawEditor({ onNotice: notice => notices.push(notice) });
+    editor.setPrompt('› ');
+    writes.length = 0;
+
+    expect(() => editor.feed(Buffer.from('x'.repeat(1_000_128)))).not.toThrow();
+
+    expect(editor.getBuffer().value).toHaveLength(1_000_000);
+    expect(writes.join('').length).toBeLessThan(500);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain('Input limit reached');
+    expect(notices[0]).toContain('/edit');
+  });
+
+  it('limits multiline rendering to a stable viewport', () => {
+    const { editor, writes } = makeRawEditor();
+    editor.setPrompt('› ');
+    writes.length = 0;
+
+    const value = Array.from({ length: 20 }, (_, index) => `line ${index}`).join('\n');
+    editor.feed(Buffer.from(`\x1b[200~${value}\x1b[201~`, 'utf8'));
+
+    const rendered = stripAnsi(writes.join(''));
+    expect(editor.getBuffer().value).toBe(value);
+    expect((rendered.match(/\r\n/g) ?? [])).toHaveLength(5);
+    expect(rendered).toContain('line 19');
+  });
+
   it('keeps split bracketed paste chunks inside the parser before applying paste heuristics', () => {
     const submitted: string[] = [];
     const notices: string[] = [];
-    const { editor } = makeRawEditor({ onSubmit: input => submitted.push(input), onNotice: message => notices.push(message) });
+    const { editor } = makeRawEditor({
+      onSubmit: input => submitted.push(input),
+      onNotice: message => notices.push(message),
+    });
     editor.setPrompt('› ');
 
     editor.feed(Buffer.from('\x1b[200~', 'utf8'));
@@ -1204,7 +1396,10 @@ describe('raw terminal editor', () => {
   it('treats unbracketed multiline paste chunks as one buffer insert', () => {
     const submitted: string[] = [];
     const notices: string[] = [];
-    const { editor } = makeRawEditor({ onSubmit: input => submitted.push(input), onNotice: message => notices.push(message) });
+    const { editor } = makeRawEditor({
+      onSubmit: input => submitted.push(input),
+      onNotice: message => notices.push(message),
+    });
     editor.setPrompt('› ');
 
     editor.feed(Buffer.from('one\ntwo\nthree', 'utf8'));
@@ -1223,7 +1418,9 @@ describe('raw terminal editor', () => {
     const { editor } = makeRawEditor({ onNotice: message => notices.push(message) });
     editor.setPrompt('› ');
 
-    editor.feed(Buffer.from(Array.from({ length: 20 }, (_, index) => `line ${index}`).join('\n'), 'utf8'));
+    editor.feed(
+      Buffer.from(Array.from({ length: 20 }, (_, index) => `line ${index}`).join('\n'), 'utf8')
+    );
 
     expect(notices[0]).toContain('Pasted 20 lines');
     expect(notices[0]).toContain('/edit is better');
@@ -1289,7 +1486,10 @@ describe('terminal UI multiline composer', () => {
 describe('terminal UI edit command parsing', () => {
   it('detects /edit and optional initial content', () => {
     expect(parseEditInput('/edit')).toEqual({ isEdit: true, initialContent: '' });
-    expect(parseEditInput('   /edit write a plan')).toEqual({ isEdit: true, initialContent: 'write a plan' });
+    expect(parseEditInput('   /edit write a plan')).toEqual({
+      isEdit: true,
+      initialContent: 'write a plan',
+    });
   });
 
   it('does not treat similar commands as editor mode', () => {

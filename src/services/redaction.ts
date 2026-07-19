@@ -15,7 +15,7 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
     /\b((?:OPENAI_API_KEY|DASHSCOPE_API_KEY|ANTHROPIC_API_KEY|XAI_API_KEY)\s*=\s*)(["']?)[^\s"',;]+/g,
     '$1$2[REDACTED_SECRET]',
   ],
-  [/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED_SECRET]'],
+  [/\bsk-[A-Za-z0-9_.-]{8,}\b/g, '[REDACTED_SECRET]'],
   [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer [REDACTED_SECRET]'],
 ];
 

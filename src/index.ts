@@ -95,9 +95,14 @@ export {
 } from './framework';
 export type {
   OpenHorseTool, ToolResult, ToolContext, ToolConfig, PermissionResult, ToolInputJSONSchema, OpenAITool,
-  QueryEvent, QueryParams,
+  AutoCompactNotice, QueryEvent, QueryParams,
   PromptContext, PromptSection,
   AppState,
   ContextCapsule, ContextLedgerEntry, EvidenceRecord, HarnessConfig as ContextHarnessConfig,
   HarnessState, IntentKind, IntentUpdate, PromptAssemblyStats, TaskContract, TurnSummary,
 } from './framework';
+
+export type {
+  ContextUsageSnapshot,
+  ContextUsageSource,
+} from './services/model-context';

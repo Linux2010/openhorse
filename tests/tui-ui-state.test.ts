@@ -2,7 +2,10 @@ import {
   createTuiUiEventSink,
   initialTuiUiState,
   liveTuiTranscriptEntries,
+  liveTuiTranscriptRecords,
+  pendingCommitRecords,
   staticTuiTranscriptEntries,
+  staticTuiTranscriptRecords,
   tuiUiReducer,
   type TuiUiAction,
   type TuiUiState,
@@ -26,6 +29,15 @@ describe('tui-ui state', () => {
 
     expect(staticTuiTranscriptEntries(state).map(entry => entry.id)).toEqual(['u1']);
     expect(liveTuiTranscriptEntries(state).map(entry => entry.id)).toEqual(['a1', 't1']);
+    expect(staticTuiTranscriptRecords(state)[0]).toMatchObject({
+      id: 'u1',
+      finalized: true,
+      revision: 1,
+    });
+    expect(liveTuiTranscriptRecords(state).map(entry => [entry.id, entry.revision])).toEqual([
+      ['a1', 1],
+      ['t1', 1],
+    ]);
   });
 
   it('commits live entries when finalized without reordering transcript history', () => {
@@ -41,6 +53,29 @@ describe('tui-ui state', () => {
       ['a1', 'hello back'],
     ]);
     expect(liveTuiTranscriptEntries(state)).toEqual([]);
+    expect(pendingCommitRecords(state).map(entry => [entry.id, entry.revision])).toEqual([
+      ['u1', 1],
+      ['a1', 2],
+    ]);
+  });
+
+  it('increments revision when finalization applies a content patch', () => {
+    let state = tuiUiReducer(initialTuiUiState, {
+      type: 'appendTranscript',
+      entry: { id: 'a1', role: 'assistant', content: 'draft', live: true },
+    });
+
+    state = tuiUiReducer(state, {
+      type: 'finalizeTranscript',
+      id: 'a1',
+      patch: { content: 'final' },
+    });
+
+    expect(staticTuiTranscriptRecords(state)[0]).toMatchObject({
+      content: 'final',
+      finalized: true,
+      revision: 2,
+    });
   });
 
   it('stores status, prompt, processing, and picker outside transcript history', () => {
@@ -173,22 +208,6 @@ describe('tui-ui state', () => {
     expect(state.overlay).toMatchObject({ type: 'commands', selectedIndex: 1 });
   });
 
-  it('keeps transcript scrollback as state and snaps to bottom on new output', () => {
-    const scrolled = reduce([
-      { type: 'appendTranscript', entry: { id: 'm1', role: 'assistant', content: 'one' } },
-      { type: 'appendTranscript', entry: { id: 'm2', role: 'assistant', content: 'two' } },
-      { type: 'scrollTranscript', delta: 10 },
-    ]);
-
-    expect(scrolled.transcriptScrollOffset).toBe(10);
-
-    const withNewOutput = tuiUiReducer(scrolled, {
-      type: 'appendTranscript',
-      entry: { id: 'm3', role: 'assistant', content: 'three' },
-    });
-    expect(withNewOutput.transcriptScrollOffset).toBe(0);
-  });
-
   it('adapts the existing UiEventSink contract to pure state actions', () => {
     let state = initialTuiUiState;
     const sink = createTuiUiEventSink(
@@ -210,6 +229,39 @@ describe('tui-ui state', () => {
     ]);
     expect(state.statusMessage).toBe('ready');
     expect(state.processing).toBe(false);
+  });
+
+  it('consumes detailed session restore metadata through the TUI event sink', () => {
+    let state = initialTuiUiState;
+    const sink = createTuiUiEventSink(action => {
+      state = tuiUiReducer(state, action);
+    });
+
+    sink.sessionRestored?.({
+      sessionId: 'checkpoint-session',
+      projectPath: '/tmp/project',
+      model: 'glm-5',
+      restoredMessages: 8,
+      messageCount: 25,
+      transcriptMessages: 20,
+      summary: 'durable summary',
+      summaryGeneratedAt: 123456789,
+      summarySource: 'llm',
+      summaryCoveredMessages: 25,
+      checkpointId: 'checkpoint-1',
+    });
+
+    expect(staticTuiTranscriptEntries(state)).toEqual([
+      expect.objectContaining({
+        role: 'status',
+        title: 'resume',
+        content: expect.stringContaining(
+          'restored 8 model-context / 20 transcript messages'
+        ),
+      }),
+    ]);
+    expect(state.transcript[0].content).toContain('(compact checkpoint)');
+    expect(state.transcript[0].content).toContain('Covers: 25 source messages');
   });
 });
 

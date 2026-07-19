@@ -22,6 +22,7 @@ export type {
 
 export { query, DEFAULT_LOOP_BUDGET, QueryLoopError, createFailedLoopStats, createLocalFastPathLoopStats } from './query';
 export type {
+  AutoCompactNotice,
   LoopBudget,
   LoopBudgetBaseProfile,
   LoopBudgetSource,
@@ -29,6 +30,7 @@ export type {
   LoopFinishReason,
   LoopStats,
   QueryEvent,
+  QueryCompactCommit,
   QueryParams,
 } from './query';
 

@@ -7,7 +7,11 @@
 
 import type { Message } from '../llm';
 import type { LLMService } from '../llm';
-import { summaryGenerator, generateLLMSummary, type SummaryOptions } from './summary-generator';
+import {
+  summaryGenerator,
+  generateSummaryWithSource,
+  type SummaryOptions,
+} from './summary-generator';
 import { renderContextCapsule, renderHarnessStateForCompact, type ContextCapsule, type HarnessState } from '../../harness';
 
 // ============================================================================
@@ -46,6 +50,8 @@ export interface CompactResult {
   ratio: number;
   /** 摘要内容 */
   summary: string;
+  summarySource: 'llm' | 'heuristic';
+  summaryGeneratedAt: number;
 }
 
 // ============================================================================
@@ -86,6 +92,8 @@ export async function compactMessages(
       compactedCount: originalCount,
       ratio: 1,
       summary: '',
+      summarySource: 'heuristic',
+      summaryGeneratedAt: Date.now(),
     };
   }
 
@@ -99,15 +107,36 @@ export async function compactMessages(
     ? messages.filter(m => m.role !== 'system')
     : messages;
 
+  const priorSummary = [...toCompact]
+    .reverse()
+    .find(message => message.content?.startsWith('[Context Summary]\n'));
+  const conversationMessages = toCompact.filter(
+    message =>
+      !message.content?.startsWith('[Context Summary]\n') &&
+      !(
+        message.role === 'assistant' &&
+        message.content ===
+          'I understand the context. I will continue the conversation with this background information.'
+      )
+  );
+
   // 3. 保留最近 maxMessages 条
-  const recentMessages = toCompact.slice(-opts.maxMessages!);
-  const oldMessages = toCompact.slice(0, toCompact.length - opts.maxMessages!);
+  const recentMessages = conversationMessages.slice(-opts.maxMessages!);
+  const oldMessages = conversationMessages.slice(
+    0,
+    conversationMessages.length - opts.maxMessages!
+  );
+  if (priorSummary) oldMessages.unshift(priorSummary);
 
   // 4. 对早期消息生成摘要
   // Use LLM-driven summary if LLM service is provided, else fall back to heuristic
-  const summary = opts.llm
-    ? await generateLLMSummary(oldMessages, opts.llm, opts.summaryOptions)
-    : await summaryGenerator(oldMessages, opts.summaryOptions);
+  const generated = opts.llm
+    ? await generateSummaryWithSource(oldMessages, opts.llm, opts.summaryOptions)
+    : {
+        text: await summaryGenerator(oldMessages, opts.summaryOptions),
+        source: 'heuristic' as const,
+      };
+  const summary = generated.text;
 
   // 5. 构建压缩后的消息列表
   let compactedMessages: Message[] = [];
@@ -171,6 +200,8 @@ export async function compactMessages(
     compactedCount,
     ratio,
     summary,
+    summarySource: generated.source,
+    summaryGeneratedAt: Date.now(),
   };
 }
 

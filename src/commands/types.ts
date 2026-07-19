@@ -10,6 +10,7 @@ import type { Store } from '../framework/store';
 import type { LLMService } from '../services/llm';
 import type { OpenHorseCLIConfig, UIRenderer } from '../services/config';
 import type { SessionMeta } from '../services/session-storage';
+import type { CompactCoordinator } from '../services/compact';
 import type {
   EditPreviewRequest,
   RuntimeSessionRestoredEvent,
@@ -29,6 +30,7 @@ export interface CommandContext {
   config: OpenHorseCLIConfig;
   store: Store;
   llm: LLMService | null;
+  compactCoordinator?: CompactCoordinator;
   runtime: OpenHorseRuntime;
   /** 当前会话 ID（用于记录消息） */
   sessionId?: string;

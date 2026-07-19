@@ -40,6 +40,7 @@ describe('Store', () => {
     expect(state.conversationHistory).toEqual([]);
     expect(state.isProcessing).toBe(false);
     expect(state.tokenUsage).toBeNull();
+    expect(state.contextUsage).toBeNull();
     expect(state.config.apiKey).toBe('test-key');
     expect(state.tools).toHaveLength(1);
   });
@@ -72,15 +73,26 @@ describe('Store', () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
-  test('resetConversation clears history and tokenUsage', () => {
+  test('resetConversation clears history, token usage, and context usage', () => {
     const store = new Store({ ...defaultStoreInit });
     store.addMessage({ role: 'user', content: 'hello' });
     store.setTokenUsage({ promptTokens: 10, completionTokens: 20 });
+    store.setContextUsage({
+      modelId: 'gpt-4o',
+      usedTokens: 1000,
+      contextWindow: 128000,
+      percent: 0,
+      source: 'estimated',
+      warningThresholdPercent: 80,
+      autoCompactThresholdPercent: 95,
+      autoCompactEnabled: true,
+    });
 
     store.resetConversation();
     const state = store.getSnapshot();
     expect(state.conversationHistory).toHaveLength(0);
     expect(state.tokenUsage).toBeNull();
+    expect(state.contextUsage).toBeNull();
   });
 
   test('setProcessing updates isProcessing', () => {
@@ -122,6 +134,29 @@ describe('Store', () => {
     store.setTokenUsage({ promptTokens: 100, completionTokens: 200 });
     const state = store.getSnapshot();
     expect(state.tokenUsage).toEqual({ promptTokens: 100, completionTokens: 200 });
+  });
+
+  test('setContextUsage stores current request pressure separately from session tokens', () => {
+    const store = new Store({ ...defaultStoreInit });
+    const contextUsage = {
+      modelId: 'gpt-4o',
+      usedTokens: 102400,
+      contextWindow: 128000,
+      percent: 80,
+      source: 'estimated' as const,
+      warningThresholdPercent: 80,
+      autoCompactThresholdPercent: 95,
+      autoCompactEnabled: true,
+    };
+
+    store.setTokenUsage({ promptTokens: 500000, completionTokens: 100000 });
+    store.setContextUsage(contextUsage);
+
+    expect(store.getSnapshot().contextUsage).toEqual(contextUsage);
+    expect(store.getSnapshot().tokenUsage).toEqual({
+      promptTokens: 500000,
+      completionTokens: 100000,
+    });
   });
 
   test('multiple listeners all get notified', () => {

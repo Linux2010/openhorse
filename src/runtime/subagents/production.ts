@@ -63,8 +63,20 @@ export function createProductionExecuteQuery(deps: SubagentLlmFactoryDeps): Exec
   return async (messages, toolSet, abortSignal): Promise<{ content: string; usage: SubtaskUsage }> => {
     const llm = createLlm(createChildLlmConfig(deps.rootConfig));
     let finalContent = '';
-    let usage: SubtaskUsage = { ...EMPTY_SUBTASK_USAGE };
+    const usage: SubtaskUsage = { ...EMPTY_SUBTASK_USAGE };
     let modelRequests = 0;
+    let observedModelRequests = 0;
+    let providerCostComplete = true;
+    let providerCostUsd = 0;
+    const unsubscribeUsage = typeof llm.subscribeUsage === 'function'
+      ? llm.subscribeUsage(event => {
+          observedModelRequests++;
+          usage.promptTokens += event.usage.promptTokens;
+          usage.completionTokens += event.usage.completionTokens;
+          if (event.usage.costUsd === undefined) providerCostComplete = false;
+          else providerCostUsd += event.usage.costUsd;
+        })
+      : undefined;
 
     try {
       const params: QueryParams = {
@@ -83,7 +95,18 @@ export function createProductionExecuteQuery(deps: SubagentLlmFactoryDeps): Exec
           finalContent = event.content;
         } else if (event.type === 'complete') {
           finalContent = event.content;
-          usage = loopStatsToUsage(event.stats, modelRequests, event.usage?.promptTokens, event.usage?.completionTokens);
+          const loopUsage = loopStatsToUsage(
+            event.stats,
+            modelRequests,
+            event.usage?.promptTokens,
+            event.usage?.completionTokens,
+          );
+          usage.modelRequests = loopUsage.modelRequests;
+          usage.toolCalls = loopUsage.toolCalls;
+          if (observedModelRequests === 0) {
+            usage.promptTokens = loopUsage.promptTokens;
+            usage.completionTokens = loopUsage.completionTokens;
+          }
         } else if (event.type === 'assistant_tool_calls') {
           modelRequests += 1;
           finalContent = event.content;
@@ -98,9 +121,12 @@ export function createProductionExecuteQuery(deps: SubagentLlmFactoryDeps): Exec
       // Re-throw so the runner normalizes into failed/cancelled. The runner
       // never lets this propagate to the root loop.
       throw err;
+    } finally {
+      unsubscribeUsage?.();
     }
 
-    usage.modelRequests = Math.max(usage.modelRequests, modelRequests);
+    usage.modelRequests = Math.max(usage.modelRequests, modelRequests, observedModelRequests);
+    if (observedModelRequests > 0 && providerCostComplete) usage.costUsd = providerCostUsd;
     return { content: finalContent, usage };
   };
 }

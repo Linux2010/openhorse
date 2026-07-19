@@ -1,13 +1,20 @@
 import { renderFrameRows } from '../src/tui-core/frame';
-import { renderTuiUiFrame } from '../src/tui-ui/layout';
+import {
+  measureTuiLiveFrameHeight,
+  renderTuiLiveFrame,
+  renderTuiUiFrame,
+} from '../src/tui-ui/layout';
 import { initialTuiUiState, tuiUiReducer, type TuiUiAction } from '../src/tui-ui/state';
 import type { SessionMeta } from '../src/services/session-storage';
+import { makeToolFinishedEvent, makeToolStartedEvent, resetToolEventSequence } from './test-helpers';
 
 function reduce(actions: TuiUiAction[]) {
   return actions.reduce(tuiUiReducer, initialTuiUiState);
 }
 
 describe('tui-ui layout', () => {
+  beforeEach(() => resetToolEventSequence());
+
   it('renders transcript tail, status, and prompt into one frame with owned cursor', () => {
     const state = reduce([
       { type: 'appendTranscript', entry: { id: 'u1', role: 'user', content: '你好' } },
@@ -31,6 +38,21 @@ describe('tui-ui layout', () => {
       column: 4 + 8,
       visible: true,
     });
+  });
+
+  it('preserves transcript semantic styles in frame cells', () => {
+    const state = reduce([
+      { type: 'appendTranscript', entry: { id: 'u1', role: 'user', content: 'question' } },
+      { type: 'appendTranscript', entry: { id: 'a1', role: 'assistant', content: '# Heading' } },
+    ]);
+    const frame = renderTuiUiFrame(state, { width: 40, height: 10 });
+    const rows = renderFrameRows(frame);
+
+    expect(rows[0]).toContain('› question');
+    expect(frame.rows[0].slice(0, 40).every(cell => cell.style.background)).toBe(true);
+    expect(rows[1]).toContain('Heading');
+    expect(rows[1]).not.toContain('# Heading');
+    expect(frame.rows[1].some(cell => cell.char === 'H' && cell.style.bold)).toBe(true);
   });
 
   it('shows session picker overlay in the frame without mutating transcript state', () => {
@@ -159,25 +181,6 @@ describe('tui-ui layout', () => {
     expect(rows.join('\n')).not.toContain('line-0');
   });
 
-  it('can render older transcript rows when scrolled back', () => {
-    const actions: TuiUiAction[] = [];
-    for (let index = 0; index < 8; index += 1) {
-      actions.push({
-        type: 'appendTranscript',
-        entry: { id: `m${index}`, role: 'assistant', content: `line-${index}` },
-      });
-    }
-    actions.push({ type: 'scrollTranscript', delta: 4 });
-
-    const frame = renderTuiUiFrame(reduce(actions), { width: 24, height: 8, maxTranscriptRows: 3 });
-    const rows = renderFrameRows(frame);
-
-    expect(rows[0]).toContain('line-1');
-    expect(rows[1]).toContain('line-2');
-    expect(rows[2]).toContain('line-3');
-    expect(rows.join('\n')).not.toContain('line-7');
-  });
-
   it('renders tool timeline transcript rows without disturbing status or prompt', () => {
     const state = reduce([
       {
@@ -199,6 +202,35 @@ describe('tui-ui layout', () => {
     expect(rows[8]).toContain('│ ›');
   });
 
+  it('shows only active tools in the live timeline and removes them after finish', () => {
+    const started = reduce([
+      {
+        type: 'toolStarted',
+        event: makeToolStartedEvent({
+          callId: 'call_00_shared-prefix-a',
+          name: 'exec_command',
+          sequence: 7,
+        }),
+      },
+    ]);
+    const runningRows = renderFrameRows(renderTuiLiveFrame(started, { width: 72, height: 10 }));
+    expect(runningRows.join('\n')).toContain('⚙ #7 exec_command running');
+    expect(runningRows.join('\n')).not.toContain('call_00_');
+
+    const finished = tuiUiReducer(started, {
+      type: 'toolFinished',
+      event: makeToolFinishedEvent({
+        callId: 'call_00_shared-prefix-a',
+        name: 'exec_command',
+        sequence: 7,
+        success: true,
+      }),
+    });
+    const readyRows = renderFrameRows(renderTuiLiveFrame(finished, { width: 72, height: 10 }));
+    expect(readyRows.join('\n')).not.toContain('exec_command running');
+    expect(finished.statusState.activeTools).toBe(0);
+  });
+
   // --- 切片1: golden frame tests ---
 
   it('renders correctly at minimum supported dimensions (24x8)', () => {
@@ -215,6 +247,29 @@ describe('tui-ui layout', () => {
     expect(rows[7]).toBe('└──────────────────────┘');
     // Status row is above prompt (height=8 → status row = 4)
     expect(rows[4]).toContain('ready');
+  });
+
+  it('keeps a long multi-line prompt inside a bounded, closed viewport', () => {
+    const value = Array.from({ length: 20 }, (_, index) => `line-${index}`).join('\n');
+    const state = reduce([
+      { type: 'setPrompt', value, cursor: value.length },
+    ]);
+    const frame = renderTuiUiFrame(state, { width: 30, height: 8 });
+    const rows = renderFrameRows(frame);
+
+    expect(rows[0]).toContain('ready');
+    expect(rows.filter(row => row.startsWith('┌'))).toHaveLength(1);
+    expect(rows.filter(row => row.startsWith('└'))).toHaveLength(1);
+    expect(rows[1]).toBe('┌────────────────────────────┐');
+    expect(rows[7]).toBe('└────────────────────────────┘');
+    for (const row of rows.slice(2, 7)) {
+      expect(row.startsWith('│')).toBe(true);
+      expect(row.endsWith('│')).toBe(true);
+    }
+    expect(rows.join('\n')).toContain('line-19');
+    expect(frame.cursor.row).toBeGreaterThanOrEqual(2);
+    expect(frame.cursor.row).toBeLessThan(7);
+    expect(frame.cursor.column).toBeLessThan(29);
   });
 
   it('renders correctly at narrow width 30', () => {
@@ -305,7 +360,7 @@ describe('tui-ui layout', () => {
   it('truncates super-long status text to fit the frame width', () => {
     const state = reduce([
       { type: 'appendTranscript', entry: { id: 'u1', role: 'user', content: 'hello' } },
-      { type: 'setStatus', message: 'model=gpt-4o-very-long-model-name  ctx=85%  tokens=123456/200000  cost=$0.42  session=abc-def-ghi-jkl-mno-pqr' },
+      { type: 'setStatus', message: 'model=gpt-4o-very-long-model-name  ctx=85%  tokens=123456/200000  session=abc-def-ghi-jkl-mno-pqr' },
     ]);
     const frame = renderTuiUiFrame(state, { width: 30, height: 10 });
     const rows = renderFrameRows(frame);
@@ -321,35 +376,91 @@ describe('tui-ui layout', () => {
 
   // --- v0.2.19 completion: rapid consecutive resize ---
 
-  it('produces correct frame after multiple rapid resizes', () => {
-    const state = reduce([
-      { type: 'setPrompt', value: 'test input', cursor: 4 },
+  // --- v0.2.22: renderTuiLiveFrame bandRows-aware tests ---
+
+  it('measures an idle shell-like live block without reserving 75% of the viewport', () => {
+    expect(measureTuiLiveFrameHeight(initialTuiUiState, 120, 23)).toBe(8);
+
+    const streaming = reduce([
+      {
+        type: 'appendTranscript',
+        entry: { id: 'live', role: 'tool', content: Array.from({ length: 30 }, (_, i) => `line-${i}`).join('\n') },
+      },
     ]);
-    // Simulate rapid resize sequence: 40x12 → 80x24 → 24x8 → 60x16
-    const frame1 = renderTuiUiFrame(state, { width: 40, height: 12 });
-    const frame2 = renderTuiUiFrame(state, { width: 80, height: 24 });
-    const frame3 = renderTuiUiFrame(state, { width: 24, height: 8 });
-    const frame4 = renderTuiUiFrame(state, { width: 60, height: 16 });
+    expect(measureTuiLiveFrameHeight(streaming, 120, 23)).toBe(23);
+  });
 
-    // Each frame must have correct dimensions
-    expect(frame1.width).toBe(40);
-    expect(frame1.height).toBe(12);
-    expect(frame2.width).toBe(80);
-    expect(frame2.height).toBe(24);
-    expect(frame3.width).toBe(24);
-    expect(frame3.height).toBe(8);
-    expect(frame4.width).toBe(60);
-    expect(frame4.height).toBe(16);
+  it('renders live frame with prompt at bandRows-relative positions', () => {
+    const state = reduce([
+      // Tool entries are LIVE (not auto-finalized) — they appear in the live region.
+      { type: 'appendTranscript', entry: { id: 't1', role: 'tool', content: '#1 grep pattern' } },
+      { type: 'setStatus', message: 'model=glm-5' },
+      { type: 'setPrompt', value: 'test', cursor: 4 },
+    ]);
 
-    // Cursor must be visible and on the correct prompt row in each frame
-    expect(frame1.cursor).toMatchObject({ visible: true, row: 10 });
-    expect(frame2.cursor).toMatchObject({ visible: true, row: 22 });
-    expect(frame3.cursor).toMatchObject({ visible: true, row: 6 });
-    expect(frame4.cursor).toMatchObject({ visible: true, row: 14 });
+    // 24-row terminal → bandRows = round(24*0.75) = 18
+    const bandRows = 18;
+    const frame = renderTuiLiveFrame(state, { width: 40, height: bandRows });
+    const rows = renderFrameRows(frame);
 
-    // Prompt box borders must be intact in the final frame
-    const rows4 = renderFrameRows(frame4);
-    expect(rows4[13]).toContain('┌');
-    expect(rows4[15]).toContain('└');
+    expect(frame.height).toBe(bandRows);
+    // prompt at bandRows-3 = 15
+    expect(rows[15]).toBe('┌──────────────────────────────────────┐');
+    expect(rows[16]).toContain('│ › test');
+    expect(rows[17]).toBe('└──────────────────────────────────────┘');
+    // status at bandRows-4 = 14
+    expect(rows[14]).toContain('ready');
+    expect(rows[14]).toContain('model=glm-5');
+    // live transcript visible in rows above status
+    expect(rows[0]).toContain('• #1 grep pattern');
+    expect(frame.cursor.visible).toBe(true);
+    expect(frame.cursor.row).toBe(16);
+  });
+
+  it('renderTuiLiveFrame handles minimum band size (8 rows)', () => {
+    const state = reduce([
+      { type: 'setPrompt', value: 'min', cursor: 3 },
+    ]);
+
+    // Very small terminal → band = max(8, round(8*0.75)) = 8
+    const bandRows = 8;
+    const frame = renderTuiLiveFrame(state, { width: 24, height: bandRows });
+
+    expect(frame.height).toBe(8);
+    const rows = renderFrameRows(frame);
+    // prompt at bandRows-3 = 5
+    expect(rows[5]).toContain('┌');
+    expect(rows[6]).toContain('│ › min');
+    expect(rows[7]).toContain('└');
+    // status at bandRows-4 = 4
+    expect(rows[4]).toContain('ready');
+  });
+
+  it('renderTuiLiveFrame excludes committed transcript entries', () => {
+    // User entries are auto-finalized; assistant entries need explicit finalization.
+    const state = reduce([
+      { type: 'appendTranscript', entry: { id: 'u1', role: 'user', content: 'old committed' } },
+    ]);
+
+    // Append a second finalized entry and manually advance committableTranscriptCount
+    // to simulate what runner.tryCommit does after dispatch.
+    const state2 = {
+      ...tuiUiReducer(state, {
+        type: 'appendTranscript',
+        entry: { id: 'u2', role: 'user', content: 'more committed' },
+      }),
+      // Both user entries are auto-finalized. Make them committable.
+      committableTranscriptCount: 2,
+    };
+
+    const frame = renderTuiLiveFrame(state2, { width: 40, height: 18 });
+    const rows = renderFrameRows(frame).join('\n');
+
+    // With committableTranscriptCount=2, no entries are in the live region.
+    // Only status + prompt should be visible.
+    expect(rows).not.toContain('old committed');
+    expect(rows).not.toContain('more committed');
+    // Status row still present
+    expect(rows).toContain('ready');
   });
 });

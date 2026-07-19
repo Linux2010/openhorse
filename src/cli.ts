@@ -11,6 +11,7 @@ import { LLMService } from './services/llm';
 import { loadConfig, isConfigured, resolveUIRenderer, SUPPORTED_UI_RENDERERS, type UIRenderer } from './services/config';
 import { ensureConfigDir } from './services/config-dir';
 import { recordFirstStartTime, incrementSessionCount } from './services/global-config';
+import { appendUsageRecord } from './services/usage-state';
 import { createSession, endSession, readSessionMessages, updateSessionSummary, type SessionMeta } from './services/session-storage';
 import { loadAllMemories } from './memory/storage';
 import { loadProjectInstructions } from './services/project-instructions';
@@ -27,6 +28,7 @@ import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from './se
 import { collectWorkspaceDiff, formatWorkspaceDiff } from './services/workspace-diff';
 import { createCommitPlan, formatCommitPlan } from './services/commit-plan';
 import type { OpenHorseUiRuntime } from './runtime/ui-events';
+import { CompactCoordinator } from './services/compact';
 
 const BRAND = chalk.hex('#FF6B35');
 const ACCENT = chalk.hex('#00D4AA');
@@ -205,6 +207,14 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OpenHorseUiRunt
   });
   await runtime.start();
 
+  const compactCoordinator = new CompactCoordinator({
+    modelId: llm?.getModel() ?? config.model,
+    llm,
+    outputReserveTokens: llm?.getMaxTokens?.(),
+    getContextCapsule: () => store.getSnapshot().harnessState?.capsule,
+    getHarnessState: () => store.getSnapshot().harnessState,
+  });
+
   const mcpReady = (async () => {
     const originalLog = console.log;
     const originalError = console.error;
@@ -239,6 +249,20 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OpenHorseUiRunt
 
   const getSession = (): SessionMeta | null => currentSession;
 
+  const costTracker = store.getSnapshot().costTracker;
+  costTracker.setRecordSink(record => {
+    appendUsageRecord(record, {
+      sessionId: currentSession?.id,
+      projectPath: cwd,
+    });
+  });
+  const unsubscribeLlmUsage = llm?.subscribeUsage(event => {
+    costTracker.record(event.usage, {
+      model: event.model,
+      requestKind: event.operation,
+    });
+  });
+
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -251,6 +275,8 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OpenHorseUiRunt
       endSession(currentSession.id);
     }
 
+    unsubscribeLlmUsage?.();
+
     await mcpManager.disconnectAll();
     await runtime.shutdown();
   };
@@ -261,6 +287,7 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OpenHorseUiRunt
     config,
     store,
     llm,
+    compactCoordinator,
     runtime,
     isConfigured: isConfigured(config),
     mcpReady,
@@ -291,6 +318,7 @@ async function main(): Promise<void> {
       config: runtime.config,
       store: runtime.store,
       llm: runtime.llm,
+      compactCoordinator: runtime.compactCoordinator,
       runtime: runtime.runtime,
       getSession: runtime.getSession,
     });

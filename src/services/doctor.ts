@@ -21,6 +21,7 @@ import type { LLMService } from './llm';
 import type { OpenHorseRuntime } from '../init';
 import { getWarningState } from '../core/warn-dedup';
 import { getAutoCompact } from './compact/auto-compact';
+import type { CompactCoordinator } from './compact/coordinator';
 import { resolveModelContext } from './model-context';
 import { diagnoseProviderConfig, redactProviderSecrets } from './provider-diagnostics';
 
@@ -49,6 +50,7 @@ export interface DoctorContext {
   store: Store;
   llm: LLMService | null;
   runtime: OpenHorseRuntime;
+  compactCoordinator?: CompactCoordinator;
   getSession?: () => SessionMeta | null;
 }
 
@@ -113,7 +115,16 @@ function formatTokenCount(tokens: number): string {
 function summarizeAutoCompact(ctx: DoctorContext): DoctorCheck {
   const modelId = ctx.llm?.getModel() ?? ctx.config.model;
   const modelContext = resolveModelContext(modelId);
-  const stats = getAutoCompact({ modelId }).getStats();
+  if (ctx.compactCoordinator) {
+    ctx.compactCoordinator.configure({
+      modelId,
+      llm: ctx.llm,
+      outputReserveTokens: ctx.llm?.getMaxTokens?.(),
+    });
+  }
+  const stats = (
+    ctx.compactCoordinator?.getAutomatic() ?? getAutoCompact({ modelId })
+  ).getStats();
   const sourceText = modelContext.source === 'fuzzy'
     ? `${modelContext.source}:${modelContext.matchedId}`
     : modelContext.source;

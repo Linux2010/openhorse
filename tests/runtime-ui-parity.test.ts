@@ -57,7 +57,7 @@ function normalizeEvent(event: AgentRuntimeEvent): string {
     case 'tool_finished':
       return `tool_finished:${event.event.callId}:${event.event.name}:${event.event.success}`;
     case 'session_restored':
-      return `session_restored:${event.event.sessionId}:${event.event.restoredMessages}`;
+      return `session_restored:${event.event.sessionId}:${event.event.restoredMessages}:${event.event.transcriptMessages ?? ''}:${event.event.summaryGeneratedAt ?? ''}:${event.event.checkpointId ?? ''}`;
     case 'loop_stats_updated':
       return `loop_stats:${event.stats.finishReason}:${event.stats.llmRequests}:${event.stats.toolCalls}`;
     case 'trace_event_recorded':
@@ -364,6 +364,11 @@ describe('runtime/UI renderer parity contract', () => {
       restoredMessages: 3,
       messageCount: 3,
       summary: 'restored summary',
+      transcriptMessages: 7,
+      summaryGeneratedAt: 123456,
+      summarySource: 'llm' as const,
+      summaryCoveredMessages: 9,
+      checkpointId: 'checkpoint-1',
     };
 
     ui.events.length = 0;
@@ -396,7 +401,9 @@ describe('runtime/UI renderer parity contract', () => {
     runtime.events.push(normalizeEvent({ type: 'session_restored', event }));
 
     expect(ui.events).toEqual(runtime.events);
-    expect(ui.events).toEqual(['session_restored:session-abc:3']);
+    expect(ui.events).toEqual([
+      'session_restored:session-abc:3:7:123456:checkpoint-1',
+    ]);
   });
 
   // --- v0.2.19 completion: TUI-vs-terminal capability parity ---

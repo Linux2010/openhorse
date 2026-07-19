@@ -210,7 +210,7 @@ openhorse:
 
   cli:
     theme: dark
-    show_costs: true
+    show_costs: false
 `;
 
     return template;

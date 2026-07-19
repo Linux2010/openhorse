@@ -22,6 +22,33 @@ describe('parseInput', () => {
     expect(result.args).toBe('hello world');
   });
 
+  test('parses an absolute path followed by a question as chat', () => {
+    const input = '/Users/hope/linux2010/my-skills/vendor/skills 做啥的？';
+    const result = parseInput(input);
+
+    expect(result).toEqual({ isCommand: false, name: '', args: input });
+  });
+
+  test('does not treat a slash-prefixed markdown skill locator as a command', () => {
+    const input = '/[$chronicle](/Users/hope/.codex/skills/chronicle/SKILL.md)';
+
+    expect(parseInput(input)).toEqual({ isCommand: false, name: '', args: input });
+  });
+
+  test('parses a root-level file path as chat', () => {
+    const input = '/README.md explain this';
+
+    expect(parseInput(input)).toEqual({ isCommand: false, name: '', args: input });
+  });
+
+  test('keeps unknown simple slash names as commands', () => {
+    expect(parseInput('/unknown argument')).toEqual({
+      isCommand: true,
+      name: 'unknown',
+      args: 'argument',
+    });
+  });
+
   test('handles empty input', () => {
     const result = parseInput('');
     expect(result.isCommand).toBe(false);
@@ -90,6 +117,14 @@ describe('createCompleter', () => {
     const [completions, line] = completer('hello');
     expect(completions).toEqual([]);
     expect(line).toBe('hello');
+  });
+
+  test('does not complete absolute paths as commands', () => {
+    const completer = createCompleter();
+    const [completions, line] = completer('/Users/hope');
+
+    expect(completions).toEqual([]);
+    expect(line).toBe('/Users/hope');
   });
 
   test('returns all commands for just slash', () => {

@@ -8,8 +8,10 @@ import {
   appendSessionMessage,
   appendSessionMessages,
   appendSessionTraceEvent,
+  commitSessionCompactCheckpoint,
   endSession,
   loadSessionHarnessState,
+  loadSessionTranscriptMessages,
   loadSessionHistory,
   loadSessionMeta,
   removeLastIncompleteAssistantMessage,
@@ -20,7 +22,18 @@ import {
   updateSessionSummary,
 } from '../services/session-storage';
 import { isConfigured } from '../services/config';
-import { query, buildSystemPrompt, QueryLoopError, createFailedLoopStats, createLocalFastPathLoopStats, type LoopFinishReason, type LoopStats, type PromptContext, type QueryEvent } from '../framework';
+import {
+  query,
+  buildSystemPrompt,
+  QueryLoopError,
+  createFailedLoopStats,
+  createLocalFastPathLoopStats,
+  type LoopFinishReason,
+  type LoopStats,
+  type PromptContext,
+  type QueryEvent,
+  type QueryCompactCommit,
+} from '../framework';
 import { createContextHarness } from '../harness';
 import type { HarnessState } from '../harness/types';
 import { executeTool, getRuntimeTools } from '../tools';
@@ -37,7 +50,11 @@ import {
 import { buildReferencedFilesPrompt } from '../services/file-context';
 import { refreshProjectInstructions } from '../services/prompt-context';
 import { formatBytes } from '../services/format';
-import { captureWorkspaceSnapshot, diffWorkspaceSnapshots, type WorkspaceSnapshot } from '../services/workspace-state';
+import {
+  captureWorkspaceSnapshot,
+  diffWorkspaceSnapshots,
+  type WorkspaceSnapshot,
+} from '../services/workspace-state';
 import {
   collectVerificationCommandResult,
   formatVerificationGateNotice,
@@ -63,7 +80,13 @@ import {
   toolActivityFromFinished,
   toolActivityFromStarted,
 } from './ui-view-model';
-import { agentStepStatus, batchingSuggestion, runningToolsStatus, verifyingStatus, verificationGateStatus } from './agent-status';
+import {
+  agentStepStatus,
+  batchingSuggestion,
+  runningToolsStatus,
+  verifyingStatus,
+  verificationGateStatus,
+} from './agent-status';
 import { resolveRuntimeLoopBudget } from './loop-budget';
 
 const ANSI_PATTERN = /\x1b\[[0-9;?]*[A-Za-z]/g;
@@ -86,7 +109,9 @@ function isAbortError(error: unknown, abortSignal?: AbortSignal): boolean {
 function errorLayerForChatError(error: unknown): import('./ui-events').ErrorLayer {
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
-  if (/NotEnoughCvError|code:\s*11210|provider|quota|rate.?limit|timeout|connection/i.test(message)) {
+  if (
+    /NotEnoughCvError|code:\s*11210|provider|quota|rate.?limit|timeout|connection/i.test(message)
+  ) {
     return 'provider';
   }
   if (/tool|command|exec_command|write_file|edit_file/i.test(message)) {
@@ -124,7 +149,18 @@ function compactMiddle(text: string, maxLength: number): string {
 }
 
 function compactToolArgs(args: Record<string, unknown>, maxLength = 160): string {
-  for (const key of ['path', 'file_path', 'file', 'cwd', 'command', 'pattern', 'query', 'url', 'target', 'sessionId']) {
+  for (const key of [
+    'path',
+    'file_path',
+    'file',
+    'cwd',
+    'command',
+    'pattern',
+    'query',
+    'url',
+    'target',
+    'sessionId',
+  ]) {
     const value = args[key];
     if (typeof value === 'string') {
       return compactMiddle(value, maxLength);
@@ -158,34 +194,32 @@ function fullToolArgsForTrace(name: string, args: Record<string, unknown>): stri
 function buildTraceArgsDetails(
   projectPath: string | undefined,
   name: string,
-  args: Record<string, unknown>,
+  args: Record<string, unknown>
 ): TraceArgsDetails {
   const argsSummary = compactToolArgs(args);
   const fullArgs = redactTraceText(fullToolArgsForTrace(name, args)).trim();
   const argsBytes = byteLength(fullArgs);
 
   if (
-    !projectPath
-    || !fullArgs
-    || fullArgs === redactTraceText(argsSummary)
-    || argsBytes <= TRACE_ARGS_ARTIFACT_THRESHOLD_BYTES
+    !projectPath ||
+    !fullArgs ||
+    fullArgs === redactTraceText(argsSummary) ||
+    argsBytes <= TRACE_ARGS_ARTIFACT_THRESHOLD_BYTES
   ) {
     return { argsSummary };
   }
 
   const artifact = storeArtifact(projectPath, `${name}-args`, fullArgs, argsBytes);
-  return artifact
-    ? { argsSummary, argsArtifactId: artifact.id, argsBytes }
-    : { argsSummary };
+  return artifact ? { argsSummary, argsArtifactId: artifact.id, argsBytes } : { argsSummary };
 }
 
 function parseToolCallArgsForRuntime(
-  toolCall: NonNullable<Message['tool_calls']>[number],
+  toolCall: NonNullable<Message['tool_calls']>[number]
 ): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(toolCall.function.arguments || '{}');
     return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
+      ? (parsed as Record<string, unknown>)
       : null;
   } catch {
     return null;
@@ -201,7 +235,7 @@ function resolveProjectScopedPath(cwd: string, filePath: string): string | null 
 
 function checkpointTargetsFromToolCalls(
   cwd: string,
-  toolCalls: NonNullable<Message['tool_calls']>,
+  toolCalls: NonNullable<Message['tool_calls']>
 ): string[] {
   const targets = new Set<string>();
   for (const toolCall of toolCalls) {
@@ -224,7 +258,7 @@ function createPreToolCheckpoint(
   turnId: string,
   checkpointId: string,
   cwd: string,
-  toolCalls: NonNullable<Message['tool_calls']>,
+  toolCalls: NonNullable<Message['tool_calls']>
 ): { created: boolean; targetCount: number; risky: boolean } {
   const targets = checkpointTargetsFromToolCalls(cwd, toolCalls);
   if (targets.length === 0) return { created: false, targetCount: 0, risky: false };
@@ -242,7 +276,9 @@ function createPreToolCheckpoint(
     checkpointFiles: checkpoint?.files.map(file => file.path) ?? [],
     workspaceFiles: relativeTargets,
     note: checkpoint
-      ? (risky ? 'risky_multi_file_checkpoint' : 'pre_edit_checkpoint')
+      ? risky
+        ? 'risky_multi_file_checkpoint'
+        : 'pre_edit_checkpoint'
       : 'pre_edit_checkpoint_skipped',
   });
   return { created: true, targetCount: targets.length, risky };
@@ -261,11 +297,15 @@ function compactTraceError(error: unknown): string {
   return compactMiddle(message, 240);
 }
 
-function getLastRequestDiagnostics(llm: OpenHorseUiRuntime['llm']): LLMRequestDiagnostics | undefined {
+function getLastRequestDiagnostics(
+  llm: OpenHorseUiRuntime['llm']
+): LLMRequestDiagnostics | undefined {
   if (!llm) return undefined;
-  const reader = (llm as unknown as {
-    getLastRequestDiagnostics?: () => LLMRequestDiagnostics;
-  }).getLastRequestDiagnostics;
+  const reader = (
+    llm as unknown as {
+      getLastRequestDiagnostics?: () => LLMRequestDiagnostics;
+    }
+  ).getLastRequestDiagnostics;
   return typeof reader === 'function' ? reader.call(llm) : undefined;
 }
 
@@ -277,7 +317,9 @@ function formatWorkspaceFileForTrace(file: WorkspaceSnapshot['files'][number]): 
   const metadata = [
     typeof file.sizeBytes === 'number' ? `${file.sizeBytes}B` : '',
     typeof file.mtimeMs === 'number' ? `mtime=${file.mtimeMs}` : '',
-  ].filter(Boolean).join(' ');
+  ]
+    .filter(Boolean)
+    .join(' ');
   return `${file.status} ${file.path}${metadata ? ` (${metadata})` : ''}`;
 }
 
@@ -286,7 +328,7 @@ function appendWorkspaceSnapshotTrace(
   sessionId: string | undefined,
   turnId: string,
   phase: 'pre_turn' | 'post_turn',
-  snapshot: WorkspaceSnapshot,
+  snapshot: WorkspaceSnapshot
 ): void {
   if (!sessionId) return;
   recordTraceEvent(events, sessionId, {
@@ -307,7 +349,7 @@ function appendWorkspaceDeltaTrace(
   sessionId: string | undefined,
   turnId: string,
   before: WorkspaceSnapshot,
-  after: WorkspaceSnapshot,
+  after: WorkspaceSnapshot
 ): ReturnType<typeof diffWorkspaceSnapshots> {
   const delta = diffWorkspaceSnapshots(before, after);
   if (sessionId) {
@@ -327,27 +369,27 @@ function appendWorkspaceDeltaTrace(
 }
 
 function workspaceDeltaHasTurnChanges(delta: ReturnType<typeof diffWorkspaceSnapshots>): boolean {
-  return delta.newFilesByTurn.length > 0
-    || delta.changedByTurn.length > 0
-    || delta.resolvedByTurn.length > 0;
+  return (
+    delta.newFilesByTurn.length > 0 ||
+    delta.changedByTurn.length > 0 ||
+    delta.resolvedByTurn.length > 0
+  );
 }
 
 function formatFailureRecoveryNotice(
   turnId: string,
   delta: ReturnType<typeof diffWorkspaceSnapshots>,
-  checkpointIds: string[],
+  checkpointIds: string[]
 ): string {
-  const files = compactPathList([
-    ...delta.newFilesByTurn,
-    ...delta.changedByTurn,
-    ...delta.resolvedByTurn,
-  ], 8);
-  const fileText = files.length > 0
-    ? files.join(', ')
-    : 'workspace changes recorded';
-  const checkpointText = checkpointIds.length > 0
-    ? ` Checkpoints: ${checkpointIds.join(', ')}. Preview rollback with /checkpoint restore <id>; restore each listed checkpoint if multiple.`
-    : '';
+  const files = compactPathList(
+    [...delta.newFilesByTurn, ...delta.changedByTurn, ...delta.resolvedByTurn],
+    8
+  );
+  const fileText = files.length > 0 ? files.join(', ') : 'workspace changes recorded';
+  const checkpointText =
+    checkpointIds.length > 0
+      ? ` Checkpoints: ${checkpointIds.join(', ')}. Preview rollback with /checkpoint restore <id>; restore each listed checkpoint if multiple.`
+      : '';
   return `Turn failed after modifying files: ${fileText}. Inspect /trace ${turnId}.${checkpointText}`;
 }
 
@@ -355,7 +397,7 @@ function appendVerificationProfileTrace(
   events: UiEventSink,
   sessionId: string | undefined,
   turnId: string,
-  profile: VerificationProfile,
+  profile: VerificationProfile
 ): void {
   if (!sessionId || profile.changedFiles.length === 0) return;
   recordTraceEvent(events, sessionId, {
@@ -374,7 +416,7 @@ function appendVerificationResultTrace(
   events: UiEventSink,
   sessionId: string | undefined,
   turnId: string,
-  result: VerificationCommandResult,
+  result: VerificationCommandResult
 ): void {
   if (!sessionId) return;
   recordTraceEvent(events, sessionId, {
@@ -392,7 +434,7 @@ function appendVerificationSummaryTrace(
   sessionId: string | undefined,
   turnId: string,
   summary: VerificationSummary,
-  changedFiles: string[],
+  changedFiles: string[]
 ): void {
   if (!sessionId || changedFiles.length === 0) return;
   recordTraceEvent(events, sessionId, {
@@ -423,16 +465,23 @@ function withVerificationLoopStats(stats: LoopStats, summary: VerificationSummar
     verificationPassedCommands: compactVerificationCommands(summary.passedCommands),
     verificationFailedCommands: compactVerificationCommands(summary.failedCommands),
     verificationMissingCommands: compactVerificationCommands(summary.missingCommands),
-    verificationSkippedReason: summary.skippedReason ? redactTraceText(summary.skippedReason) : undefined,
+    verificationSkippedReason: summary.skippedReason
+      ? redactTraceText(summary.skippedReason)
+      : undefined,
   };
 }
 
-function shouldRecordVerificationLoopStats(profile: VerificationProfile, summary: VerificationSummary): boolean {
-  return profile.changedFiles.length > 0
-    || summary.commandsRun.length > 0
-    || summary.passedCommands.length > 0
-    || summary.failedCommands.length > 0
-    || summary.missingCommands.length > 0;
+function shouldRecordVerificationLoopStats(
+  profile: VerificationProfile,
+  summary: VerificationSummary
+): boolean {
+  return (
+    profile.changedFiles.length > 0 ||
+    summary.commandsRun.length > 0 ||
+    summary.passedCommands.length > 0 ||
+    summary.failedCommands.length > 0 ||
+    summary.missingCommands.length > 0
+  );
 }
 
 function appendPostWorkspaceTrace(
@@ -441,7 +490,7 @@ function appendPostWorkspaceTrace(
   turnId: string,
   cwd: string,
   before: WorkspaceSnapshot,
-  verificationResults: VerificationCommandResult[] = [],
+  verificationResults: VerificationCommandResult[] = []
 ): {
   delta: ReturnType<typeof diffWorkspaceSnapshots>;
   profile: VerificationProfile;
@@ -453,13 +502,7 @@ function appendPostWorkspaceTrace(
   const profile = selectVerificationProfile(cwd, delta.changedByTurn);
   const summary = summarizeVerificationState(profile, verificationResults);
   appendVerificationProfileTrace(events, sessionId, turnId, profile);
-  appendVerificationSummaryTrace(
-    events,
-    sessionId,
-    turnId,
-    summary,
-    profile.changedFiles,
-  );
+  appendVerificationSummaryTrace(events, sessionId, turnId, summary, profile.changedFiles);
   return { delta, profile, summary };
 }
 
@@ -481,7 +524,7 @@ function appendAssistantNotice(messages: SessionMessage[], notice: string): void
 function recordTraceEvent(
   events: UiEventSink,
   sessionId: string | undefined,
-  event: Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number },
+  event: Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number }
 ): SessionTraceEvent | null {
   if (!sessionId) return null;
   const traceEvent = appendSessionTraceEvent(sessionId, event);
@@ -495,7 +538,7 @@ function recordProviderTraceEvents(
   events: UiEventSink,
   sessionId: string | undefined,
   turnId: string,
-  stats: LoopStats,
+  stats: LoopStats
 ): void {
   if ((stats.providerRetryCount ?? 0) > 0) {
     recordTraceEvent(events, sessionId, {
@@ -568,11 +611,51 @@ function toolFinishContent(event: ToolResultEvent): string {
   );
 }
 
+function structuredToolStartActivity(event: ToolCallEvent, seq: number): StructuredToolActivity {
+  const command =
+    event.name === 'exec_command' && typeof event.args.command === 'string'
+      ? event.args.command
+      : undefined;
+  return {
+    state: 'running',
+    name: event.name,
+    detail: command ? '' : compactToolArgs(event.args, TOOL_TRANSCRIPT_ARG_BUDGET),
+    command,
+    body: '',
+    seq,
+  };
+}
+
+function structuredToolFinishActivity(event: ToolResultEvent, seq: number): StructuredToolActivity {
+  const modelVisible = parseToolResultEnvelope(event.modelVisibleResult);
+  const command =
+    event.name === 'exec_command' && typeof event.args.command === 'string'
+      ? event.args.command
+      : undefined;
+  return {
+    state: event.success ? 'success' : 'error',
+    name: event.name,
+    detail: command ? '' : compactToolArgs(event.args, TOOL_TRANSCRIPT_ARG_BUDGET),
+    command,
+    duration: `${event.duration}ms`,
+    summary: event.summary?.split(/\r?\n/u, 1)[0],
+    outputBytes: event.outputBytes,
+    body: modelVisible.output,
+    error: event.error,
+    seq,
+    artifactHint: event.artifactRef ? `/artifacts show ${event.artifactRef.id} --full` : undefined,
+  };
+}
+
 function isSyntheticCompactContext(content: string): boolean {
-  return content.startsWith('[OpenHorse Context State v2]')
-    || content.startsWith('[Context Summary]')
-    || content.startsWith('I will continue from this OpenHorse Context State')
-    || content.startsWith('I understand the context. I will continue the conversation with this background information.');
+  return (
+    content.startsWith('[OpenHorse Context State v2]') ||
+    content.startsWith('[Context Summary]') ||
+    content.startsWith('I will continue from this OpenHorse Context State') ||
+    content.startsWith(
+      'I understand the context. I will continue the conversation with this background information.'
+    )
+  );
 }
 
 function sessionToolCallSummaries(message: SessionMessage): Array<{ id: string; content: string }> {
@@ -588,13 +671,17 @@ function sessionToolCallSummaries(message: SessionMessage): Array<{ id: string; 
 
 function parseToolCallArgs(rawArgs: string | undefined): Record<string, unknown> {
   try {
-    return rawArgs ? JSON.parse(rawArgs) as Record<string, unknown> : {};
+    return rawArgs ? (JSON.parse(rawArgs) as Record<string, unknown>) : {};
   } catch {
     return rawArgs ? { arguments: rawArgs } : {};
   }
 }
 
-function parseSessionToolResult(content: string): { success: boolean; error?: string; summary?: string } {
+function parseSessionToolResult(content: string): {
+  success: boolean;
+  error?: string;
+  summary?: string;
+} {
   try {
     const parsed = JSON.parse(content) as { success?: unknown; error?: unknown; summary?: unknown };
     return {
@@ -628,16 +715,14 @@ function sessionToolResultSummary(
   const args = parseToolCallArgs(call.function.arguments);
   const detail = compactToolArgs(args);
   const parsed = parseSessionToolResult(message.content);
-  const firstLine = parsed.summary || `${parsed.success ? '✓' : '✗'} ${call.function.name}${detail ? ` ${detail}` : ''}`;
+  const firstLine =
+    parsed.summary ||
+    `${parsed.success ? '✓' : '✗'} ${call.function.name}${detail ? ` ${detail}` : ''}`;
   return parsed.error ? `${firstLine}\nError: ${parsed.error}` : firstLine;
 }
 
 export function sessionMessagesToTranscriptEntries(sessionId: string): TranscriptEntry[] {
-  const session = loadSessionMeta(sessionId);
-  const displayStartTime = session?.transcriptDisplayStartTime;
-  const messages = readSessionMessages(sessionId).filter(message =>
-    typeof displayStartTime !== 'number' || (message.timestamp ?? 0) >= displayStartTime
-  );
+  const messages = loadSessionTranscriptMessages(sessionId);
   const entries: TranscriptEntry[] = [];
   const toolCallsById = new Map<string, NonNullable<SessionMessage['tool_calls']>[number]>();
   const completedToolCallIds = new Set<string>();
@@ -666,7 +751,11 @@ export function sessionMessagesToTranscriptEntries(sessionId: string): Transcrip
       }
       for (const summary of sessionToolCallSummaries(message)) {
         if (!completedToolCallIds.has(summary.id)) {
-          entries.push({ id: `${idBase}-tool-call-${entries.length}`, role: 'tool', content: summary.content });
+          entries.push({
+            id: `${idBase}-tool-call-${entries.length}`,
+            role: 'tool',
+            content: summary.content,
+          });
         }
       }
       return;
@@ -677,7 +766,11 @@ export function sessionMessagesToTranscriptEntries(sessionId: string): Transcrip
       entries.push({
         id: `${idBase}-tool`,
         role: 'tool',
-        content: summary ?? (message.toolCallId ? `Tool result ${message.toolCallId}\n${message.content}` : message.content),
+        content:
+          summary ??
+          (message.toolCallId
+            ? `Tool result ${message.toolCallId}\n${message.content}`
+            : message.content),
       });
       return;
     }
@@ -698,7 +791,10 @@ export interface AssistantStreamPresenter {
   replaceMessage(content: string): void;
 }
 
-export function createAssistantStreamPresenter(events: UiEventSink, abortSignal?: AbortSignal): AssistantStreamPresenter {
+export function createAssistantStreamPresenter(
+  events: UiEventSink,
+  abortSignal?: AbortSignal
+): AssistantStreamPresenter {
   let activeSegmentText = '';
   let activeEntryId: string | null = null;
 
@@ -787,21 +883,30 @@ function parseLocalFastPath(input: string): LocalFastPathAction | null {
 
   const readMatch = /^(?:read|读取)\s+(.+)$/i.exec(text);
   const readTarget = readMatch?.[1]?.trim();
-  const looksLikePath = Boolean(readTarget)
-    && !/\s/.test(readTarget!)
-    && (/[/\\.]/.test(readTarget!) || readTarget!.startsWith('~'));
+  const looksLikePath =
+    Boolean(readTarget) &&
+    !/\s/.test(readTarget!) &&
+    (/[/\\.]/.test(readTarget!) || readTarget!.startsWith('~'));
   if (readTarget && looksLikePath) {
     return { tool: 'read_file', args: { path: readTarget }, label: `read ${readTarget}` };
   }
 
   const grepMatch = /^(?:grep|搜索)\s+(.+)$/i.exec(text);
   if (grepMatch?.[1]?.trim()) {
-    return { tool: 'grep', args: { pattern: grepMatch[1].trim() }, label: `grep ${grepMatch[1].trim()}` };
+    return {
+      tool: 'grep',
+      args: { pattern: grepMatch[1].trim() },
+      label: `grep ${grepMatch[1].trim()}`,
+    };
   }
 
   const runTestMatch = /^(?:run\s+test|运行测试)\s*[:：]\s*(.+)$/i.exec(text);
   if (runTestMatch?.[1]?.trim()) {
-    return { tool: 'exec_command', args: { command: runTestMatch[1].trim() }, label: `run test: ${runTestMatch[1].trim()}` };
+    return {
+      tool: 'exec_command',
+      args: { command: runTestMatch[1].trim() },
+      label: `run test: ${runTestMatch[1].trim()}`,
+    };
   }
 
   return null;
@@ -810,7 +915,7 @@ function parseLocalFastPath(input: string): LocalFastPathAction | null {
 function formatLocalFastPathAssistantContent(
   action: LocalFastPathAction,
   rawResult: string,
-  projectPath: string,
+  projectPath: string
 ): { content: string; artifactRef?: { id: string; outputBytes: number } } {
   const envelope = parseToolResultEnvelope(rawResult);
   const rawOutput = typeof envelope.output === 'string' ? envelope.output : '';
@@ -843,7 +948,10 @@ function formatLocalFastPathAssistantContent(
   }
 
   if (artifactRef) {
-    lines.push('', `Full output: /artifacts show ${artifactRef.id} --full (${formatBytes(artifactRef.outputBytes)})`);
+    lines.push(
+      '',
+      `Full output: /artifacts show ${artifactRef.id} --full (${formatBytes(artifactRef.outputBytes)})`
+    );
   }
   lines.push('', 'Preview:', preview);
   return { content: lines.join('\n'), artifactRef };
@@ -856,7 +964,17 @@ export interface ToolEventPresenter {
 }
 
 export function createToolEventPresenter(events: UiEventSink): ToolEventPresenter {
-  const runningToolEntries = new Map<string, { entryId: string; name: string; args: Record<string, unknown>; sequence: number; batchCount?: number; batchIndex?: number }>();
+  const runningToolEntries = new Map<
+    string,
+    {
+      entryId: string;
+      name: string;
+      args: Record<string, unknown>;
+      sequence: number;
+      batchCount?: number;
+      batchIndex?: number;
+    }
+  >();
   let toolSequenceCounter = 0;
 
   return {
@@ -866,12 +984,7 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
         role: 'tool',
         title: 'tool',
         content: toolStartContent(event),
-        toolActivity: {
-          state: 'running',
-          name: event.name,
-          detail: '',
-          seq,
-        },
+        toolActivity: structuredToolStartActivity(event, seq),
       });
       runningToolEntries.set(event.callId, {
         entryId,
@@ -895,16 +1008,7 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
       const content = toolFinishContent(event);
       const stored = runningToolEntries.get(event.callId);
       const seq = stored?.sequence ?? ++toolSequenceCounter;
-      const state = event.success ? 'success' : 'error';
-
-      const toolActivity: StructuredToolActivity = {
-        state,
-        name: event.name,
-        detail: '',
-        duration: `${event.duration}ms`,
-        error: event.error,
-        seq,
-      };
+      const toolActivity = structuredToolFinishActivity(event, seq);
 
       if (stored) {
         events.finalize(stored.entryId, {
@@ -950,6 +1054,7 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
             state: 'skipped',
             name: entry.name,
             detail: '',
+            body: '',
             error: reason,
             seq: entry.sequence,
           },
@@ -972,13 +1077,17 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
   };
 }
 
-async function captureConsoleOutput(fn: () => Promise<CommandResult> | CommandResult): Promise<{ result: CommandResult; output: string }> {
+async function captureConsoleOutput(
+  fn: () => Promise<CommandResult> | CommandResult
+): Promise<{ result: CommandResult; output: string }> {
   const lines: string[] = [];
   const originalLog = console.log;
   const originalError = console.error;
   const originalWarn = console.warn;
   const capture = (...args: unknown[]) => {
-    lines.push(stripAnsi(args.map(arg => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')));
+    lines.push(
+      stripAnsi(args.map(arg => (typeof arg === 'string' ? arg : JSON.stringify(arg))).join(' '))
+    );
   };
 
   console.log = capture;
@@ -1003,7 +1112,9 @@ export interface AgentChatControllerOptions {
   confirmToolUse?: Parameters<typeof query>[0]['confirmToolUse'];
   uiCapabilities?: UiRendererCapabilities;
   uiRenderer?: CommandUiRenderer;
-  onVerificationStateChange?: (state: 'pending' | 'running' | 'passed' | 'failed' | 'gated') => void;
+  onVerificationStateChange?: (
+    state: 'pending' | 'running' | 'passed' | 'failed' | 'gated'
+  ) => void;
   /**
    * R6: returns true when a tool permission request is awaiting user decision.
    * When provided, the subagent policy gate uses it to prevent background
@@ -1017,7 +1128,12 @@ export interface AgentChatControllerOptions {
    * it into its shared CostTracker. The observed values are never clamped;
    * `/cost` and telemetry must reflect the truth.
    */
-  onChildUsage?: (taskId: string, role: import('./subagents/types').SubagentRole, usage: import('./subagents/types').SubtaskUsage, modelLabel?: string) => void;
+  onChildUsage?: (
+    taskId: string,
+    role: import('./subagents/types').SubagentRole,
+    usage: import('./subagents/types').SubtaskUsage,
+    modelLabel?: string
+  ) => void;
 }
 
 /** @deprecated Use AgentChatControllerOptions. Chat execution is renderer-independent. */
@@ -1027,7 +1143,7 @@ export class AgentChatController {
   constructor(
     private readonly runtime: OpenHorseUiRuntime,
     private readonly events: UiEventSink,
-    private readonly controllerOptions: AgentChatControllerOptions = {},
+    private readonly controllerOptions: AgentChatControllerOptions = {}
   ) {}
 
   private setLoopStats(stats: LoopStats): void {
@@ -1063,7 +1179,7 @@ export class AgentChatController {
 
     const command = findCommand(parsed.name);
     if (!command) {
-      if (hasMatchingSkill(text)) {
+      if (hasMatchingSkill(text, this.runtime.cwd)) {
         await this.runChat(text, options);
         return;
       }
@@ -1072,9 +1188,10 @@ export class AgentChatController {
       this.events.append({
         role: 'error',
         title: 'unknown command',
-        content: suggestions.length > 0
-          ? `Unknown command: /${parsed.name}\nDid you mean: ${suggestions.map(item => `/${item}`).join(', ')}?`
-          : `Unknown command: /${parsed.name}`,
+        content:
+          suggestions.length > 0
+            ? `Unknown command: /${parsed.name}\nDid you mean: ${suggestions.map(item => `/${item}`).join(', ')}?`
+            : `Unknown command: /${parsed.name}`,
         errorLayer: 'runtime',
       });
       return;
@@ -1126,9 +1243,12 @@ export class AgentChatController {
   private async runLocalFastPath(
     input: string,
     action: LocalFastPathAction,
-    options: RunInputOptions = {},
+    options: RunInputOptions = {}
   ): Promise<void> {
-    const activeSession = this.runtime.getSession() ?? this.runtime.ensureSession() ?? loadSessionMeta(this.runtime.getSession()?.id ?? '');
+    const activeSession =
+      this.runtime.getSession() ??
+      this.runtime.ensureSession() ??
+      loadSessionMeta(this.runtime.getSession()?.id ?? '');
     const sessionId = activeSession?.id;
     const turnId = traceTurnId(options.turnId);
     const localCallId = `local-${turnId}`;
@@ -1177,7 +1297,9 @@ export class AgentChatController {
         throw new LocalFastPathBlockedError(reason);
       }
       if (permission?.behavior === 'ask') {
-        throw new LocalFastPathBlockedError(permission.reason || 'Local fast path requires an allow-safe command.');
+        throw new LocalFastPathBlockedError(
+          permission.reason || 'Local fast path requires an allow-safe command.'
+        );
       }
 
       if (sessionId) {
@@ -1196,10 +1318,15 @@ export class AgentChatController {
       });
       const duration = Date.now() - start;
       const envelope = parseToolResultEnvelope(result);
-      const outputBytes = typeof envelope.outputBytes === 'number'
-        ? envelope.outputBytes
-        : Buffer.byteLength(result, 'utf8');
-      const formattedLocalResult = formatLocalFastPathAssistantContent(action, result, this.runtime.cwd);
+      const outputBytes =
+        typeof envelope.outputBytes === 'number'
+          ? envelope.outputBytes
+          : Buffer.byteLength(result, 'utf8');
+      const formattedLocalResult = formatLocalFastPathAssistantContent(
+        action,
+        result,
+        this.runtime.cwd
+      );
       const assistantContent = formattedLocalResult.content;
       const stats = createLocalFastPathLoopStats({
         finishReason: envelope.success ? 'completed' : 'failed',
@@ -1211,23 +1338,25 @@ export class AgentChatController {
         summarizedBytes: outputBytes,
       });
 
+      const localToolResultEvent: ToolResultEvent = {
+        type: 'tool_result',
+        name: action.tool,
+        args: action.args,
+        callId: localCallId,
+        result,
+        modelVisibleResult: result,
+        duration,
+        success: envelope.success,
+        error: envelope.error,
+        summary: envelope.summary,
+        outputBytes,
+        artifactRef: formattedLocalResult.artifactRef,
+      };
       this.events.append({
         role: envelope.success ? 'tool' : 'error',
         title: 'local',
-        content: toolFinishContent({
-          type: 'tool_result',
-          name: action.tool,
-          args: action.args,
-          callId: localCallId,
-          result,
-          modelVisibleResult: result,
-          duration,
-          success: envelope.success,
-          error: envelope.error,
-          summary: envelope.summary,
-          outputBytes,
-          artifactRef: formattedLocalResult.artifactRef,
-        }),
+        content: toolFinishContent(localToolResultEvent),
+        toolActivity: structuredToolFinishActivity(localToolResultEvent, 1),
       });
 
       this.runtime.store.addMessage({ role: 'assistant', content: assistantContent });
@@ -1271,14 +1400,17 @@ export class AgentChatController {
         }
       }
 
-      this.events.setStatus(envelope.success ? `Completed local ${action.label}` : `Failed local ${action.label}`);
+      this.events.setStatus(
+        envelope.success ? `Completed local ${action.label}` : `Failed local ${action.label}`
+      );
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       this.events.append({ role: 'error', title: 'local', content: message, errorLayer: 'tool' });
       this.events.setStatus('Local command failed. Ready for the next input.');
       const assistantContent = `Local fast path failed for ${action.label}.\n\n${message}`;
       this.runtime.store.addMessage({ role: 'assistant', content: assistantContent });
-      const finishReason: LoopFinishReason = error instanceof LocalFastPathBlockedError ? 'blocked' : 'failed';
+      const finishReason: LoopFinishReason =
+        error instanceof LocalFastPathBlockedError ? 'blocked' : 'failed';
       const stats = createLocalFastPathLoopStats({
         finishReason,
         toolCalls: 0,
@@ -1310,12 +1442,16 @@ export class AgentChatController {
     }
   }
 
-  private createCommandContext(abortSignal?: AbortSignal, turnId?: number | string): CommandContext {
+  private createCommandContext(
+    abortSignal?: AbortSignal,
+    turnId?: number | string
+  ): CommandContext {
     return {
       cwd: this.runtime.cwd,
       config: this.runtime.config,
       store: this.runtime.store,
       llm: this.runtime.llm,
+      compactCoordinator: this.runtime.compactCoordinator,
       runtime: this.runtime.runtime,
       sessionId: this.runtime.getSession()?.id,
       turnId,
@@ -1339,7 +1475,8 @@ export class AgentChatController {
           this.events.append({ role: 'system', content: text });
         }
       },
-      uiRenderer: this.controllerOptions.uiRenderer ?? this.runtime.config.ui?.renderer ?? 'terminal',
+      uiRenderer:
+        this.controllerOptions.uiRenderer ?? this.runtime.config.ui?.renderer ?? 'terminal',
       uiCapabilities: resolveUiRendererCapabilities(
         this.controllerOptions.uiCapabilities,
         this.controllerOptions.uiRenderer ?? this.runtime.config.ui?.renderer
@@ -1352,11 +1489,17 @@ export class AgentChatController {
    * trace. Renderers consume the same event across terminal/Ink/TUI; this is
    * the only place a subtask event touches the root loop.
    */
-  private handleSubtaskEvent(event: RuntimeSubtaskEvent, sessionId: string | undefined, turnId: number | string): void {
+  private handleSubtaskEvent(
+    event: RuntimeSubtaskEvent,
+    sessionId: string | undefined,
+    turnId: number | string
+  ): void {
     // Emit the renderer-independent runtime event first so all renderers
     // (terminal/Ink/TUI) consume the same lifecycle through one protocol.
     this.events.subtaskEvent?.(event);
-    const stateToTraceType: Partial<Record<RuntimeSubtaskEvent['state'], SessionTraceEvent['type']>> = {
+    const stateToTraceType: Partial<
+      Record<RuntimeSubtaskEvent['state'], SessionTraceEvent['type']>
+    > = {
       queued: 'subtask_requested',
       running: 'subtask_started',
       completed: 'subtask_completed',
@@ -1383,7 +1526,13 @@ export class AgentChatController {
         role: 'system',
         content: `▸ subtask ${event.role} started: ${event.objective.slice(0, 120)}`,
       });
-    } else if (event.state === 'completed' || event.state === 'failed' || event.state === 'cancelled' || event.state === 'timed_out' || event.state === 'rejected') {
+    } else if (
+      event.state === 'completed' ||
+      event.state === 'failed' ||
+      event.state === 'cancelled' ||
+      event.state === 'timed_out' ||
+      event.state === 'rejected'
+    ) {
       const summary = event.summary ? ` — ${event.summary.slice(0, 200)}` : '';
       this.events.append({
         role: 'system',
@@ -1420,14 +1569,19 @@ export class AgentChatController {
     options: { abortSignal?: AbortSignal; turnId?: number | string } = {}
   ): Promise<void> {
     if (!input) {
-      this.events.append({ role: 'error', content: 'Usage: /chat <message>', errorLayer: 'runtime' });
+      this.events.append({
+        role: 'error',
+        content: 'Usage: /chat <message>',
+        errorLayer: 'runtime',
+      });
       return;
     }
 
     if (!this.runtime.llm || !isConfigured(this.runtime.config)) {
       this.events.append({
         role: 'error',
-        content: 'LLM is not configured. Set OPENHORSE_API_KEY in ~/.openhorse/openhorse.json or environment.',
+        content:
+          'LLM is not configured. Set OPENHORSE_API_KEY in ~/.openhorse/openhorse.json or environment.',
         errorLayer: 'provider',
       });
       return;
@@ -1435,7 +1589,10 @@ export class AgentChatController {
 
     const abortSignal = options.abortSignal;
     const turnId = traceTurnId(options.turnId);
-    const activeSession = this.runtime.getSession() ?? this.runtime.ensureSession() ?? loadSessionMeta(this.runtime.getSession()?.id ?? '');
+    const activeSession =
+      this.runtime.getSession() ??
+      this.runtime.ensureSession() ??
+      loadSessionMeta(this.runtime.getSession()?.id ?? '');
     const sessionId = activeSession?.id;
     const preWorkspace = captureWorkspaceSnapshot(this.runtime.cwd);
     const runtimeTools = getRuntimeTools();
@@ -1481,7 +1638,11 @@ export class AgentChatController {
     harness.recordAppliedSkills(skillResolution.skills);
 
     // Reconcile diagnostic: when harness state is present but objective may be incomplete
-    if (snapshot.harnessState && !snapshot.harnessState.rootObjective && !snapshot.harnessState.contract?.objective) {
+    if (
+      snapshot.harnessState &&
+      !snapshot.harnessState.rootObjective &&
+      !snapshot.harnessState.contract?.objective
+    ) {
       this.events.setStatus(
         'Resume diagnostic: harness state restored but objective may be incomplete. Run /harness explain to review.'
       );
@@ -1492,46 +1653,55 @@ export class AgentChatController {
     // turns, but respects an active skill scope: when a skill restricts the
     // tool set, subtask is not appended (the skill owns the scope).
     const projectPath = activeSession?.projectPath;
-    const subagentBundle: SubagentTurnBundle | null = subagentConfig && subagentConfig.mode !== 'off' && this.runtime.llm && !skillResolution.toolScopeActive
-      ? createSubagentBundleForTurn({
-          config: subagentConfig,
-          cwd: this.runtime.cwd,
-          rootLlmConfig: deriveRootLlmConfig(this.runtime.config),
-          modelLabel: this.runtime.llm.getModel(),
-          rootObjectiveSummary: harness.toJSON()?.rootObjective ?? input,
-          abortSignal,
-          onSubtaskEvent: (event) => {
-            this.handleSubtaskEvent(event, sessionId, turnId);
-          },
-          onSubtaskResult: (result, _batchId) => {
-            if (!projectPath || result.status !== 'completed') return;
-            const json = JSON.stringify(result);
-            const artifact = storeArtifact(projectPath, `subtask_${result.role}`, json, Buffer.byteLength(json, 'utf8'));
-            if (artifact) {
-              // Record a trace event for artifact discoverability only.
-              // The subtask state transition (subtask_completed) is already
-              // emitted by handleSubtaskEvent above.
-              if (sessionId) {
-                recordTraceEvent(this.events, sessionId, {
-                  turnId: String(turnId),
-                  type: 'subtask_artifact_stored',
-                  name: `${result.role}:${result.id}`,
-                  argsSummary: result.summary.slice(0, 200),
-                  argsArtifactId: artifact.id,
-                  argsBytes: artifact.outputBytes,
-                });
+    const subagentBundle: SubagentTurnBundle | null =
+      subagentConfig &&
+      subagentConfig.mode !== 'off' &&
+      this.runtime.llm &&
+      !skillResolution.toolScopeActive
+        ? createSubagentBundleForTurn({
+            config: subagentConfig,
+            cwd: this.runtime.cwd,
+            rootLlmConfig: deriveRootLlmConfig(this.runtime.config),
+            modelLabel: this.runtime.llm.getModel(),
+            rootObjectiveSummary: harness.toJSON()?.rootObjective ?? input,
+            abortSignal,
+            onSubtaskEvent: event => {
+              this.handleSubtaskEvent(event, sessionId, turnId);
+            },
+            onSubtaskResult: (result, _batchId) => {
+              if (!projectPath || result.status !== 'completed') return;
+              const json = JSON.stringify(result);
+              const artifact = storeArtifact(
+                projectPath,
+                `subtask_${result.role}`,
+                json,
+                Buffer.byteLength(json, 'utf8')
+              );
+              if (artifact) {
+                // Record a trace event for artifact discoverability only.
+                // The subtask state transition (subtask_completed) is already
+                // emitted by handleSubtaskEvent above.
+                if (sessionId) {
+                  recordTraceEvent(this.events, sessionId, {
+                    turnId: String(turnId),
+                    type: 'subtask_artifact_stored',
+                    name: `${result.role}:${result.id}`,
+                    argsSummary: result.summary.slice(0, 200),
+                    argsArtifactId: artifact.id,
+                    argsBytes: artifact.outputBytes,
+                  });
+                }
               }
-            }
-          },
-          // R6: wire live permission state so the subagent policy gate can
-          // prevent background delegation while the user is deciding a tool
-          // permission. Injected by AgentRuntimeController via chatOptions.
-          hasPendingPermission: this.controllerOptions.hasPendingPermission,
-          // R6: wire child usage callback so CostTracker records subagent
-          // token consumption. Injected by AgentRuntimeController via chatOptions.
-          onChildUsage: this.controllerOptions.onChildUsage,
-        })
-      : null;
+            },
+            // R6: wire live permission state so the subagent policy gate can
+            // prevent background delegation while the user is deciding a tool
+            // permission. Injected by AgentRuntimeController via chatOptions.
+            hasPendingPermission: this.controllerOptions.hasPendingPermission,
+            // R6: wire child usage callback so CostTracker records subagent
+            // token consumption. Injected by AgentRuntimeController via chatOptions.
+            onChildUsage: this.controllerOptions.onChildUsage,
+          })
+        : null;
     const subtaskTool = subagentBundle?.tool ?? null;
     const turnTools = subtaskTool ? [...skillResolution.tools, subtaskTool] : skillResolution.tools;
 
@@ -1558,6 +1728,7 @@ export class AgentChatController {
     let finalModel = '';
     let pendingCompleteTrace: Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> | null = null;
     let pendingCompleteStats: LoopStats | undefined;
+    let pendingCompact: QueryCompactCommit | undefined;
     const verificationResults: VerificationCommandResult[] = [];
     const sessionMessagesToRecord: SessionMessage[] = [];
     const assistantStream = createAssistantStreamPresenter(this.events, abortSignal);
@@ -1571,7 +1742,11 @@ export class AgentChatController {
       },
     };
 
-    const toolExecutor = async (name: string, args: Record<string, unknown>, signal?: AbortSignal) => {
+    const toolExecutor = async (
+      name: string,
+      args: Record<string, unknown>,
+      signal?: AbortSignal
+    ) => {
       // The runtime-bound `subtask` tool is not in the global TOOLS registry;
       // dispatch it directly so it reaches the Supervisor closure.
       if (name === 'subtask' && subtaskTool) {
@@ -1636,6 +1811,10 @@ export class AgentChatController {
         harness,
         input,
         loopBudget,
+        onContextUsage: usage => {
+          this.runtime.store.setContextUsage(usage);
+        },
+        compactCoordinator: this.runtime.compactCoordinator,
       })) {
         switch (event.type) {
           case 'request_start':
@@ -1686,16 +1865,15 @@ export class AgentChatController {
                 this.events.append({ role: 'status', content: suggestion });
               }
             }
-            const checkpointId = checkpointSequence === 0
-              ? turnId
-              : `${turnId}-checkpoint-${checkpointSequence + 1}`;
+            const checkpointId =
+              checkpointSequence === 0 ? turnId : `${turnId}-checkpoint-${checkpointSequence + 1}`;
             const checkpointResult = createPreToolCheckpoint(
               this.events,
               sessionId,
               turnId,
               checkpointId,
               this.runtime.cwd,
-              event.toolCalls,
+              event.toolCalls
             );
             if (checkpointResult.created) {
               checkpointIds.push(checkpointId);
@@ -1705,12 +1883,14 @@ export class AgentChatController {
               this.events.append({
                 role: 'status',
                 title: 'checkpoint',
+                statusTone: 'warning',
                 content: `Risky edit: ${checkpointResult.targetCount} files in one turn. Checkpoint ${checkpointId} created for rollback (/checkpoints restore ${checkpointId}).`,
               });
             } else if (checkpointResult.risky) {
               this.events.append({
                 role: 'status',
                 title: 'checkpoint',
+                statusTone: 'warning',
                 content: `Risky edit: ${checkpointResult.targetCount} files in one turn, but checkpoint creation failed. Restore any pre-existing checkpoint manually or revert via git.`,
               });
             }
@@ -1862,6 +2042,7 @@ export class AgentChatController {
             finalContent = event.content;
             finalUsage = event.usage;
             finalModel = event.model;
+            pendingCompact = event.compact;
             if (event.stats) {
               pendingCompleteStats = event.stats;
               recordProviderTraceEvents(this.events, sessionId, turnId, event.stats);
@@ -1905,7 +2086,14 @@ export class AgentChatController {
         this.events.setStatus('Interrupted.');
         removeTrailingUserMessage(this.runtime);
         if (sessionId) {
-          const { delta } = appendPostWorkspaceTrace(this.events, sessionId, turnId, this.runtime.cwd, preWorkspace, verificationResults);
+          const { delta } = appendPostWorkspaceTrace(
+            this.events,
+            sessionId,
+            turnId,
+            this.runtime.cwd,
+            preWorkspace,
+            verificationResults
+          );
           recordTraceEvent(this.events, sessionId, {
             turnId,
             type: 'aborted',
@@ -1918,6 +2106,7 @@ export class AgentChatController {
             this.events.append({
               role: 'status',
               title: 'recovery',
+              statusTone: 'warning',
               content: recoveryNotice,
             });
           }
@@ -1940,7 +2129,7 @@ export class AgentChatController {
           turnId,
           this.runtime.cwd,
           preWorkspace,
-          verificationResults,
+          verificationResults
         );
         if (profile.changedFiles.length > 0 && profile.required) {
           this.events.setStatus(verifyingStatus(profile.profile));
@@ -1953,12 +2142,15 @@ export class AgentChatController {
           }
         }
         if (shouldGateCompletion(summary)) {
-          this.events.setStatus(verificationGateStatus(summary.skippedReason ?? 'verification checks not run'));
+          this.events.setStatus(
+            verificationGateStatus(summary.skippedReason ?? 'verification checks not run')
+          );
           this.controllerOptions.onVerificationStateChange?.('gated');
           const notice = formatVerificationGateNotice(summary);
           this.events.append({
             role: 'status',
             title: 'verification',
+            statusTone: 'warning',
             content: notice,
           });
           finalContent = finalContent ? `${finalContent}\n\n${notice}` : notice;
@@ -1988,7 +2180,9 @@ export class AgentChatController {
         }
         const progressParts: string[] = [];
         if (typeof stats.loopBudgetMaxLlmRequests === 'number') {
-          progressParts.push(`${stats.llmRequests ?? 0}/${stats.loopBudgetMaxLlmRequests} LLM requests`);
+          progressParts.push(
+            `${stats.llmRequests ?? 0}/${stats.loopBudgetMaxLlmRequests} LLM requests`
+          );
         }
         if (typeof stats.loopBudgetMaxToolCalls === 'number') {
           progressParts.push(`${stats.toolCalls ?? 0}/${stats.loopBudgetMaxToolCalls} tool calls`);
@@ -2002,7 +2196,12 @@ export class AgentChatController {
           lines.push(`Next: ${stats.continuationHint}`);
         }
         const notice = lines.join('\n');
-        this.events.append({ role: 'status', title: 'budget', content: notice });
+        this.events.append({
+          role: 'status',
+          title: 'budget',
+          statusTone: 'warning',
+          content: notice,
+        });
         finalContent = finalContent ? `${finalContent}\n\n${notice}` : notice;
         appendAssistantNotice(sessionMessagesToRecord, notice);
       }
@@ -2017,6 +2216,66 @@ export class AgentChatController {
 
       if (sessionId && sessionMessagesToRecord.length > 0) {
         appendSessionMessages(sessionId, sessionMessagesToRecord);
+      }
+
+      if (pendingCompact) {
+        try {
+          let committedCheckpointId: string | undefined;
+          if (sessionId) {
+            const sourceMessageCount = readSessionMessages(sessionId).length;
+            const checkpoint = commitSessionCompactCheckpoint({
+              sessionId,
+              mode: pendingCompact.mode,
+              modelId: finalModel || this.runtime.llm.getModel(),
+              sourceMessageCount,
+              transcriptStartMessageIndex: Math.max(0, sourceMessageCount - 20),
+              modelHistory: pendingCompact.modelHistory,
+              summary: pendingCompact.summary,
+              beforeUsage: pendingCompact.before,
+              afterUsage: pendingCompact.after,
+            });
+            committedCheckpointId = checkpoint.checkpointId;
+            this.runtime.store.setState({ conversationHistory: checkpoint.modelHistory });
+          } else {
+            this.runtime.store.setState({
+              conversationHistory: pendingCompact.modelHistory.filter(
+                message => message.role !== 'system'
+              ),
+            });
+          }
+          this.runtime.store.setContextUsage(pendingCompact.after);
+          if (sessionId) {
+            recordTraceEvent(this.events, sessionId, {
+              turnId,
+              type: 'compact_completed',
+              checkpointId: committedCheckpointId,
+              model: finalModel || this.runtime.llm.getModel(),
+              note: pendingCompact.mode,
+            });
+          }
+          this.events.append({
+            role: 'status',
+            title: 'auto-compact',
+            statusTone: 'neutral',
+            content: `Context reached ${pendingCompact.before.percent}% of the safe input budget. Agent core committed a ${pendingCompact.mode} compact checkpoint; current context is ${pendingCompact.after.percent}%.`,
+          });
+        } catch (error) {
+          if (sessionId) {
+            recordTraceEvent(this.events, sessionId, {
+              turnId,
+              type: 'compact_failed',
+              model: finalModel || this.runtime.llm.getModel(),
+              error: compactTraceError(error),
+              note: pendingCompact.mode,
+            });
+          }
+          this.events.append({
+            role: 'error',
+            title: 'compact-failed',
+            content: `Compact checkpoint failed; the previous model context remains active. ${error instanceof Error ? error.message : String(error)}`,
+            errorLayer: 'runtime',
+          });
+        }
       }
 
       if (finalUsage) {
@@ -2058,7 +2317,14 @@ export class AgentChatController {
         this.events.setStatus('Interrupted.');
         removeTrailingUserMessage(this.runtime);
         if (sessionId) {
-          const { delta } = appendPostWorkspaceTrace(this.events, sessionId, turnId, this.runtime.cwd, preWorkspace, verificationResults);
+          const { delta } = appendPostWorkspaceTrace(
+            this.events,
+            sessionId,
+            turnId,
+            this.runtime.cwd,
+            preWorkspace,
+            verificationResults
+          );
           recordTraceEvent(this.events, sessionId, {
             turnId,
             type: 'aborted',
@@ -2071,6 +2337,7 @@ export class AgentChatController {
             this.events.append({
               role: 'status',
               title: 'recovery',
+              statusTone: 'warning',
               content: recoveryNotice,
             });
           }
@@ -2080,21 +2347,27 @@ export class AgentChatController {
       }
 
       assistantStream.discardSegment();
-      this.events.append({ role: 'error', content: formatChatError(error), errorLayer: errorLayerForChatError(error) });
+      this.events.append({
+        role: 'error',
+        content: formatChatError(error),
+        errorLayer: errorLayerForChatError(error),
+      });
       this.events.setStatus('Turn failed. Ready for the next input.');
-      const failedStats = error instanceof QueryLoopError
-        ? error.stats
-        : createFailedLoopStats({
-            loopBudget,
-            diagnostics: observedLlmRequests > 0 ? getLastRequestDiagnostics(this.runtime.llm) : undefined,
-            turnsStarted: observedTurnsStarted,
-            llmRequests: observedLlmRequests,
-            toolCalls: observedToolCalls,
-            readOnlyToolCalls: observedReadOnlyToolCalls,
-            unsafeToolCalls: observedUnsafeToolCalls,
-            toolResultBytes: observedToolResultBytes,
-            modelVisibleToolBytes: observedModelVisibleToolBytes,
-          });
+      const failedStats =
+        error instanceof QueryLoopError
+          ? error.stats
+          : createFailedLoopStats({
+              loopBudget,
+              diagnostics:
+                observedLlmRequests > 0 ? getLastRequestDiagnostics(this.runtime.llm) : undefined,
+              turnsStarted: observedTurnsStarted,
+              llmRequests: observedLlmRequests,
+              toolCalls: observedToolCalls,
+              readOnlyToolCalls: observedReadOnlyToolCalls,
+              unsafeToolCalls: observedUnsafeToolCalls,
+              toolResultBytes: observedToolResultBytes,
+              modelVisibleToolBytes: observedModelVisibleToolBytes,
+            });
       this.setLoopStats(failedStats);
       if (sessionId) {
         recordProviderTraceEvents(this.events, sessionId, turnId, failedStats);
@@ -2104,7 +2377,7 @@ export class AgentChatController {
           turnId,
           this.runtime.cwd,
           preWorkspace,
-          verificationResults,
+          verificationResults
         );
         const recoveryNotice = workspaceDeltaHasTurnChanges(delta)
           ? formatFailureRecoveryNotice(turnId, delta, checkpointIds)
@@ -2113,6 +2386,7 @@ export class AgentChatController {
           this.events.append({
             role: 'status',
             title: 'recovery',
+            statusTone: 'warning',
             content: recoveryNotice,
           });
         }
@@ -2157,7 +2431,9 @@ export { AgentChatController as InkChatController };
 export function loadSessionIntoRuntime(runtime: OpenHorseUiRuntime, sessionId: string): string {
   const history = loadSessionHistory(sessionId);
   runtime.store.setState({ conversationHistory: history });
-  runtime.store.setState({ harnessState: loadSessionHarnessState(sessionId) ?? loadSessionMeta(sessionId)?.harnessState });
+  runtime.store.setState({
+    harnessState: loadSessionHarnessState(sessionId) ?? loadSessionMeta(sessionId)?.harnessState,
+  });
   return `Restored ${history.length} messages`;
 }
 

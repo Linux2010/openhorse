@@ -164,6 +164,8 @@ export class AgentRuntimeController {
       return { type: 'revision_requested' };
     }
 
+
+
     this.activeRun = this.runTurn(submitted)
       .catch(error => {
         this.handleRunLoopError(error);
@@ -352,8 +354,18 @@ export class AgentRuntimeController {
       chatOptions.onChildUsage = (taskId, _role, usage, modelLabel) => {
         const costTracker = this.options.runtime.store.getSnapshot().costTracker;
         costTracker.record(
-          { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens },
-          { model: modelLabel ?? 'unknown', agentId: 'subagent', taskId },
+          {
+            promptTokens: usage.promptTokens,
+            completionTokens: usage.completionTokens,
+            ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {}),
+            requestId: `subagent:${taskId}`,
+          },
+          {
+            model: modelLabel ?? 'unknown',
+            agentId: 'subagent',
+            taskId,
+            requestKind: 'subagent',
+          },
         );
       };
     }

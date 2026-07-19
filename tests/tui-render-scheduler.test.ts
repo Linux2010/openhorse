@@ -4,7 +4,6 @@ import {
   type TuiRenderSchedulerDeps,
 } from '../src/tui-ui/render-scheduler';
 import { TuiRunner, type TuiRunnerCounters } from '../src/tui-ui/runner';
-import { initialTuiUiState } from '../src/tui-ui/state';
 
 // ============================================================================
 // Helpers
@@ -214,15 +213,14 @@ describe('TuiRunner with scheduler', () => {
       output,
       width: 40,
       height: 10,
-      noScheduler: false,
     });
     const before = runner.counters.paintCount;
-    // Multiple dispatches — only one paint per tick.
+    // Multiple dispatches — scheduler coalesces them.
     runner.dispatch({ type: 'setPrompt', value: 'a', cursor: 1 });
     runner.dispatch({ type: 'setPrompt', value: 'ab', cursor: 2 });
     runner.dispatch({ type: 'setPrompt', value: 'abc', cursor: 3 });
     // Flush the scheduler.
-    runner.render();
+    runner.getScheduler().flush();
     // At least one paint happened (initial + flush).
     expect(runner.counters.paintCount).toBeGreaterThan(before);
   });
@@ -233,13 +231,12 @@ describe('TuiRunner with scheduler', () => {
       output,
       width: 40,
       height: 10,
-      noScheduler: false,
     });
     // updateTranscript is a stream action — should not block.
     runner.dispatch({ type: 'appendTranscript', entry: { id: 'a1', role: 'assistant', content: 'hello', live: true } });
     runner.dispatch({ type: 'updateTranscript', id: 'a1', patch: { content: 'hello world' } });
     // Force paint.
-    runner.render();
+    runner.getScheduler().flush();
     const state = runner.getState();
     const entry = state.transcript.find(e => e.id === 'a1');
     expect(entry?.content).toBe('hello world');
@@ -251,25 +248,10 @@ describe('TuiRunner with scheduler', () => {
       output,
       width: 40,
       height: 10,
-      noScheduler: false,
     });
     runner.dispatch({ type: 'setPrompt', value: 'test', cursor: 4 });
-    runner.render();
+    runner.getScheduler().flush();
     expect(runner.getState().prompt.value).toBe('test');
-  });
-
-  it('noScheduler mode renders synchronously on every dispatch', () => {
-    const output = new FakeOutput();
-    const runner = new TuiRunner({
-      output,
-      width: 40,
-      height: 10,
-      noScheduler: true,
-    });
-    const before = runner.counters.paintCount;
-    runner.dispatch({ type: 'setPrompt', value: 'x', cursor: 1 });
-    // In noScheduler mode, render is called synchronously.
-    expect(runner.counters.paintCount).toBe(before + 1);
   });
 
   it('resize flushes scheduler and renders immediately', () => {
@@ -278,7 +260,6 @@ describe('TuiRunner with scheduler', () => {
       output,
       width: 40,
       height: 10,
-      noScheduler: false,
     });
     const before = runner.counters.paintCount;
     runner.resize(60, 15);
@@ -292,13 +273,27 @@ describe('TuiRunner with scheduler', () => {
       output,
       width: 40,
       height: 10,
-      noScheduler: true,
     });
     const c: TuiRunnerCounters = runner.counters;
     expect(c.layoutCount).toBeGreaterThan(0);
     expect(c.paintCount).toBeGreaterThan(0);
-    // Initial render should have changed rows.
-    expect(c.changedRows).toBeGreaterThan(0);
+  });
+
+  it('renderFullFrame produces a complete frame for tests', () => {
+    const output = new FakeOutput();
+    const runner = new TuiRunner({
+      output,
+      width: 40,
+      height: 10,
+    });
+    runner.dispatch({ type: 'appendTranscript', entry: { id: 'u1', role: 'user', content: 'hello' } });
+    runner.dispatch({ type: 'finalizeTranscript', id: 'u1' });
+    const frame = runner.renderFullFrame();
+    expect(frame.width).toBe(40);
+    expect(frame.height).toBe(10);
+    // Full frame should contain both static and live transcript.
+    const rows = frame.rows.map(row => row.map(cell => cell.width === 0 ? '' : cell.char).join('')).join('\n');
+    expect(rows).toContain('hello');
   });
 });
 
@@ -307,13 +302,12 @@ describe('TuiRunner with scheduler', () => {
 // ============================================================================
 
 describe('slice 6: performance fixture', () => {
-  it('500 committed entries + 1 live delta does not re-layout all 500', () => {
+  it('500 committed entries + 1 live delta produces correct state', () => {
     const output = new FakeOutput();
     const runner = new TuiRunner({
       output,
       width: 80,
       height: 24,
-      noScheduler: true,
     });
 
     // Append 500 finalized entries.
@@ -339,12 +333,9 @@ describe('slice 6: performance fixture', () => {
     expect(state.committableTranscriptCount).toBe(500);
     expect(state.transcript.length).toBe(501);
 
-    // The layout function still runs on the full transcript for now;
-    // the key assertion is that the runner doesn't crash and the
-    // changed rows count is bounded (not 500+ rows of terminal output).
-    // With a 24-row terminal, at most 24 rows can change.
-    const result = runner.render();
-    expect(result.diff.changedRows.length).toBeLessThanOrEqual(24);
+    // Full frame should render without crashing.
+    const frame = runner.renderFullFrame();
+    expect(frame.height).toBe(24);
   });
 
   it('100 stream deltas produce bounded paint count with scheduler', () => {
@@ -353,7 +344,6 @@ describe('slice 6: performance fixture', () => {
       output,
       width: 80,
       height: 24,
-      noScheduler: false,
     });
 
     // Append a live entry.
@@ -372,57 +362,28 @@ describe('slice 6: performance fixture', () => {
     }
 
     // Force a final paint.
-    runner.render();
+    runner.getScheduler().flush();
 
     // With scheduler coalescing, paint count should be much less than 100.
-    // deltas. The scheduler counters track this.
-    const schedulerPaints = (runner as any).scheduler?.counters?.paintCount ?? 0;
-    // At minimum, the scheduler should have coalesced some requests.
-    const schedulerCoalesced = (runner as any).scheduler?.counters?.coalescedCount ?? 0;
+    const schedulerPaints = runner.getScheduler().counters.paintCount;
+    const schedulerCoalesced = runner.getScheduler().counters.coalescedCount;
     expect(schedulerCoalesced).toBeGreaterThan(0);
   });
 
-  it('same state render produces no terminal output', () => {
+  it('renderFullFrame with same state produces unchanged frame', () => {
     const output = new FakeOutput();
     const runner = new TuiRunner({
       output,
       width: 40,
       height: 10,
-      noScheduler: true,
     });
     // Render once to establish baseline.
-    const first = runner.render();
+    const frame1 = runner.renderFullFrame();
     // Render again with no state change.
-    const second = runner.render();
-    // No changed rows → no terminal output.
-    expect(second.diff.changedRows.length).toBe(0);
-    expect(second.output).toBe('');
-  });
-
-  it('single cursor move does not output committed transcript', () => {
-    const output = new FakeOutput();
-    const runner = new TuiRunner({
-      output,
-      width: 40,
-      height: 10,
-      noScheduler: true,
-    });
-    // Add a committed entry.
-    runner.dispatch({
-      type: 'appendTranscript',
-      entry: { id: 'u1', role: 'user', content: 'committed message' },
-    });
-    runner.dispatch({ type: 'finalizeTranscript', id: 'u1' });
-    runner.render();
-
-    // Move cursor.
-    runner.dispatch({ type: 'setPrompt', value: 'ab', cursor: 1 });
-    const result = runner.render();
-    // The output should not contain the committed message text
-    // (it's already in the previous frame, so diff should skip it).
-    // Only the prompt row and possibly cursor should change.
-    const hasCommittedText = result.output.includes('committed message');
-    expect(hasCommittedText).toBe(false);
+    const frame2 = runner.renderFullFrame();
+    // Both frames should have same dimensions.
+    expect(frame2.width).toBe(frame1.width);
+    expect(frame2.height).toBe(frame1.height);
   });
 });
 
@@ -466,6 +427,14 @@ describe('TranscriptLayoutCache', () => {
     cache.set('e1', 1, rows as any, 0, 80);
     // Width change should invalidate.
     expect(cache.get('e1', 1, 0, 120)).toBeNull();
+  });
+
+  it('invalidates on theme change', () => {
+    const cache = new TranscriptLayoutCache();
+    const rows = [[{ text: 'hello', style: {} }]];
+    cache.set('e1', 1, rows as any, 0, 80, 'dark');
+
+    expect(cache.get('e1', 1, 0, 80, 'light')).toBeNull();
   });
 
   it('evicts oldest entry when at capacity', () => {

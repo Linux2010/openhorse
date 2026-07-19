@@ -10,6 +10,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { join } from 'path';
 import { ensureConfigDir, getGlobalConfigPath, getConfigDir } from './config-dir';
+import type { ModelPricing } from '../core/cost-tracker';
 
 // ============================================================================
 // 类型定义
@@ -112,6 +113,14 @@ export interface SubagentUserConfig {
   roles?: SubagentRole[];
 }
 
+/** Cost-accounting configuration. Rates are USD per one million tokens. */
+export interface CostConfig {
+  /** Per-model overrides for providers that do not return billed cost. */
+  modelPricing?: Record<string, ModelPricing>;
+  /** Fallback for unknown models. Omit to use OpenHorse's conservative estimate. */
+  defaultPricing?: ModelPricing;
+}
+
 /**
  * 全局配置 — 用户只需关注少量核心项
  * maxTokens/temperature/retries 等由 Agent 智能控制
@@ -137,6 +146,8 @@ export interface GlobalConfig {
   agentLoop?: AgentLoopConfig;
   /** Read-only subagent runtime configuration (v0.2.20 beta). */
   subagents?: SubagentUserConfig;
+  /** Cost-accounting overrides for custom or routed models. */
+  cost?: CostConfig;
 
   // ---- 内部标识 ----
   userId?: string;

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import hashlib
 import json
 import os
 import pty
@@ -365,8 +366,10 @@ def start_mock_openai_server() -> tuple[ThreadingHTTPServer, str]:
 
 
 def encode_project_path(project_path: Path) -> str:
-    encoded = re.sub(r"[^A-Za-z0-9]+", "-", str(project_path).replace("\\", "/")).strip("-")
-    return encoded or "root"
+    normalized = str(project_path).replace("\\", "/")
+    encoded = re.sub(r"[^A-Za-z0-9]+", "-", normalized).strip("-")
+    suffix = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:8]
+    return f"{encoded or 'root'}-{suffix}"
 
 
 def seed_resume_sessions(config_dir: str, repo: Path) -> list[str]:
@@ -512,7 +515,7 @@ def main() -> int:
 
     try:
         wait_for(master, output, "stable terminal UI", timeout=20)
-        wait_for(master, output, "Ready. Stable terminal editor is enabled", timeout=20)
+        wait_for(master, output, "Ready. Terminal editor supports", timeout=20)
         wait_for(master, output, "[new] ›", timeout=20)
 
         plain = strip_ansi(b"".join(output).decode("utf-8", errors="replace"))
@@ -552,10 +555,9 @@ def main() -> int:
         os.write(master, b"\x1b[200~aaa\nbbb\x1b[201~")
         time.sleep(0.35)
         visible_paste = sync_screen()
-        compact_paste = visible_paste.replace(" ", "")
-        if "aaa⏎bbb" not in compact_paste:
+        if "aaa" not in visible_paste or "bbb" not in visible_paste:
             raise AssertionError(
-                "Bracketed multiline paste did not render as a single buffered input:\n"
+                "Bracketed multiline paste did not render as a multiline buffer:\n"
                 + visible_paste
             )
         # Ctrl+U clears the pasted multiline buffer
@@ -566,6 +568,33 @@ def main() -> int:
             raise AssertionError(
                 "Ctrl+U did not clear the pasted multiline buffer:\n" + visible_cleared
             )
+
+        # --- Interactive multiline editing: Alt+Enter inserts, Enter still submits ---
+        os.write(master, b"first line\x1b\rsecond line")
+        time.sleep(0.35)
+        visible_multiline = sync_screen()
+        if "first line" not in visible_multiline or "second line" not in visible_multiline:
+            raise AssertionError(
+                "Alt+Enter did not render a real multiline editor buffer:\n"
+                + visible_multiline
+            )
+        if process.poll() is not None:
+            raise AssertionError("Terminal process exited during multiline editing")
+        os.write(master, b"\x15")
+        time.sleep(0.15)
+
+        # --- Long input remains bounded instead of corrupting or exiting ---
+        os.write(master, b"x" * 16384)
+        time.sleep(0.5)
+        visible_long_input = sync_screen()
+        if process.poll() is not None:
+            raise AssertionError("Terminal process exited while editing long input")
+        if "\u2039" not in visible_long_input and "x" not in visible_long_input:
+            raise AssertionError(
+                "Long input viewport did not remain visible:\n" + visible_long_input
+            )
+        os.write(master, b"\x15")
+        time.sleep(0.15)
 
         os.write(master, b"\x15stream revise\r")
         wait_for(master, output, "mock-stream-chunk-1", timeout=8)
@@ -692,7 +721,7 @@ def main() -> int:
         os.write(master, b"resume fixture 12\r")
         wait_for(master, output, "Restored conversation", timeout=8)
         wait_for(master, output, "resume fixture 12 content", timeout=8)
-        wait_for(master, output, "Restored 1 messages", timeout=8)
+        wait_for(master, output, "Restored 1 model-context messages / 1 transcript messages", timeout=8)
 
         os.write(master, b"\x03\x03")
         deadline = time.time() + 5

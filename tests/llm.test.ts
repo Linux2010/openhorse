@@ -156,6 +156,71 @@ describe('LLMService', () => {
     });
   });
 
+  describe('usage accounting', () => {
+    test('extracts provider cost and cached tokens from non-stream responses', async () => {
+      const llm = new LLMService({ apiKey: 'test-key', model: 'routed-model' });
+      (llm as any).client = {
+        chat: {
+          completions: {
+            create: jest.fn().mockResolvedValue({
+              id: 'request-cost-1',
+              model: 'routed-model',
+              choices: [{ message: { content: 'ok' } }],
+              usage: {
+                prompt_tokens: 100,
+                completion_tokens: 20,
+                prompt_tokens_details: { cached_tokens: 60 },
+                cost: '0.0042',
+              },
+            }),
+          },
+        },
+      };
+      const observed: any[] = [];
+      llm.subscribeUsage(event => observed.push(event));
+
+      const response = await llm.chat([{ role: 'user', content: 'Hi' }]);
+
+      expect(response.usage).toMatchObject({
+        promptTokens: 100,
+        completionTokens: 20,
+        cachedPromptTokens: 60,
+        costUsd: 0.0042,
+        requestId: 'request-cost-1',
+      });
+      expect(observed).toHaveLength(1);
+      expect(observed[0]).toMatchObject({ model: 'routed-model', operation: 'chat' });
+    });
+
+    test('publishes provider cost from the final stream usage chunk', async () => {
+      const llm = new LLMService({ apiKey: 'test-key', model: 'routed-model' });
+      async function* stream() {
+        yield {
+          id: 'request-cost-2',
+          model: 'routed-model',
+          choices: [{ delta: { content: 'ok' } }],
+        };
+        yield {
+          id: 'request-cost-2',
+          model: 'routed-model',
+          choices: [],
+          usage: { prompt_tokens: 50, completion_tokens: 10, total_cost: 0.0021 },
+        };
+      }
+      (llm as any).client = {
+        chat: { completions: { create: jest.fn().mockResolvedValue(stream()) } },
+      };
+      const observed: any[] = [];
+      llm.subscribeUsage(event => observed.push(event));
+
+      const response = await llm.chatStream([{ role: 'user', content: 'Hi' }]);
+
+      expect(response.usage).toMatchObject({ costUsd: 0.0021, requestId: 'request-cost-2' });
+      expect(observed).toHaveLength(1);
+      expect(observed[0]).toMatchObject({ operation: 'chat_stream' });
+    });
+  });
+
   describe('chatStream cancellation', () => {
     test('passes abort signal to OpenAI request options', async () => {
       const llm = new LLMService({

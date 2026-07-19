@@ -108,6 +108,8 @@ export interface SubtaskUsage {
   promptTokens: number;
   completionTokens: number;
   durationMs: number;
+  /** Sum of provider-reported costs, present only when every child call reported cost. */
+  costUsd?: number;
 }
 
 export const EMPTY_SUBTASK_USAGE: SubtaskUsage = {
@@ -172,7 +174,7 @@ export interface RuntimeSubtaskEvent {
 }
 
 export function sumSubtaskUsage(usages: SubtaskUsage[]): SubtaskUsage {
-  return usages.reduce(
+  const aggregate = usages.reduce(
     (acc, u) => ({
       modelRequests: acc.modelRequests + u.modelRequests,
       toolCalls: acc.toolCalls + u.toolCalls,
@@ -182,4 +184,8 @@ export function sumSubtaskUsage(usages: SubtaskUsage[]): SubtaskUsage {
     }),
     { ...EMPTY_SUBTASK_USAGE },
   );
+  if (usages.length > 0 && usages.every(usage => usage.costUsd !== undefined)) {
+    aggregate.costUsd = usages.reduce((sum, usage) => sum + (usage.costUsd ?? 0), 0);
+  }
+  return aggregate;
 }

@@ -868,20 +868,34 @@ function normalizeToolPath(input: string): string {
     try {
       return decodeURIComponent(new URL(value).pathname);
     } catch {
-      value = value.replace(/^file:\/\//u, '');
+      return value.replace(/^file:\/\//u, '');
     }
   }
 
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
+  // Plain filesystem paths are not URLs: do NOT percent-decode them, or a
+  // literal filename like "lit%41.txt" is silently rewritten to "litA.txt".
+  return value;
 }
 
 /** Resolve tool path parameters relative to the current tool cwd. */
 function safePath(input: string, cwd = process.cwd()): string {
   return resolve(cwd, normalizeToolPath(input));
+}
+
+/**
+ * Truncate text to at most maxBytes UTF-8 bytes, cutting on a character
+ * boundary (never inside a multi-byte sequence or surrogate pair). Returns the
+ * truncated text and the byte length it was cut at. String.slice counts UTF-16
+ * code units, not bytes, so it is wrong for enforcing a byte budget on CJK or
+ * emoji content and can split a surrogate pair.
+ */
+function truncateToBytes(text: string, maxBytes: number): { text: string; bytes: number } {
+  const buf = Buffer.from(text, 'utf-8');
+  if (buf.length <= maxBytes) return { text, bytes: buf.length };
+  let cut = maxBytes;
+  // Walk back past UTF-8 continuation bytes (0x80-0xBF) to a lead-byte boundary.
+  while (cut > 0 && (buf[cut] & 0xc0) === 0x80) cut--;
+  return { text: buf.subarray(0, cut).toString('utf-8'), bytes: cut };
 }
 
 async function readFileSync_(path: string, maxLines?: number, cwd?: string): Promise<ToolResult> {
@@ -904,18 +918,23 @@ async function readFileSync_(path: string, maxLines?: number, cwd?: string): Pro
       const truncated = lines.slice(0, limit).join('\n');
       const byteLen = Buffer.byteLength(truncated, 'utf8');
       const notice = `\n\n[... truncated, ${lines.length - limit} more lines]`;
-      return {
-        success: true,
-        output: byteLen > maxBytes ? truncated.slice(0, maxBytes) + `\n\n[... truncated at ${maxBytes}B]` : truncated + notice,
-      };
+      if (byteLen > maxBytes) {
+        const cut = truncateToBytes(truncated, maxBytes);
+        return {
+          success: true,
+          output: cut.text + `\n\n[... truncated at ${cut.bytes}B]`,
+        };
+      }
+      return { success: true, output: truncated + notice };
     }
 
     // Also apply byte limit to full content
     const byteLen = Buffer.byteLength(content, 'utf8');
     if (byteLen > maxBytes) {
+      const cut = truncateToBytes(content, maxBytes);
       return {
         success: true,
-        output: content.slice(0, maxBytes) + `\n\n[... truncated at ${maxBytes}B of ${byteLen}B]`,
+        output: cut.text + `\n\n[... truncated at ${cut.bytes}B of ${byteLen}B]`,
       };
     }
 
@@ -1466,9 +1485,13 @@ async function glob_(pattern: string, basePath?: string, cwd?: string): Promise<
 
     const results: string[] = [];
 
-    // Convert glob pattern to regex
+    // Convert glob pattern to regex.
+    // Escape ALL regex metacharacters first, then translate glob wildcards.
+    // Escaping only `.` (the old behavior) left parens/brackets/+/^/$/| as
+    // regex syntax: a literal "(group)" became a capture group (so the real
+    // file stopped matching) and an unbalanced "[" made new RegExp throw.
     function globToRegex(pat: string): RegExp {
-      // Use placeholders to avoid interference between replacements
+      // Use placeholders for glob wildcards so escaping does not touch them.
       let regex = pat;
 
       // **/ at start - matches optional path (including empty)
@@ -1480,8 +1503,9 @@ async function glob_(pattern: string, basePath?: string, cwd?: string): Promise<
       // standalone ** - matches anything
       regex = regex.replace(/\*\*/g, '<<STARSTAR>>');
 
-      // escape dots
-      regex = regex.replace(/\./g, '\\.');
+      // Escape every regex metacharacter in the remaining literal text.
+      // NOTE: * and ? are glob wildcards, handled below - do not escape them.
+      regex = regex.replace(/[.+^${}()|[\]\\]/g, '\\$&');
 
       // * matches anything except /
       regex = regex.replace(/\*/g, '[^/]*');
@@ -1499,8 +1523,11 @@ async function glob_(pattern: string, basePath?: string, cwd?: string): Promise<
 
     const regex = globToRegex(pattern);
 
-    // Recursive walk
-    function walk(dir: string, prefix: string) {
+    // Recursive walk with a depth cap so a pathological tree (or symlink loop)
+    // cannot hang or OOM the tool.
+    const MAX_DEPTH = 16;
+    function walk(dir: string, prefix: string, depth: number) {
+      if (depth > MAX_DEPTH) return;
       try {
         const entries = readdirSync(dir, { withFileTypes: true });
         for (const entry of entries) {
@@ -1509,7 +1536,7 @@ async function glob_(pattern: string, basePath?: string, cwd?: string): Promise<
           const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
 
           if (entry.isDirectory()) {
-            walk(join(dir, entry.name), relPath);
+            walk(join(dir, entry.name), relPath, depth + 1);
           } else {
             if (regex.test(relPath)) {
               results.push(relPath);
@@ -1521,7 +1548,7 @@ async function glob_(pattern: string, basePath?: string, cwd?: string): Promise<
       }
     }
 
-    walk(base, '');
+    walk(base, '', 0);
 
     if (results.length === 0) {
       return { success: true, output: 'No files found matching pattern' };

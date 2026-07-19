@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import { Store } from '../src/framework/store';
 import { loadConfig } from '../src/services/config';
-import { launchTuiUI } from '../src/tui-ui/launch';
+import { launchTuiUI, statusSnapshotString } from '../src/tui-ui/launch';
 import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
 
 class FakeTTYInput extends EventEmitter {
@@ -25,6 +25,7 @@ class FakeTTYInput extends EventEmitter {
 
 class FakeTTYOutput extends EventEmitter {
   isTTY = true;
+  writable = true;
   columns = 64;
   rows = 12;
   chunks: string[] = [];
@@ -36,6 +37,23 @@ class FakeTTYOutput extends EventEmitter {
 
   text(): string {
     return this.chunks.join('');
+  }
+}
+
+class FailingTTYOutput extends FakeTTYOutput {
+  private writeCount = 0;
+
+  constructor(private readonly acceptedWrites: number) {
+    super();
+  }
+
+  override write(chunk: string | Uint8Array): boolean {
+    this.writeCount += 1;
+    if (this.writeCount > this.acceptedWrites) {
+      this.writable = false;
+      throw new Error('simulated terminal output failure');
+    }
+    return super.write(chunk);
   }
 }
 
@@ -79,6 +97,24 @@ function tick(): Promise<void> {
 }
 
 describe('tui-ui launch', () => {
+  it('shows current context pressure in the TUI status line', () => {
+    const runtime = makeRuntime();
+    runtime.store.setContextUsage({
+      modelId: 'glm-5',
+      usedTokens: 172339,
+      contextWindow: 202752,
+      percent: 85,
+      source: 'estimated',
+      warningThresholdPercent: 80,
+      autoCompactThresholdPercent: 95,
+      autoCompactEnabled: true,
+    });
+
+    const status = statusSnapshotString(runtime);
+    expect(status).toContain('model=glm-5  ctx=85% /compact');
+    expect(status).not.toContain('cost=');
+  });
+
   it('owns terminal mode setup/teardown around the renderer', async () => {
     const input = new FakeTTYInput();
     const output = new FakeTTYOutput();
@@ -106,7 +142,12 @@ describe('tui-ui launch', () => {
 
     const launch = launchTuiUI(runtime, { input: input as any, output: output as any });
     input.emit('data', Buffer.from('开源小？事收到', 'utf8'));
+    // Let the typed-state render flush before the next keystroke so the
+    // pre-backspace prompt state is emitted to the stream.
+    await tick();
+    await tick();
     input.emit('data', Buffer.from('\x7f'));
+    await tick();
     await tick();
     input.emit('data', Buffer.from('\x15/exit\r'));
     await launch;
@@ -116,6 +157,29 @@ describe('tui-ui launch', () => {
     expect(text).toContain('开源小？事收');
     expect(input.rawModeValues).toEqual([true, false]);
   });
+
+  it('routes asynchronous console diagnostics through the owned surface', async () => {
+    const input = new FakeTTYInput();
+    const output = new FakeTTYOutput();
+    const runtime = makeRuntime();
+    const originalError = console.error;
+    const originalDebug = console.debug;
+
+    const launch = launchTuiUI(runtime, { input: input as any, output: output as any });
+    await tick();
+    console.error('\x1b[31mbackground MCP diagnostic\x1b[0m');
+    console.debug('background debug diagnostic');
+    await tick();
+    await tick();
+    input.emit('data', Buffer.from('/exit\r'));
+    await launch;
+
+    expect(output.text()).toContain('background MCP diagnostic');
+    expect(output.text()).toContain('background debug diagnostic');
+    expect(output.text()).not.toContain('\x1b[31mbackground MCP diagnostic');
+    expect(console.error).toBe(originalError);
+    expect(console.debug).toBe(originalDebug);
+  });
 });
 
 // ============================================================================
@@ -123,6 +187,19 @@ describe('tui-ui launch', () => {
 // ============================================================================
 
 describe('slice 7: lifecycle and exception recovery', () => {
+  it('restores raw mode and stops when the inline surface fails', async () => {
+    const input = new FakeTTYInput();
+    const output = new FailingTTYOutput(1);
+    const runtime = makeRuntime();
+
+    await launchTuiUI(runtime, { input: input as any, output: output as any });
+
+    expect(input.rawModeValues).toContain(true);
+    expect(input.rawModeValues).toContain(false);
+    expect(input.paused).toBe(true);
+    expect(runtime.shutdown).toHaveBeenCalledTimes(1);
+  });
+
   it('restores terminal on every exit path: raw mode, cursor, autowrap, bracketed paste', async () => {
     const input = new FakeTTYInput();
     const output = new FakeTTYOutput();
@@ -135,11 +212,11 @@ describe('slice 7: lifecycle and exception recovery', () => {
     // Every exit path must restore these.
     expect(input.rawModeValues).toContain(false);
     const text = output.text();
-    expect(text).toContain('\x1b[?25h');   // show cursor
-    expect(text).toContain('\x1b[?7h');     // enable autowrap
-    expect(text).toContain('\x1b[?2004l');  // disable bracketed paste
+    expect(text).toContain('\x1b[?25h'); // show cursor
+    expect(text).toContain('\x1b[?7h'); // enable autowrap
+    expect(text).toContain('\x1b[?2004l'); // disable bracketed paste
     // Must NOT clear primary-screen history.
-    expect(text).not.toContain('\x1b[2J');  // no full clear
+    expect(text).not.toContain('\x1b[2J'); // no full clear
     expect(text).not.toContain('\x1b[?1049'); // no alternate screen
   });
 

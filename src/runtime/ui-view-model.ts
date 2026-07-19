@@ -15,6 +15,7 @@ import {
 import type { CommandCategory, SlashCommand } from '../commands/types';
 import { formatBytes } from '../services/format';
 import { classifyCommandSafety } from '../services/verification-profile';
+import type { ContextUsageSnapshot } from '../services/model-context';
 
 export type TranscriptBlockKind =
   | 'user'
@@ -40,7 +41,13 @@ export interface TranscriptBlock {
   restored?: boolean;
 }
 
-export type ToolActivityState = 'queued' | 'running' | 'success' | 'error' | 'skipped' | 'requested';
+export type ToolActivityState =
+  | 'queued'
+  | 'running'
+  | 'success'
+  | 'error'
+  | 'skipped'
+  | 'requested';
 
 export interface ToolActivity {
   callId?: string;
@@ -97,7 +104,11 @@ export function subtaskEventToTimelineEntry(event: {
   durationMs?: number;
 }): SubtaskTimelineEntry {
   const terminalStates: SubtaskTimelineEntry['state'][] = [
-    'completed', 'failed', 'cancelled', 'timed_out', 'rejected',
+    'completed',
+    'failed',
+    'cancelled',
+    'timed_out',
+    'rejected',
   ];
   return {
     batchId: event.batchId,
@@ -130,15 +141,12 @@ export interface StatusSnapshot {
     contextPercent?: number;
   };
   costUsd?: number;
+  context?: ContextUsageSnapshot;
   runningState?: string;
   permissionMode?: string;
   loop?: Pick<
     RuntimeLoopStats,
-    | 'llmRequests'
-    | 'toolCalls'
-    | 'finishReason'
-    | 'budgetExceededReason'
-    | 'localFastPathUsed'
+    'llmRequests' | 'toolCalls' | 'finishReason' | 'budgetExceededReason' | 'localFastPathUsed'
   >;
   renderer: {
     name: string;
@@ -146,6 +154,18 @@ export interface StatusSnapshot {
     capabilities: ResolvedUiRendererCapabilities;
     capabilityLabels: string[];
   };
+}
+
+export function contextUsageStatusText(usage: ContextUsageSnapshot | null | undefined): string {
+  if (!usage) return '';
+  const label = `ctx=${usage.percent}%`;
+  if (usage.autoCompactEnabled && usage.percent >= usage.autoCompactThresholdPercent) {
+    return `${label} auto-compact`;
+  }
+  if (usage.percent >= usage.warningThresholdPercent) {
+    return `${label} /compact`;
+  }
+  return label;
 }
 
 export interface RuntimeCapabilityTool {
@@ -178,6 +198,11 @@ export interface SessionRestoredView {
   restoredMessages: number;
   messageCount?: number;
   summary?: string;
+  summaryGeneratedAt?: number;
+  summarySource?: RuntimeSessionRestoredEvent['summarySource'];
+  summaryCoveredMessages?: number;
+  checkpointId?: string;
+  transcriptMessages?: number;
   headline: string;
 }
 
@@ -370,19 +395,14 @@ export function rendererCapabilityLabels(capabilities: ResolvedUiRendererCapabil
 }
 
 export function createRuntimeCapabilitySummary(
-  input: RuntimeCapabilityInput = {},
+  input: RuntimeCapabilityInput = {}
 ): RuntimeCapabilitySummary {
   const hasProjectRules = Boolean(input.projectInstructionsContent?.trim());
   const hasSkills = Boolean(input.skillsContent?.trim());
   const hasMemory = Boolean(input.memoryContent?.trim());
   const hasMcp = Boolean(input.tools?.some(tool => tool.name.startsWith('mcp__')));
   const hasWebSearch = Boolean(input.webSearchConfigured);
-  const labels = [
-    'scrollback',
-    'CJK input',
-    'paste/edit',
-    'trace',
-  ];
+  const labels = ['scrollback', 'CJK input', 'paste/edit', 'trace'];
 
   if (hasProjectRules) labels.push('repo rules');
   if (hasSkills) labels.push('skills');
@@ -407,12 +427,10 @@ function normalizeSingleLineText(value: string): string {
 
 export function createSessionRestoredView(event: RuntimeSessionRestoredEvent): SessionRestoredView {
   const shortId = event.sessionId.slice(0, 8);
-  const total = typeof event.messageCount === 'number'
-    ? `/${event.messageCount}`
-    : '';
   const summary = event.summary ? normalizeSingleLineText(event.summary) : undefined;
-
-  return {
+  const hasDetailedCounts = typeof event.transcriptMessages === 'number';
+  const total = typeof event.messageCount === 'number' ? `/${event.messageCount}` : '';
+  const view: SessionRestoredView = {
     sessionId: event.sessionId,
     shortId,
     projectPath: event.projectPath,
@@ -420,8 +438,18 @@ export function createSessionRestoredView(event: RuntimeSessionRestoredEvent): S
     restoredMessages: event.restoredMessages,
     messageCount: event.messageCount,
     summary: summary || undefined,
-    headline: `Resumed session ${shortId} · restored ${event.restoredMessages}${total} messages`,
+    headline: hasDetailedCounts
+      ? `Resumed session ${shortId} · restored ${event.restoredMessages} model-context / ${event.transcriptMessages} transcript messages`
+      : `Resumed session ${shortId} · restored ${event.restoredMessages}${total} messages`,
   };
+  if (event.summaryGeneratedAt !== undefined) view.summaryGeneratedAt = event.summaryGeneratedAt;
+  if (event.summarySource !== undefined) view.summarySource = event.summarySource;
+  if (event.summaryCoveredMessages !== undefined) {
+    view.summaryCoveredMessages = event.summaryCoveredMessages;
+  }
+  if (event.checkpointId !== undefined) view.checkpointId = event.checkpointId;
+  if (event.transcriptMessages !== undefined) view.transcriptMessages = event.transcriptMessages;
+  return view;
 }
 
 export function sessionPickerTitle(session: SessionPickerRequest['sessions'][number]): string {
@@ -447,13 +475,13 @@ function promptCompletionState(value: string): PromptCompletionState {
   return { kind: 'none' };
 }
 
-function promptHistoryState(index: number | undefined, size: number | undefined): PromptHistoryState {
-  const safeSize = typeof size === 'number' && Number.isFinite(size) && size > 0
-    ? Math.floor(size)
-    : 0;
-  const safeIndex = typeof index === 'number' && Number.isFinite(index)
-    ? Math.floor(index)
-    : -1;
+function promptHistoryState(
+  index: number | undefined,
+  size: number | undefined
+): PromptHistoryState {
+  const safeSize =
+    typeof size === 'number' && Number.isFinite(size) && size > 0 ? Math.floor(size) : 0;
+  const safeIndex = typeof index === 'number' && Number.isFinite(index) ? Math.floor(index) : -1;
   const active = safeIndex >= 0 && safeIndex < safeSize;
 
   return {
@@ -518,14 +546,19 @@ function commandMatchRank(command: Pick<SlashCommand, 'name' | 'aliases'>, query
   return 4;
 }
 
-function commandMatchesQuery(command: Pick<SlashCommand, 'name' | 'aliases'>, query: string): boolean {
+function commandMatchesQuery(
+  command: Pick<SlashCommand, 'name' | 'aliases'>,
+  query: string
+): boolean {
   if (!query) return true;
   const name = command.name.toLowerCase();
   const aliases = command.aliases?.map(alias => alias.toLowerCase()) ?? [];
   return name.startsWith(query) || aliases.some(alias => alias.startsWith(query));
 }
 
-function commandPickerLabel(command: Pick<SlashCommand, 'name' | 'aliases' | 'argumentHint'>): string {
+function commandPickerLabel(
+  command: Pick<SlashCommand, 'name' | 'aliases' | 'argumentHint'>
+): string {
   const hint = command.argumentHint ? ` ${command.argumentHint}` : '';
   const aliases = command.aliases?.length ? ` (${command.aliases.join(', ')})` : '';
   return `/${command.name}${hint}${aliases}`;
@@ -534,10 +567,12 @@ function commandPickerLabel(command: Pick<SlashCommand, 'name' | 'aliases' | 'ar
 export function createCommandPickerState(input: {
   title?: string;
   input: string;
-  commands: Array<Pick<
-    SlashCommand,
-    'name' | 'aliases' | 'description' | 'argumentHint' | 'category' | 'priority'
-  >>;
+  commands: Array<
+    Pick<
+      SlashCommand,
+      'name' | 'aliases' | 'description' | 'argumentHint' | 'category' | 'priority'
+    >
+  >;
   visibleStart?: number;
   maxVisibleItems?: number;
   categoryLabel?: (category: CommandCategory | undefined) => string;
@@ -649,11 +684,13 @@ function previewText(value: string, maxLength: number): string {
 }
 
 export function createPermissionDecisionPickerState(
-  request: ToolPermissionRequest,
+  request: ToolPermissionRequest
 ): PickerState<PermissionDecisionItem> {
   const scope = permissionScopeDisplayValue(permissionScopeFromArgs(request.args));
   const reason = request.reason?.trim();
-  const allowDescription = [scope === 'scope=unknown' ? '' : scope, reason].filter(Boolean).join('  ');
+  const allowDescription = [scope === 'scope=unknown' ? '' : scope, reason]
+    .filter(Boolean)
+    .join('  ');
   const items: PermissionDecisionItem[] = [
     {
       value: 'allow',
@@ -697,9 +734,7 @@ export function createEditPreviewPickerState(input: {
   const visibleStart = Math.max(0, Math.min(input.visibleStart ?? 0, maxOffset));
   const matchLimit = input.maxMatchLength ?? 50;
   const replacementLimit = input.maxReplacementLength ?? 40;
-  const kindLabel = request.kind === 'fuzzy'
-    ? `fuzzy (${request.strategy ?? 'match'})`
-    : 'exact';
+  const kindLabel = request.kind === 'fuzzy' ? `fuzzy (${request.strategy ?? 'match'})` : 'exact';
 
   return {
     kind: 'edit-preview',
@@ -709,19 +744,21 @@ export function createEditPreviewPickerState(input: {
     visibleLimit,
     page: totalItems === 0 ? 1 : Math.floor(visibleStart / visibleLimit) + 1,
     pageCount: totalItems === 0 ? 1 : Math.ceil(totalItems / visibleLimit),
-    visibleItems: request.candidates.slice(visibleStart, visibleStart + visibleLimit).map(candidate => {
-      const matchPreview = previewText(candidate.match, matchLimit);
-      const replacementPreview = previewText(request.newString, replacementLimit);
-      return {
-        candidate,
-        value: String(candidate.line),
-        label: `line ${candidate.line}: ${matchPreview}`,
-        description: `→ ${replacementPreview}`,
-        line: candidate.line,
-        matchPreview,
-        replacementPreview,
-      };
-    }),
+    visibleItems: request.candidates
+      .slice(visibleStart, visibleStart + visibleLimit)
+      .map(candidate => {
+        const matchPreview = previewText(candidate.match, matchLimit);
+        const replacementPreview = previewText(request.newString, replacementLimit);
+        return {
+          candidate,
+          value: String(candidate.line),
+          label: `line ${candidate.line}: ${matchPreview}`,
+          description: `→ ${replacementPreview}`,
+          line: candidate.line,
+          matchPreview,
+          replacementPreview,
+        };
+      }),
     hasPreviousPage: visibleStart > 0,
     hasNextPage: visibleStart < maxOffset,
   };
@@ -755,15 +792,18 @@ export function createModelPickerState(input: {
     visibleItems: input.models.slice(visibleStart, visibleStart + visibleLimit).map(model => {
       const name = model.name;
       const alias = model.alias?.trim() || undefined;
-      const isCurrent = current !== ''
-        && (normalizePickerModelId(name) === current || normalizePickerModelId(alias) === current);
+      const isCurrent =
+        current !== '' &&
+        (normalizePickerModelId(name) === current || normalizePickerModelId(alias) === current);
       const aliasLabel = alias ? ` (${alias})` : '';
       const description = [
         model.provider,
         typeof model.contextWindow === 'number' ? `${model.contextWindow} ctx` : undefined,
         typeof model.maxOutputTokens === 'number' ? `${model.maxOutputTokens} output` : undefined,
         model.source,
-      ].filter(Boolean).join('  ');
+      ]
+        .filter(Boolean)
+        .join('  ');
 
       return {
         model,
@@ -824,7 +864,10 @@ export function permissionScopeDisplayValue(scope: PermissionScopeState): string
   return 'scope=unknown';
 }
 
-function permissionRiskLevel(toolName: string, args: Record<string, unknown> = {}): PermissionRiskLevel {
+function permissionRiskLevel(
+  toolName: string,
+  args: Record<string, unknown> = {}
+): PermissionRiskLevel {
   if (toolName === 'exec_command' && typeof args.command === 'string') {
     return classifyCommandSafety(args.command).risk;
   }
@@ -841,7 +884,7 @@ export function permissionRiskDisplayValue(risk: PermissionRiskState): string {
 
 export function createPermissionPromptState(
   request: ToolPermissionRequest,
-  cwd: string,
+  cwd: string
 ): PermissionPromptState {
   return {
     requestId: request.id,
@@ -860,9 +903,10 @@ export function createPermissionPromptState(
 }
 
 function normalizeVisibleLimit(totalItems: number, requestedLimit?: number): number {
-  const safeRequested = Number.isFinite(requestedLimit) && requestedLimit && requestedLimit > 0
-    ? Math.floor(requestedLimit)
-    : 10;
+  const safeRequested =
+    Number.isFinite(requestedLimit) && requestedLimit && requestedLimit > 0
+      ? Math.floor(requestedLimit)
+      : 10;
   return Math.max(1, Math.min(safeRequested, Math.max(1, totalItems)));
 }
 
@@ -872,7 +916,7 @@ function maxPickerOffset(totalItems: number, visibleLimit: number): number {
 
 export function createSessionPickerState(
   request: SessionPickerRequest,
-  visibleStart = 0,
+  visibleStart = 0
 ): PickerState<SessionPickerItem> {
   const totalItems = request.sessions.length;
   const visibleLimit = normalizeVisibleLimit(totalItems, request.maxVisibleItems);
@@ -907,26 +951,28 @@ export function createSessionPickerState(
 
 export function movePickerPageOffset(
   state: Pick<PickerState<unknown>, 'totalItems' | 'visibleLimit' | 'visibleStart'>,
-  delta: -1 | 1,
+  delta: -1 | 1
 ): number {
   const maxOffset = maxPickerOffset(state.totalItems, state.visibleLimit);
   return Math.max(0, Math.min(state.visibleStart + delta * state.visibleLimit, maxOffset));
 }
 
-export function createStatusSnapshot(input: {
-  renderer?: unknown;
-  capabilities?: UiRendererCapabilities;
-  model?: string;
-  sessionId?: string;
-  tokens?: StatusSnapshot['tokens'];
-  costUsd?: number;
-  runningState?: string;
-  permissionMode?: string;
-  loop?: StatusSnapshot['loop'];
-} = {}): StatusSnapshot {
-  const rendererName = typeof input.renderer === 'string' && input.renderer.trim()
-    ? input.renderer
-    : 'terminal';
+export function createStatusSnapshot(
+  input: {
+    renderer?: unknown;
+    capabilities?: UiRendererCapabilities;
+    model?: string;
+    sessionId?: string;
+    tokens?: StatusSnapshot['tokens'];
+    costUsd?: number;
+    context?: ContextUsageSnapshot;
+    runningState?: string;
+    permissionMode?: string;
+    loop?: StatusSnapshot['loop'];
+  } = {}
+): StatusSnapshot {
+  const rendererName =
+    typeof input.renderer === 'string' && input.renderer.trim() ? input.renderer : 'terminal';
   const capabilities = resolveUiRendererCapabilities(input.capabilities, rendererName);
 
   return {
@@ -934,6 +980,7 @@ export function createStatusSnapshot(input: {
     sessionId: input.sessionId,
     tokens: input.tokens,
     costUsd: input.costUsd,
+    context: input.context,
     runningState: input.runningState,
     permissionMode: input.permissionMode,
     loop: input.loop,
@@ -947,9 +994,7 @@ export function createStatusSnapshot(input: {
 }
 
 export function transcriptEntryToBlock(entry: TranscriptEntry): TranscriptBlock {
-  const kind = entry.title === 'resume'
-    ? 'resume'
-    : entry.role;
+  const kind = entry.title === 'resume' ? 'resume' : entry.role;
   return {
     id: entry.id,
     kind,
@@ -962,13 +1007,15 @@ export function transcriptEntryToBlock(entry: TranscriptEntry): TranscriptBlock 
   };
 }
 
-export function toolActivityBatchLabel(activity: Pick<ToolActivity, 'batchCount' | 'batchIndex'>): string {
+export function toolActivityBatchLabel(
+  activity: Pick<ToolActivity, 'batchCount' | 'batchIndex'>
+): string {
   if (
-    typeof activity.batchCount !== 'number'
-    || activity.batchCount <= 1
-    || typeof activity.batchIndex !== 'number'
-    || activity.batchIndex < 0
-    || activity.batchIndex >= activity.batchCount
+    typeof activity.batchCount !== 'number' ||
+    activity.batchCount <= 1 ||
+    typeof activity.batchIndex !== 'number' ||
+    activity.batchIndex < 0 ||
+    activity.batchIndex >= activity.batchCount
   ) {
     return '';
   }
@@ -977,12 +1024,20 @@ export function toolActivityBatchLabel(activity: Pick<ToolActivity, 'batchCount'
 }
 
 export function toolActivityFromStarted(
-  event: { callId: string; name: string; args: Record<string, unknown>; sequence?: number; batchCount?: number; batchIndex?: number },
-  detail = '',
+  event: {
+    callId: string;
+    name: string;
+    args: Record<string, unknown>;
+    sequence?: number;
+    batchCount?: number;
+    batchIndex?: number;
+  },
+  detail = ''
 ): ToolActivity {
-  const command = event.name === 'exec_command' && typeof event.args.command === 'string'
-    ? event.args.command
-    : undefined;
+  const command =
+    event.name === 'exec_command' && typeof event.args.command === 'string'
+      ? event.args.command
+      : undefined;
 
   return {
     callId: event.callId,
@@ -997,17 +1052,32 @@ export function toolActivityFromStarted(
 }
 
 export function toolActivityFromFinished(
-  event: { callId: string; name: string; args: Record<string, unknown>; success: boolean; skipped?: boolean; duration: number; summary?: string; error?: string; outputBytes?: number; artifactRef?: { id: string; outputBytes: number }; sequence?: number; batchCount?: number; batchIndex?: number },
-  detail = '',
+  event: {
+    callId: string;
+    name: string;
+    args: Record<string, unknown>;
+    success: boolean;
+    skipped?: boolean;
+    duration: number;
+    summary?: string;
+    error?: string;
+    outputBytes?: number;
+    artifactRef?: { id: string; outputBytes: number };
+    sequence?: number;
+    batchCount?: number;
+    batchIndex?: number;
+  },
+  detail = ''
 ): ToolActivity {
   return {
     callId: event.callId,
     name: event.name,
     state: event.skipped ? 'skipped' : event.success ? 'success' : 'error',
     detail: detail || undefined,
-    command: event.name === 'exec_command' && typeof event.args.command === 'string'
-      ? event.args.command
-      : undefined,
+    command:
+      event.name === 'exec_command' && typeof event.args.command === 'string'
+        ? event.args.command
+        : undefined,
     summary: event.summary,
     durationMs: event.duration,
     error: event.error,
@@ -1029,7 +1099,9 @@ export function formatToolActivityTranscript(activity: ToolActivity): string {
   } else if (activity.state === 'running') {
     lines.push(`${prefix}Running ${activity.name}${activity.detail ? ` ${activity.detail}` : ''}`);
   } else if (activity.state === 'requested') {
-    lines.push(`${prefix}Requested ${activity.name}${activity.detail ? ` ${activity.detail}` : ''}`);
+    lines.push(
+      `${prefix}Requested ${activity.name}${activity.detail ? ` ${activity.detail}` : ''}`
+    );
   } else if (activity.state === 'skipped') {
     lines.push(`${prefix}Skipped ${activity.name}${activity.detail ? ` ${activity.detail}` : ''}`);
   } else {
@@ -1044,7 +1116,9 @@ export function formatToolActivityTranscript(activity: ToolActivity): string {
   }
 
   if (activity.artifactRef) {
-    lines.push(`  Full output: /artifacts show ${activity.artifactRef.id} --full (${formatBytes(activity.artifactRef.outputBytes)})`);
+    lines.push(
+      `  Full output: /artifacts show ${activity.artifactRef.id} --full (${formatBytes(activity.artifactRef.outputBytes)})`
+    );
   } else if (typeof activity.outputBytes === 'number') {
     lines.push(`  output ${formatBytes(activity.outputBytes)}`);
   }

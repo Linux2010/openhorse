@@ -17,6 +17,12 @@ export interface ParsedInput {
   args: string;
 }
 
+function isPathLikeSlashInput(input: string): boolean {
+  const firstToken = input.split(/\s+/u, 1)[0] || '';
+  const slashBody = firstToken.slice(1);
+  return slashBody.includes('/') || slashBody.includes('.');
+}
+
 // ============================================================================
 // 解析器
 // ============================================================================
@@ -32,8 +38,8 @@ export function parseInput(line: string): ParsedInput {
     return { isCommand: false, name: '', args: '' };
   }
 
-  // `/` 前缀 → 命令
-  if (trimmed.startsWith('/')) {
+  // `/` 前缀且不是绝对路径 → 命令
+  if (trimmed.startsWith('/') && !isPathLikeSlashInput(trimmed)) {
     const parts = trimmed.slice(1).split(/\s+/);
     const name = parts[0] || '';
     const args = parts.slice(1).join(' ');
@@ -59,7 +65,7 @@ export function buildCommandSuggestions(partial: string): string[] {
 export function createCompleter(): (line: string) => [string[], string] {
   return (line: string): [string[], string] => {
     const trimmed = line.trim();
-    if (trimmed.startsWith('/')) {
+    if (trimmed.startsWith('/') && !isPathLikeSlashInput(trimmed)) {
       const partial = trimmed.slice(1);
       const suggestions = buildCommandSuggestions(partial);
       // 返回补全后的完整行（带 `/` 前缀）
