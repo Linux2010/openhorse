@@ -28,6 +28,7 @@ describe('Session sidecar classification', () => {
         '.compact.json',
         '.runtime.json',
         '.trace.json',
+        '.goal.json',
         '.index.json',
       ])
     );

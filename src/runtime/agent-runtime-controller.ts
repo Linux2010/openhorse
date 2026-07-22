@@ -99,6 +99,13 @@ export class AgentRuntimeController {
   private activeRun: Promise<void> | null = null;
   private stopping = false;
   private nextPermissionRequestId = 1;
+  /** v0.2.24: optional goal coordinator for /target mode. */
+  private goalCoordinator: import('./goals/coordinator').GoalCoordinator | null = null;
+
+  /** v0.2.24: set the goal coordinator for /target mode. */
+  setGoalCoordinator(coord: import('./goals/coordinator').GoalCoordinator): void {
+    this.goalCoordinator = coord;
+  }
 
   constructor(private readonly options: AgentRuntimeControllerOptions) {
     if (!options.events && !options.eventSink) {
@@ -140,6 +147,8 @@ export class AgentRuntimeController {
       case 'clear_exit_intent':
         this.clearExitIntent();
         return { type: 'exit_intent_cleared' };
+      case 'goal_control':
+        return this.handleGoalControl(input as unknown as import('./goals/types').GoalControlInput);
     }
   }
 
@@ -307,6 +316,51 @@ export class AgentRuntimeController {
       this.emitStatus(permissionPendingStatus(request.name));
       this.eventSink.emit({ type: 'permission_requested', request: runtimeRequest });
     });
+  }
+
+  // --- v0.2.24: Goal control ---
+
+  private handleGoalControl(input: import('./goals/types').GoalControlInput): AgentRuntimeInputResult {
+    const coord = this.goalCoordinator;
+    if (!coord) return { type: 'empty' };
+
+    switch (input.action) {
+      case 'show':
+        // Just shows status — already handled by the renderer format function.
+        return { type: 'empty' };
+      case 'create': {
+        const obj = input.payload?.objective;
+        if (!obj) return { type: 'empty' };
+        const result = coord.create(obj);
+        return { type: result.ok ? 'interrupted' : 'empty' };
+      }
+      case 'pause':
+        coord.pause();
+        return { type: 'interrupted' };
+      case 'resume':
+        coord.resume();
+        return { type: 'interrupted' };
+      case 'edit': {
+        const obj = input.payload?.objective;
+        if (obj) coord.edit(obj);
+        return { type: 'interrupted' };
+      }
+      case 'replace': {
+        const obj = input.payload?.objective;
+        if (obj) coord.replace(obj);
+        return { type: 'interrupted' };
+      }
+      case 'set_budget':
+        coord.setBudget(input.payload?.tokenBudget ?? null);
+        return { type: 'interrupted' };
+      case 'clear':
+        if (input.payload?.confirmed) {
+          coord.clear();
+        }
+        return { type: 'interrupted' };
+      default:
+        return { type: 'empty' };
+    }
   }
 
   private recordPermissionDecision(requestId: string, approved: boolean): AgentRuntimeInputResult {

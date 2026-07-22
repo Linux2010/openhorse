@@ -43,6 +43,12 @@ export type AgentRuntimeInput =
   | {
       type: 'clear_exit_intent';
       metadata?: Record<string, unknown>;
+    }
+  // v0.2.24: goal control input from /target commands.
+  | {
+      type: 'goal_control';
+      action: string;
+      payload?: Record<string, unknown>;
     };
 
 export type AgentRuntimeSubmitResult =

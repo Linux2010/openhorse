@@ -112,6 +112,10 @@ export interface SessionMeta {
   contextCapsule?: ContextCapsule;
   /** Skills applied in this session. */
   skillsUsed?: string[];
+  /** v0.2.24 — Active goal ID bound to this session. */
+  activeGoalId?: string;
+  /** v0.2.24 — Goal objective text (survives Compact). */
+  activeGoalObjective?: string;
 }
 
 export interface CompactCheckpointV1 {
@@ -541,6 +545,7 @@ export const SESSION_SIDECAR_SUFFIXES = [
   '.compact.json',
   '.runtime.json',
   '.trace.json',
+  '.goal.json',
   '.index.json',
 ];
 
@@ -1418,6 +1423,13 @@ export function deleteSession(sessionId: string): boolean {
     getProjectSessionCompactPath(session.projectPath, sessionId),
     getProjectSessionTracePath(session.projectPath, sessionId),
   ];
+
+  // v0.2.24: also delete goal sidecar.
+  const goalPath = join(getProjectSessionsDir(session.projectPath), `${sessionId}.goal.json`);
+  if (existsSync(goalPath)) {
+    try { unlinkSync(goalPath); deleted = true; } catch { /* ok */ }
+  }
+
   deleteSessionIndex(sessionId, session.projectPath);
 
   for (const path of uniquePaths(paths)) {
