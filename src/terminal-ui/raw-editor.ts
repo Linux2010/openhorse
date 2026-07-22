@@ -1,22 +1,24 @@
 import readline from 'readline';
 import stringWidth from 'string-width';
 import {
-  isLikelyUnbracketedMultilinePaste,
   normalizePastedText,
   TuiInputParser,
   type TuiInputEvent,
   type TuiKey,
 } from '../tui-core/input-parser';
-import {
-  applySingleTerminalTabCompletion,
-  summarizeTerminalCompletions,
-} from './completion';
+import { applySingleTerminalTabCompletion, summarizeTerminalCompletions } from './completion';
 
 const BRACKETED_PASTE_ENABLE = '\x1b[?2004h';
 const BRACKETED_PASTE_DISABLE = '\x1b[?2004l';
-const MAX_INPUT_LENGTH = 1_000_000;
+/** v0.2.22: character-based limit (kept for backward compat, superseded by byte budget). */
+const MAX_INPUT_CHARACTERS = 1_000_000;
 const MAX_EDITOR_ROWS = 6;
 const RENDER_DEBOUNCE_MS = 8;
+/** v0.2.23: bounded input history (default 500). */
+const MAX_HISTORY_SIZE = 500;
+/** v0.2.23: UTF-8 byte budget — soft threshold triggers /edit hint, hard rejects new bytes. */
+const INPUT_SOFT_BYTES = 64 * 1024; // 64 KiB
+const INPUT_HARD_BYTES = 256 * 1024; // 256 KiB
 
 type RawModeStream = NodeJS.ReadStream & {
   isRaw?: boolean;
@@ -37,6 +39,22 @@ export interface RawTerminalEditorOptions {
   onNotice?: (message: string) => void;
 }
 
+/** v0.2.23: Deep-copy snapshot of editor state for modal draft preservation. */
+export interface TerminalEditorDraftSnapshot {
+  value: string;
+  cursor: number;
+  parserState: {
+    mode: 'normal' | 'paste';
+    incompleteUtf8: Buffer;
+    pasteBuffer: string;
+    pendingEscape: string;
+  };
+  historyIndex: number | null;
+  historyDraft: string;
+  inputLimitNoticeShown: boolean;
+  inputSoftNoticeShown: boolean;
+}
+
 export class RawTerminalEditor {
   private readonly input: RawModeStream;
   private readonly output: RawOutputStream;
@@ -55,7 +73,10 @@ export class RawTerminalEditor {
   private renderedRows = 0;
   private renderedCursorRow = 0;
   private inputLimitNoticeShown = false;
+  private inputSoftNoticeShown = false;
   private renderTimer: NodeJS.Timeout | null = null;
+  /** v0.2.23: saved draft during modal interactions (permission, picker, etc.). */
+  private savedDraft: TerminalEditorDraftSnapshot | null = null;
 
   constructor(private readonly options: RawTerminalEditorOptions) {
     this.input = options.input ?? process.stdin;
@@ -103,6 +124,14 @@ export class RawTerminalEditor {
       this.questionResolve('');
     }
 
+    // v0.2.23: Save current draft before entering question mode.
+    if (!this.savedDraft) {
+      this.savedDraft = this.captureDraft();
+    }
+    // The question owns a fresh parser. Restore the interrupted UTF-8/paste
+    // state only after the modal answer has been consumed.
+    this.parser.reset();
+
     this.questionPrompt = prompt;
     this.value = '';
     this.cursor = 0;
@@ -114,6 +143,7 @@ export class RawTerminalEditor {
         if (settled) return;
         settled = true;
         abortSignal?.removeEventListener('abort', onAbort);
+        // v0.2.23: Restore draft in finally via the caller.
         resolve(answer);
       };
       const onAbort = (): void => {
@@ -135,25 +165,31 @@ export class RawTerminalEditor {
     this.value = '';
     this.cursor = 0;
     resolve?.('');
+
+    // v0.2.23: Restore the pre-question draft.
+    if (this.savedDraft) {
+      this.restoreDraft(this.savedDraft);
+      this.savedDraft = null;
+    }
     this.render();
   }
 
   writeExternal(text: string): void {
-    if (!text) return;
+    this.writeExternalBatch([text]);
+  }
+
+  /** Write one external batch with a single prompt clear/redraw transaction. */
+  writeExternalBatch(chunks: readonly string[]): boolean {
+    const text = chunks.filter(Boolean).join('');
+    if (!text) return true;
     this.clearPromptLine();
-    this.output.write(text.endsWith('\n') ? text : `${text}\n`);
+    const accepted = this.output.write(text.endsWith('\n') ? text : `${text}\n`);
     this.render();
+    return accepted !== false;
   }
 
   feed(chunk: Buffer | string): TuiInputEvent[] {
-    const raw = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk;
-    if (!this.parser.isPasting() && !this.parser.hasPendingEscape() && isLikelyUnbracketedMultilinePaste(raw)) {
-      const event: TuiInputEvent = { type: 'paste', value: normalizePastedText(raw) };
-      this.applyEvent(event);
-      return [event];
-    }
-
-    const events = this.parser.feed(chunk);
+    const events = this.parser.feed(chunk, { detectUnbracketedMultilinePaste: true });
     for (const event of events) {
       this.applyEvent(event);
     }
@@ -162,6 +198,34 @@ export class RawTerminalEditor {
 
   getBuffer(): { value: string; cursor: number } {
     return { value: this.value, cursor: this.cursor };
+  }
+
+  // --- v0.2.23: Modal draft preservation ---
+
+  /** Deep-copy the current editor state for modal restore. */
+  captureDraft(): TerminalEditorDraftSnapshot {
+    return {
+      value: this.value,
+      cursor: this.cursor,
+      parserState: this.parser.getState(),
+      historyIndex: this.historyIndex,
+      historyDraft: this.historyDraft,
+      inputLimitNoticeShown: this.inputLimitNoticeShown,
+      inputSoftNoticeShown: this.inputSoftNoticeShown,
+    };
+  }
+
+  /** Restore editor state from a snapshot. Null is a safe no-op. */
+  restoreDraft(snapshot: TerminalEditorDraftSnapshot | null): void {
+    if (!snapshot) return;
+    this.value = snapshot.value;
+    this.cursor = clampCursor(snapshot.value, snapshot.cursor);
+    this.historyIndex = snapshot.historyIndex;
+    this.historyDraft = snapshot.historyDraft;
+    this.inputLimitNoticeShown = snapshot.inputLimitNoticeShown;
+    this.inputSoftNoticeShown = snapshot.inputSoftNoticeShown;
+    this.parser.setState(snapshot.parserState);
+    this.scheduleRender();
   }
 
   private readonly handleData = (chunk: Buffer | string): void => {
@@ -265,6 +329,9 @@ export class RawTerminalEditor {
       case 'ctrl+c':
         this.options.onCtrlC();
         return;
+      case 'ctrl+l':
+        this.redrawPrompt();
+        return;
       case 'escape':
       case 'pageup':
       case 'pagedown':
@@ -272,22 +339,81 @@ export class RawTerminalEditor {
     }
   }
 
-  private insert(text: string): void {
-    const safeCursor = clampCursor(this.value, this.cursor);
-    const remaining = Math.max(0, MAX_INPUT_LENGTH - this.value.length);
-    const accepted = safeSlice(text, remaining);
-    if (accepted.length < text.length && !this.inputLimitNoticeShown) {
-      this.inputLimitNoticeShown = true;
+  // --- v0.2.23: UTF-8 byte budget ---
+
+  /** Current input size in UTF-8 bytes. */
+  private byteLength(): number {
+    return Buffer.byteLength(this.value, 'utf8');
+  }
+
+  /**
+   * Try to accept text insertion. Returns the portion that fits within the
+   * hard byte budget, or empty string if the budget is exhausted.
+   */
+  private acceptBytes(text: string): string {
+    const current = this.byteLength();
+    const remaining = Math.max(0, INPUT_HARD_BYTES - current);
+    if (remaining <= 0) {
+      // Hard limit: reject all new bytes.
+      if (!this.inputSoftNoticeShown) {
+        this.inputSoftNoticeShown = true;
+        this.options.onNotice?.(
+          `Input limit reached (${(INPUT_HARD_BYTES / 1024).toFixed(0)} KiB). Use /edit for larger drafts, or submit/clear existing content.`
+        );
+      }
+      return '';
+    }
+
+    // Accept text up to remaining bytes.
+    let accepted = '';
+    let byteCount = 0;
+    // Fast path: if all of text fits within remaining bytes, accept entire string.
+    if (Buffer.byteLength(text, 'utf8') <= remaining) {
+      accepted = text;
+      byteCount = Buffer.byteLength(text, 'utf8');
+    } else {
+      for (const char of text) {
+        const charBytes = Buffer.byteLength(char, 'utf8');
+        if (byteCount + charBytes > remaining) break;
+        accepted += char;
+        byteCount += charBytes;
+      }
+    }
+
+    // Soft threshold: show /edit hint once.
+    const newTotal = current + byteCount;
+    if (newTotal >= INPUT_SOFT_BYTES && !this.inputSoftNoticeShown) {
+      this.inputSoftNoticeShown = true;
       this.options.onNotice?.(
-        `Input limit reached (${MAX_INPUT_LENGTH.toLocaleString()} characters). Use /edit for larger drafts.`,
+        `Input is large (${(newTotal / 1024).toFixed(1)} KiB). Consider /edit for better editing.`
       );
     }
-    if (!accepted) {
+
+    if (accepted.length < text.length) {
+      this.options.onNotice?.(
+        `Input limit reached (${(INPUT_HARD_BYTES / 1024).toFixed(0)} KiB). Use /edit for larger drafts.`
+      );
+    }
+
+    return accepted;
+  }
+
+  private insert(text: string): void {
+    const safeCursor = clampCursor(this.value, this.cursor);
+
+    // v0.2.23: UTF-8 byte budget check.
+    const accepted = this.acceptBytes(text);
+
+    // Also enforce the old character-based max as a safety net.
+    const charRemaining = Math.max(0, MAX_INPUT_CHARACTERS - this.value.length);
+    const finalAccepted = safeSlice(accepted, charRemaining);
+
+    if (!finalAccepted) {
       this.scheduleRender();
       return;
     }
-    this.value = `${this.value.slice(0, safeCursor)}${accepted}${this.value.slice(safeCursor)}`;
-    this.cursor = safeCursor + accepted.length;
+    this.value = `${this.value.slice(0, safeCursor)}${finalAccepted}${this.value.slice(safeCursor)}`;
+    this.cursor = safeCursor + finalAccepted.length;
     this.historyIndex = null;
     this.scheduleRender();
   }
@@ -314,26 +440,39 @@ export class RawTerminalEditor {
     this.historyIndex = null;
     this.historyDraft = '';
     this.inputLimitNoticeShown = false;
+    this.inputSoftNoticeShown = false;
 
     if (this.questionPrompt) {
       const resolve = this.questionResolve;
       this.questionPrompt = null;
       this.questionResolve = null;
+      // v0.2.23: Restore the pre-question draft after answering.
+      if (this.savedDraft) {
+        this.restoreDraft(this.savedDraft);
+        this.savedDraft = null;
+      }
       resolve?.(submitted);
       return;
     }
 
     if (submitted.trim()) {
-      this.history.push(submitted);
+      // v0.2.23: dedup adjacent entries and enforce history bound.
+      if (this.history.length === 0 || this.history[this.history.length - 1] !== submitted) {
+        this.history.push(submitted);
+        if (this.history.length > MAX_HISTORY_SIZE) {
+          this.history.shift();
+        }
+      }
     }
     this.options.onSubmit(submitted);
   }
 
   private setValue(value: string): void {
-    this.value = safeSlice(value, MAX_INPUT_LENGTH);
+    this.value = safeSlice(value, MAX_INPUT_CHARACTERS);
     this.cursor = this.value.length;
     this.historyIndex = null;
-    this.inputLimitNoticeShown = value.length > this.value.length;
+    this.inputLimitNoticeShown = false;
+    this.inputSoftNoticeShown = value.length > this.value.length;
     this.scheduleRender();
   }
 
@@ -371,9 +510,10 @@ export class RawTerminalEditor {
     }
 
     this.historyIndex = Math.max(0, Math.min(this.history.length, this.historyIndex + delta));
-    const next = this.historyIndex === this.history.length
-      ? this.historyDraft
-      : this.history[this.historyIndex] ?? '';
+    const next =
+      this.historyIndex === this.history.length
+        ? this.historyDraft
+        : (this.history[this.historyIndex] ?? '');
     this.value = next;
     this.cursor = next.length;
     this.scheduleRender();
@@ -464,6 +604,16 @@ export class RawTerminalEditor {
     this.renderedCursorRow = 0;
   }
 
+  // --- v0.2.23: Ctrl+L prompt-only redraw ---
+
+  /** Redraw only the editor-owned prompt rows without clearing native scrollback. */
+  private redrawPrompt(): void {
+    // Clear editor-owned rendered rows.
+    this.clearPromptLine();
+    // Invalidate layout snapshot and re-render current prompt + input.
+    this.render();
+  }
+
   private commitRenderedEditor(): void {
     if (this.output.isTTY !== false && this.renderedRows > 0) {
       const rowsBelowCursor = this.renderedRows - 1 - this.renderedCursorRow;
@@ -499,10 +649,7 @@ function layoutEditorFrame(input: {
   const cursorInLine = safeCursor - cursorLineStart;
   const visibleRows = Math.max(1, Math.min(input.maxRows, lines.length));
   const maxStart = Math.max(0, lines.length - visibleRows);
-  const viewportStart = Math.max(
-    0,
-    Math.min(maxStart, cursorLine - Math.floor(visibleRows / 2)),
-  );
+  const viewportStart = Math.max(0, Math.min(maxStart, cursorLine - Math.floor(visibleRows / 2)));
   const viewportEnd = Math.min(lines.length, viewportStart + visibleRows);
   const continuation = ' '.repeat(promptCells);
   const rows: string[] = [];
@@ -514,7 +661,7 @@ function layoutEditorFrame(input: {
     const line = displayInputLine(lines[lineIndex] ?? '');
     if (lineIndex === cursorLine) {
       const displayCursor = displayInputLine(
-        (lines[lineIndex] ?? '').slice(0, cursorInLine),
+        (lines[lineIndex] ?? '').slice(0, cursorInLine)
       ).length;
       const window = fitInputWindow(line, displayCursor, available);
       rows.push(`${prefix}${window.visible}`);
@@ -546,7 +693,11 @@ function countNewlines(value: string): number {
   return count;
 }
 
-function fitInputWindow(value: string, cursor: number, available: number): { visible: string; cursorColumn: number } {
+function fitInputWindow(
+  value: string,
+  cursor: number,
+  available: number
+): { visible: string; cursorColumn: number } {
   if (stringWidth(value) <= available) {
     return { visible: value, cursorColumn: stringWidth(value.slice(0, cursor)) };
   }
@@ -555,8 +706,14 @@ function fitInputWindow(value: string, cursor: number, available: number): { vis
   const after = value.slice(cursor);
   const marker = '‹';
   const markerWidth = stringWidth(marker);
-  const afterHead = takeLeftCells(after, Math.min(stringWidth(after), Math.max(0, Math.floor(available / 3))));
-  const beforeTail = takeRightCells(before, Math.max(0, available - markerWidth - stringWidth(afterHead)));
+  const afterHead = takeLeftCells(
+    after,
+    Math.min(stringWidth(after), Math.max(0, Math.floor(available / 3)))
+  );
+  const beforeTail = takeRightCells(
+    before,
+    Math.max(0, available - markerWidth - stringWidth(afterHead))
+  );
   const visible = `${marker}${beforeTail}${afterHead}`;
   return {
     visible,

@@ -1,7 +1,11 @@
 import { EventEmitter } from 'events';
 import { Store } from '../src/framework/store';
 import { loadConfig } from '../src/services/config';
-import { launchTuiUI, statusSnapshotString } from '../src/tui-ui/launch';
+import {
+  launchTuiUI,
+  parseExternalEditorCommand,
+  statusSnapshotString,
+} from '../src/tui-ui/launch';
 import type { OpenHorseUiRuntime } from '../src/runtime/ui-events';
 
 class FakeTTYInput extends EventEmitter {
@@ -97,6 +101,19 @@ function tick(): Promise<void> {
 }
 
 describe('tui-ui launch', () => {
+  it('parses external editor commands without invoking a shell', () => {
+    expect(parseExternalEditorCommand('code --wait')).toEqual(['code', '--wait']);
+    expect(
+      parseExternalEditorCommand(
+        '"/Applications/Visual Studio Code.app/Contents/MacOS/Electron" --wait'
+      )
+    ).toEqual(['/Applications/Visual Studio Code.app/Contents/MacOS/Electron', '--wait']);
+    expect(parseExternalEditorCommand("vim -c 'set number'")).toEqual(['vim', '-c', 'set number']);
+    expect(() => parseExternalEditorCommand("vim 'unfinished")).toThrow(
+      'unterminated quote or escape'
+    );
+  });
+
   it('shows current context pressure in the TUI status line', () => {
     const runtime = makeRuntime();
     runtime.store.setContextUsage({
@@ -253,6 +270,28 @@ describe('slice 7: lifecycle and exception recovery', () => {
     await launch;
 
     expect(runtime.shutdown).toHaveBeenCalledTimes(1);
+    expect(input.rawModeValues).toContain(false);
+  });
+
+  it('SIGTERM exits an active Inspector and restores the primary screen', async () => {
+    const input = new FakeTTYInput();
+    const output = new FakeTTYOutput();
+    const runtime = makeRuntime();
+
+    const launch = launchTuiUI(runtime, { input: input as any, output: output as any });
+    await tick();
+    input.emit('data', Buffer.from('\x0f'));
+    await tick();
+    await tick();
+    expect(output.text()).toContain('\x1b[?1049h');
+
+    process.emit('SIGTERM' as any);
+    await launch;
+
+    expect(output.text()).toContain('\x1b[?1049l');
+    expect(output.text().lastIndexOf('\x1b[?1049l')).toBeGreaterThan(
+      output.text().lastIndexOf('\x1b[?1049h')
+    );
     expect(input.rawModeValues).toContain(false);
   });
 

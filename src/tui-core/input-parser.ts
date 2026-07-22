@@ -12,6 +12,11 @@ export type TuiKey =
   | 'ctrl+c'
   | 'ctrl+u'
   | 'ctrl+w'
+  | 'ctrl+l'
+  | 'ctrl+o'
+  | 'ctrl+r'
+  | 'ctrl+e'
+  | 'ctrl+d'
   | 'newline'
   | 'left'
   | 'right'
@@ -27,6 +32,10 @@ export interface TuiInputParserState {
   incompleteUtf8: Buffer;
   pasteBuffer: string;
   pendingEscape: string;
+}
+
+export interface TuiInputParserFeedOptions {
+  detectUnbracketedMultilinePaste?: boolean;
 }
 
 export const initialTuiInputParserState: TuiInputParserState = {
@@ -78,7 +87,27 @@ export class TuiInputParser {
     return this.state.pendingEscape.length > 0;
   }
 
-  feed(chunk: Buffer | string): TuiInputEvent[] {
+  /** v0.2.23: Deep-copy the parser state for modal draft snapshots. */
+  getState(): TuiInputParserState {
+    return {
+      mode: this.state.mode,
+      incompleteUtf8: Buffer.from(this.state.incompleteUtf8),
+      pasteBuffer: this.state.pasteBuffer,
+      pendingEscape: this.state.pendingEscape,
+    };
+  }
+
+  /** Restore a previously captured parser state after a modal interaction. */
+  setState(state: TuiInputParserState): void {
+    this.state = {
+      mode: state.mode,
+      incompleteUtf8: Buffer.from(state.incompleteUtf8),
+      pasteBuffer: state.pasteBuffer,
+      pendingEscape: state.pendingEscape,
+    };
+  }
+
+  feed(chunk: Buffer | string, options: TuiInputParserFeedOptions = {}): TuiInputEvent[] {
     const { complete, incomplete } = splitCompleteUtf8(
       Buffer.concat([
         this.state.incompleteUtf8,
@@ -89,8 +118,17 @@ export class TuiInputParser {
 
     if (complete.length === 0) return [];
 
-    const text = this.state.pendingEscape + complete.toString('utf8');
+    const pendingEscape = this.state.pendingEscape;
+    const text = pendingEscape + complete.toString('utf8');
     this.state.pendingEscape = '';
+    if (
+      options.detectUnbracketedMultilinePaste &&
+      this.state.mode === 'normal' &&
+      !pendingEscape &&
+      isLikelyUnbracketedMultilinePaste(text)
+    ) {
+      return [{ type: 'paste', value: normalizePastedText(text) }];
+    }
     const events: TuiInputEvent[] = [];
     let index = 0;
 
@@ -217,6 +255,16 @@ function controlKeyFromChar(char: string): TuiKey | null {
       return 'ctrl+u';
     case '\x17':
       return 'ctrl+w';
+    case '\x0c':
+      return 'ctrl+l';
+    case '\x0f':
+      return 'ctrl+o';
+    case '\x12':
+      return 'ctrl+r';
+    case '\x05':
+      return 'ctrl+e';
+    case '\x04':
+      return 'ctrl+d';
     default:
       return null;
   }

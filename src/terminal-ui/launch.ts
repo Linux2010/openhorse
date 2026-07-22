@@ -26,6 +26,7 @@ import { redactTraceText } from '../services/redaction';
 import { applyTerminalTabCompletion } from './completion';
 import { openExternalEditor } from './editor';
 import { RawTerminalEditor } from './raw-editor';
+import { TerminalOutputQueue, type TerminalOutputWriter } from './output-queue';
 import type {
   EditPreviewRequest,
   OpenHorseUiRuntime,
@@ -286,6 +287,7 @@ export function formatTerminalSessionRestored(event: RuntimeSessionRestoredEvent
 
 export interface TerminalWriter {
   write(text: string): void;
+  writeAsync?: (text: string) => Promise<boolean>;
 }
 
 class DirectTerminalWriter implements TerminalWriter {
@@ -447,6 +449,7 @@ export class TerminalEventSink implements UiEventSink {
   private readonly entries = new Map<string, TranscriptEntry>();
   private readonly printedContent = new Map<string, string>();
   private readonly pendingAssistantOutput = new Map<string, string>();
+  private readonly finalizedEntryIds = new Set<string>();
   private idCounter = 0;
   private pendingPicker: SessionPickerRequest | null = null;
   private pickerOffset = 0;
@@ -460,6 +463,11 @@ export class TerminalEventSink implements UiEventSink {
    */
   private readonly subtaskTimeline = new Map<string, SubtaskTimelineEntry>();
 
+  // --- v0.2.23: bounded state configuration ---
+  private static readonly MAX_FINALIZED_METADATA = 512;
+  private static readonly MAX_PRINTED_CONTENT = 512;
+  private static readonly MAX_SUBTASK_TIMELINE = 100;
+
   constructor(
     private readonly runtime: OpenHorseUiRuntime,
     private readonly writer: TerminalWriter = new DirectTerminalWriter()
@@ -467,14 +475,23 @@ export class TerminalEventSink implements UiEventSink {
 
   append(entry: TranscriptAppendEntry): string {
     const id = `terminal-${++this.idCounter}`;
+    const { live, ...transcriptEntry } = entry;
     const fullEntry: TranscriptEntry = {
       id,
-      role: entry.role,
-      title: entry.title,
-      content: entry.content,
+      ...transcriptEntry,
     };
     this.entries.set(id, fullEntry);
-    this.printEntry(fullEntry, false);
+    const finalized = live !== true;
+    const write = this.printEntry(fullEntry, finalized);
+    if (finalized) {
+      if (write instanceof Promise) {
+        void write.then(written => {
+          if (written) this.releaseEntryBody(id);
+        });
+      } else {
+        this.releaseEntryBody(id);
+      }
+    }
     return id;
   }
 
@@ -491,12 +508,21 @@ export class TerminalEventSink implements UiEventSink {
     if (!existing) return;
     const next = patch ? { ...existing, ...patch } : existing;
     this.entries.set(id, next);
-    this.printEntry(next, true);
+    const write = this.printEntry(next, true);
+    if (write instanceof Promise) {
+      void write.then(written => {
+        if (written) this.releaseEntryBody(id);
+      });
+    } else {
+      this.releaseEntryBody(id);
+    }
   }
 
   remove(id: string): void {
     this.entries.delete(id);
     this.printedContent.delete(id);
+    this.pendingAssistantOutput.delete(id);
+    this.finalizedEntryIds.delete(id);
   }
 
   replaceTranscript(entries: TranscriptEntry[]): void {
@@ -661,24 +687,25 @@ export class TerminalEventSink implements UiEventSink {
     this.printSessionPickerPage();
   }
 
-  private printEntry(entry: TranscriptEntry, finalized: boolean): void {
+  private printEntry(entry: TranscriptEntry, finalized: boolean): void | Promise<boolean> {
     if (!entry.content) return;
 
     if (entry.role === 'assistant') {
-      this.printAssistantDelta(entry, finalized);
-      return;
+      return this.printAssistantDelta(entry, finalized);
     }
 
     const previous = this.printedContent.get(entry.id);
     if (previous === entry.content && !finalized) return;
     this.printedContent.set(entry.id, entry.content);
+    // v0.2.23: bound printed content.
+    this.evictIfNeeded(this.printedContent, TerminalEventSink.MAX_PRINTED_CONTENT);
     const formatted = formatTranscriptEntry(entry);
     if (formatted) {
-      this.writer.write(`${formatted}\n`);
+      return this.writeWithAcknowledgement(`${formatted}\n`);
     }
   }
 
-  private printAssistantDelta(entry: TranscriptEntry, finalized: boolean): void {
+  private printAssistantDelta(entry: TranscriptEntry, finalized: boolean): void | Promise<boolean> {
     const previous = this.printedContent.get(entry.id) ?? '';
     const next = entry.content;
     if (next === previous && !finalized) return;
@@ -686,19 +713,26 @@ export class TerminalEventSink implements UiEventSink {
     const delta = next.startsWith(previous) ? next.slice(previous.length) : `\n${next}`;
     const pending = `${this.pendingAssistantOutput.get(entry.id) ?? ''}${delta}`;
     this.printedContent.set(entry.id, next);
+    // v0.2.23: bound printed content.
+    this.evictIfNeeded(this.printedContent, TerminalEventSink.MAX_PRINTED_CONTENT);
 
     const shouldFlush = finalized || pending.includes('\n') || visibleLength(pending) >= 80;
     if (shouldFlush) {
       this.pendingAssistantOutput.delete(entry.id);
       if (pending) {
-        this.writer.write(pending);
+        return this.writeWithAcknowledgement(pending);
       } else if (finalized && next && !next.endsWith('\n')) {
-        this.writer.write('\n');
+        return this.writeWithAcknowledgement('\n');
       }
       return;
     }
 
     this.pendingAssistantOutput.set(entry.id, pending);
+  }
+
+  private writeWithAcknowledgement(text: string): void | Promise<boolean> {
+    if (this.writer.writeAsync) return this.writer.writeAsync(text);
+    this.writer.write(text);
   }
 
   /**
@@ -708,11 +742,54 @@ export class TerminalEventSink implements UiEventSink {
    */
   subtaskEvent(event: RuntimeSubtaskEvent): void {
     this.subtaskTimeline.set(event.taskId, subtaskEventToTimelineEntry(event));
+    // v0.2.23: bound subtask timeline.
+    this.evictIfNeeded(this.subtaskTimeline, TerminalEventSink.MAX_SUBTASK_TIMELINE);
   }
 
   /** R8: read-only access to the typed subagent timeline (for parity tests). */
   getSubtaskTimeline(): SubtaskTimelineEntry[] {
     return Array.from(this.subtaskTimeline.values());
+  }
+
+  // --- v0.2.23: bounded state helpers ---
+
+  /**
+   * After finalize, the entry content is in native scrollback.
+   * Replace the full body with a lightweight marker so memory doesn't grow
+   * with scrollback length.
+   */
+  private releaseEntryBody(id: string): void {
+    const entry = this.entries.get(id);
+    if (!entry) return;
+    // Keep role/id/title but replace heavy content with a marker.
+    this.entries.set(id, {
+      ...entry,
+      content: `[scrollback:${entry.role} posted ${entry.content.length} chars]`,
+    });
+    this.printedContent.delete(id);
+    this.pendingAssistantOutput.delete(id);
+    this.finalizedEntryIds.delete(id);
+    this.finalizedEntryIds.add(id);
+    while (this.finalizedEntryIds.size > TerminalEventSink.MAX_FINALIZED_METADATA) {
+      const oldest = this.finalizedEntryIds.values().next().value as string | undefined;
+      if (!oldest) break;
+      this.finalizedEntryIds.delete(oldest);
+      this.entries.delete(oldest);
+    }
+  }
+
+  /**
+   * Evict oldest entries from a Map when it exceeds the configured limit.
+   * Uses Map's insertion-order iteration — oldest entries are evicted first.
+   * Mirrors evictOldest in session-storage.ts; kept private to avoid a shared
+   * dependency on session-storage internals.
+   */
+  private evictIfNeeded<K, V>(map: Map<K, V>, limit: number): void {
+    while (map.size > limit) {
+      const firstKey = map.keys().next().value;
+      if (firstKey !== undefined) map.delete(firstKey);
+      else break;
+    }
   }
 }
 
@@ -1005,12 +1082,36 @@ export function normalizeTerminalAnswer(input: string): string {
 export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<void> {
   printBanner(runtime);
 
-  let editor!: RawTerminalEditor;
-  const writer: TerminalWriter = {
-    write: text => editor.writeExternal(text),
+  let agentController!: AgentRuntimeController;
+  let writer!: TerminalWriter;
+  const editor = new RawTerminalEditor({
+    cwd: runtime.cwd,
+    onSubmit: input => handleInput(input),
+    onCtrlC: () => handleSigint(),
+    onNotice: message => { void writer.write(`${DIM(message)}\n`); },
+  });
+  const outputAdapter: TerminalOutputWriter = {
+    write: text => editor.writeExternalBatch([text]),
+    on: (event, listener) => { process.stdout.on(event, listener); },
+    off: (event, listener) => { process.stdout.off(event, listener); },
+  };
+  const outputQueue = new TerminalOutputQueue(outputAdapter);
+  let outputBatchSequence = 0;
+  writer = {
+    write: text => {
+      void outputQueue.enqueue({
+        id: `terminal-output-${++outputBatchSequence}`,
+        chunks: [text],
+        releaseEntryIds: [],
+      }).catch(() => undefined);
+    },
+    writeAsync: text => outputQueue.enqueue({
+      id: `terminal-output-${++outputBatchSequence}`,
+      chunks: [text],
+      releaseEntryIds: [],
+    }).then(() => true, () => false),
   };
   const events = new TerminalEventSink(runtime, writer);
-  let agentController!: AgentRuntimeController;
 
   let stopping = false;
   let settled = false;
@@ -1078,13 +1179,6 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
       events.append({ role: 'error', content: message });
     },
   });
-  editor = new RawTerminalEditor({
-    cwd: runtime.cwd,
-    onSubmit: input => handleInput(input),
-    onCtrlC: () => handleSigint(),
-    onNotice: message => writer.write(`${DIM(message)}\n`),
-  });
-
   const prompt = (): void => {
     if (stopping) return;
     editor.setPrompt(composer.prompt(promptText(runtime)));
@@ -1100,8 +1194,14 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
     if (stopping) return;
     stopping = true;
     await agentController.stopActiveTurn();
-    editor.stop();
-    await runtime.shutdown();
+    try {
+      await outputQueue.close();
+    } catch {
+      // Terminal output failure must not block shutdown.
+    } finally {
+      editor.stop();
+      await runtime.shutdown();
+    }
     process.stdout.write('\n');
     finishLaunch();
   };
@@ -1224,8 +1324,14 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
   } finally {
     if (!stopping) {
       stopping = true;
-      editor.stop();
-      await runtime.shutdown();
+      try {
+        await outputQueue.close();
+      } catch {
+        // Terminal output failure must not block shutdown.
+      } finally {
+        editor.stop();
+        await runtime.shutdown();
+      }
       process.stdout.write('\n');
     }
   }

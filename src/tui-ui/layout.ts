@@ -23,6 +23,7 @@ export interface TuiTranscriptLayoutOptions {
   /** Transcript content width; production uses the surface safe width. */
   transcriptWidth?: number;
   theme?: TuiTheme;
+  toolOutputMode?: 'adaptive' | 'collapsed' | 'full';
   /** Runner-provided cached layout. Pure render callers use the shared default. */
   layoutTranscriptRecord?: TranscriptRecordLayout;
 }
@@ -496,7 +497,11 @@ function layoutRecord(
   options: TuiTranscriptLayoutOptions,
 ): StyledRow[] {
   return options.layoutTranscriptRecord?.(entry, width)
-    ?? layoutTranscriptEntry(entry, { width, theme: options.theme });
+    ?? layoutTranscriptEntry(entry, {
+      width,
+      theme: options.theme,
+      toolOutputMode: options.toolOutputMode,
+    });
 }
 
 function resolveTranscriptWidth(frameWidth: number, requested?: number): number {

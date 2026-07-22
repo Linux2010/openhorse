@@ -1,4 +1,10 @@
-import type { ContextCapsule, ContextLedgerEntry, HarnessState, PlanStep, TaskContract } from './types';
+import type {
+  ContextCapsule,
+  ContextLedgerEntry,
+  HarnessState,
+  PlanStep,
+  TaskContract,
+} from './types';
 
 function metadataString(entry: ContextLedgerEntry, key: string): string | undefined {
   const value = entry.metadata?.[key];
@@ -19,9 +25,15 @@ function compactLine(text: string, max = 160): string {
   return normalized.length > max ? normalized.slice(0, max - 3) + '...' : normalized;
 }
 
+function fallbackNextAction(contract: TaskContract | undefined): string {
+  if (!contract) return 'Continue the current task.';
+  const currentInstruction = compactLine(contract.userIntent || contract.objective, 220);
+  return `Address current instruction: ${currentInstruction}`;
+}
+
 export function createContextCapsule(
   contract: TaskContract | undefined,
-  entries: ContextLedgerEntry[],
+  entries: ContextLedgerEntry[]
 ): ContextCapsule {
   const now = Date.now();
   const keyFacts = [...entries]
@@ -36,22 +48,32 @@ export function createContextCapsule(
     status: index === 0 ? 'in_progress' : 'pending',
   }));
 
-  const verificationEntries = entries.filter(entry => entry.type === 'verification' || entry.type === 'test_result');
+  const verificationEntries = entries.filter(
+    entry => entry.type === 'verification' || entry.type === 'test_result'
+  );
   const passed = verificationEntries
     .filter(entry => metadataBool(entry, 'success') === true)
     .map(entry => compactLine(entry.content));
   const failed = verificationEntries
     .filter(entry => metadataBool(entry, 'success') === false)
     .map(entry => compactLine(entry.content));
-  const commandsRun = unique(verificationEntries.map(entry => metadataString(entry, 'command') || '').filter(Boolean));
-  const changedFiles = unique(entries.map(entry => metadataString(entry, 'changedFile') || metadataString(entry, 'path') || '').filter(Boolean));
+  const commandsRun = unique(
+    verificationEntries.map(entry => metadataString(entry, 'command') || '').filter(Boolean)
+  );
+  const changedFiles = unique(
+    entries
+      .map(entry => metadataString(entry, 'changedFile') || metadataString(entry, 'path') || '')
+      .filter(Boolean)
+  );
   const completed = entries
-    .filter(entry => entry.type === 'decision' || (entry.type === 'tool_result' && metadataBool(entry, 'success') === true))
+    .filter(
+      entry =>
+        entry.type === 'decision' ||
+        (entry.type === 'tool_result' && metadataBool(entry, 'success') === true)
+    )
     .slice(-8)
     .map(entry => compactLine(entry.content));
-  const openTodos = currentPlan.length > 0
-    ? currentPlan.filter(step => step.status !== 'completed').map(step => step.title)
-    : (contract?.successCriteria ?? []).map(item => compactLine(item));
+  const openTodos = currentPlan.filter(step => step.status !== 'completed').map(step => step.title);
 
   return {
     contract,
@@ -64,11 +86,32 @@ export function createContextCapsule(
       commandsRun,
       passed,
       failed,
-      warnings: entries.filter(entry => entry.type === 'risk' || entry.type === 'blocker').slice(-5).map(entry => compactLine(entry.content)),
+      warnings: entries
+        .filter(entry => entry.type === 'risk' || entry.type === 'blocker')
+        .slice(-5)
+        .map(entry => compactLine(entry.content)),
     },
-    nextAction: openTodos[0] || (contract ? `Continue: ${contract.objective}` : 'Continue the current task.'),
+    nextAction: openTodos[0] || fallbackNextAction(contract),
     createdAt: now,
     updatedAt: now,
+  };
+}
+
+export function normalizeContextCapsule(
+  capsule: ContextCapsule,
+  contract: TaskContract | undefined = capsule.contract
+): ContextCapsule {
+  const currentPlan = capsule.currentPlan ?? [];
+  const openTodos = currentPlan
+    .filter(step => step.status !== 'completed')
+    .map(step => compactLine(step.title));
+  return {
+    ...capsule,
+    contract,
+    currentPlan,
+    openTodos,
+    nextAction: openTodos[0] || fallbackNextAction(contract),
+    updatedAt: Date.now(),
   };
 }
 
@@ -114,21 +157,27 @@ export function renderContextCapsule(capsule: ContextCapsule): string {
 
 export function renderHarnessStateForCompact(
   state: HarnessState,
-  mode: 'manual' | 'auto_pre_turn' | 'mid_turn' = 'manual',
+  mode: 'manual' | 'auto_pre_turn' | 'mid_turn' = 'manual'
 ): string {
   const lines: string[] = ['[OpenHorse Context State v2]'];
   lines.push(`mode: ${mode}`);
   lines.push(`taskEpoch: ${state.taskEpoch ?? 1}`);
   if (state.rootObjective || state.contract?.objective) {
-    lines.push(`rootObjective: ${compactLine(state.rootObjective ?? state.contract!.objective, 220)}`);
+    lines.push(
+      `rootObjective: ${compactLine(state.rootObjective ?? state.contract!.objective, 220)}`
+    );
   }
   if (state.activeInstruction || state.contract?.userIntent) {
-    lines.push(`activeInstruction: ${compactLine(state.activeInstruction ?? state.contract!.userIntent, 260)}`);
+    lines.push(
+      `activeInstruction: ${compactLine(state.activeInstruction ?? state.contract!.userIntent, 260)}`
+    );
   }
 
   const latestIntent = state.intentHistory?.[state.intentHistory.length - 1];
   if (latestIntent) {
-    lines.push(`latestIntent: ${latestIntent.kind} (${Math.round(latestIntent.confidence * 100)}%)`);
+    lines.push(
+      `latestIntent: ${latestIntent.kind} (${Math.round(latestIntent.confidence * 100)}%)`
+    );
   }
 
   const constraints = state.activeConstraints ?? state.contract?.constraints ?? [];
@@ -154,11 +203,17 @@ export function renderHarnessStateForCompact(
       lines.push(...state.capsule.openTodos.slice(0, 8).map(item => `- ${compactLine(item)}`));
     }
     const verification = state.capsule.verification;
-    if (verification.passed.length > 0 || verification.failed.length > 0 || verification.warnings.length > 0) {
+    if (
+      verification.passed.length > 0 ||
+      verification.failed.length > 0 ||
+      verification.warnings.length > 0
+    ) {
       lines.push('verification:');
       lines.push(...verification.passed.slice(0, 5).map(item => `- passed: ${compactLine(item)}`));
       lines.push(...verification.failed.slice(0, 5).map(item => `- failed: ${compactLine(item)}`));
-      lines.push(...verification.warnings.slice(0, 4).map(item => `- warning: ${compactLine(item)}`));
+      lines.push(
+        ...verification.warnings.slice(0, 4).map(item => `- warning: ${compactLine(item)}`)
+      );
     }
     if (state.capsule.changedFiles.length > 0) {
       lines.push(`changedFiles: ${state.capsule.changedFiles.slice(0, 12).join(', ')}`);
@@ -170,11 +225,16 @@ export function renderHarnessStateForCompact(
   if (turns.length > 0) {
     lines.push('recentTurns:');
     for (const turn of turns.slice(-5)) {
-      lines.push(`- turn ${turn.turn} [${turn.intentKind}]: ${compactLine(turn.userIntent, 100)} -> ${compactLine(turn.assistantOutcome, 140)}`);
+      lines.push(
+        `- turn ${turn.turn} [${turn.intentKind}]: ${compactLine(turn.userIntent, 100)} -> ${compactLine(turn.assistantOutcome, 140)}`
+      );
     }
   }
 
-  const evidenceIds = state.promptAssemblyStats?.includedEvidence.map(item => item.id) ?? state.evidenceIndex?.slice(0, 8).map(item => item.id) ?? [];
+  const evidenceIds =
+    state.promptAssemblyStats?.includedEvidence.map(item => item.id) ??
+    state.evidenceIndex?.slice(0, 8).map(item => item.id) ??
+    [];
   if (evidenceIds.length > 0) {
     lines.push(`evidenceIds: ${evidenceIds.slice(0, 12).join(', ')}`);
   }

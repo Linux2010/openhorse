@@ -16,6 +16,7 @@ import {
   loadSessionMeta,
   removeLastIncompleteAssistantMessage,
   readSessionMessages,
+  readSessionTraceEvents,
   redactTraceText,
   updateSessionHarnessState,
   updateSessionSkills,
@@ -88,6 +89,11 @@ import {
   verificationGateStatus,
 } from './agent-status';
 import { resolveRuntimeLoopBudget } from './loop-budget';
+import {
+  createToolOutputView,
+  DEFAULT_TOOL_OUTPUT_POLICY,
+} from './tool-output-presentation';
+import { presentAggregateToolResult } from './aggregate-tool-presenter';
 
 const ANSI_PATTERN = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const LOCAL_FAST_PATH_INLINE_OUTPUT_BYTES = 2048;
@@ -616,34 +622,80 @@ function structuredToolStartActivity(event: ToolCallEvent, seq: number): Structu
     event.name === 'exec_command' && typeof event.args.command === 'string'
       ? event.args.command
       : undefined;
+  const safeCommand = command ? redactTraceText(command) : undefined;
   return {
     state: 'running',
     name: event.name,
-    detail: command ? '' : compactToolArgs(event.args, TOOL_TRANSCRIPT_ARG_BUDGET),
-    command,
+    detail: command ? '' : redactTraceText(compactToolArgs(event.args, TOOL_TRANSCRIPT_ARG_BUDGET)),
+    command: safeCommand,
     body: '',
     seq,
   };
 }
 
-function structuredToolFinishActivity(event: ToolResultEvent, seq: number): StructuredToolActivity {
+interface ToolEventPresenterOptions {
+  projectPath?: string;
+  turnId?: string;
+}
+
+function structuredToolFinishActivity(
+  event: ToolResultEvent,
+  seq: number,
+  options: ToolEventPresenterOptions = {},
+): StructuredToolActivity {
   const modelVisible = parseToolResultEnvelope(event.modelVisibleResult);
+  const durable = parseToolResultEnvelope(event.result);
+  const durableOutput = typeof durable.output === 'string' ? durable.output : '';
+  const displayOutput = typeof modelVisible.output === 'string' ? modelVisible.output : durableOutput;
+  const outputBytes = event.outputBytes ?? Buffer.byteLength(durableOutput, 'utf8');
+  const aggregatePresentation = presentAggregateToolResult(event.name, durableOutput, outputBytes);
+  const aggregate = aggregatePresentation?.view;
+  const storedArtifact = event.artifactRef ?? (
+    options.projectPath && durableOutput && (outputBytes > DEFAULT_TOOL_OUTPUT_POLICY.inlineMaxBytes || aggregate)
+      ? storeArtifact(options.projectPath, event.name, durableOutput, outputBytes) ?? undefined
+      : undefined
+  );
+  const artifactRef = storedArtifact
+    ? { id: storedArtifact.id, outputBytes: storedArtifact.outputBytes }
+    : undefined;
+  const outputView = createToolOutputView({
+    toolName: event.name,
+    success: event.success,
+    summary: event.summary,
+    rawOutput: durableOutput.length <= 64 * 1024 ? durableOutput : displayOutput,
+    outputBytes,
+    artifactRef,
+    callId: event.callId,
+    sequence: seq,
+    turnId: options.turnId,
+    policy: DEFAULT_TOOL_OUTPUT_POLICY,
+  });
+  if (aggregate) {
+    outputView.aggregate = {
+      ...aggregate,
+      steps: aggregate.steps.map(step => ({ ...step, detailRef: outputView.detailRef })),
+    };
+  }
   const command =
     event.name === 'exec_command' && typeof event.args.command === 'string'
       ? event.args.command
       : undefined;
+  const safeCommand = command ? redactTraceText(command) : undefined;
   return {
     state: event.success ? 'success' : 'error',
     name: event.name,
-    detail: command ? '' : compactToolArgs(event.args, TOOL_TRANSCRIPT_ARG_BUDGET),
-    command,
+    detail: command ? '' : redactTraceText(compactToolArgs(event.args, TOOL_TRANSCRIPT_ARG_BUDGET)),
+    command: safeCommand,
     duration: `${event.duration}ms`,
-    summary: event.summary?.split(/\r?\n/u, 1)[0],
-    outputBytes: event.outputBytes,
-    body: modelVisible.output,
-    error: event.error,
+    summary: event.summary ? redactTraceText(event.summary.split(/\r?\n/u, 1)[0]) : undefined,
+    outputBytes,
+    body: redactTraceText(modelVisible.output),
+    error: event.error ? redactTraceText(event.error) : undefined,
     seq,
-    artifactHint: event.artifactRef ? `/artifacts show ${event.artifactRef.id} --full` : undefined,
+    artifactHint: artifactRef ? `/artifacts show ${artifactRef.id} --full` : undefined,
+    callId: event.callId,
+    turnId: options.turnId,
+    outputView,
   };
 }
 
@@ -721,11 +773,27 @@ function sessionToolResultSummary(
   return parsed.error ? `${firstLine}\nError: ${parsed.error}` : firstLine;
 }
 
-export function sessionMessagesToTranscriptEntries(sessionId: string): TranscriptEntry[] {
+export interface SessionTranscriptEntryOptions {
+  includeToolOutputViews?: boolean;
+}
+
+export function sessionMessagesToTranscriptEntries(
+  sessionId: string,
+  options: SessionTranscriptEntryOptions = {},
+): TranscriptEntry[] {
   const messages = loadSessionTranscriptMessages(sessionId);
+  const resultTraces = options.includeToolOutputViews
+    ? readSessionTraceEvents(sessionId).filter(trace => trace.type === 'tool_result' && trace.callId)
+    : [];
+  const resultTraceByCallId = new Map(resultTraces.map(trace => [trace.callId!, trace]));
+  const sequenceByCallId = new Map<string, number>();
+  resultTraces.forEach((trace, index) => {
+    if (!sequenceByCallId.has(trace.callId!)) sequenceByCallId.set(trace.callId!, index + 1);
+  });
   const entries: TranscriptEntry[] = [];
   const toolCallsById = new Map<string, NonNullable<SessionMessage['tool_calls']>[number]>();
   const completedToolCallIds = new Set<string>();
+  let fallbackToolSequence = 0;
 
   for (const message of messages) {
     for (const call of message.tool_calls ?? []) {
@@ -763,6 +831,36 @@ export function sessionMessagesToTranscriptEntries(sessionId: string): Transcrip
 
     if (message.role === 'tool') {
       const summary = sessionToolResultSummary(message, toolCallsById);
+      const call = message.toolCallId ? toolCallsById.get(message.toolCallId) : undefined;
+      const trace = message.toolCallId ? resultTraceByCallId.get(message.toolCallId) : undefined;
+      const durable = parseToolResultEnvelope(message.content);
+      const modelVisible = message.modelVisibleContent
+        ? parseToolResultEnvelope(message.modelVisibleContent)
+        : durable;
+      const durableOutput = typeof durable.output === 'string' ? durable.output : '';
+      const displayOutput = typeof modelVisible.output === 'string' ? modelVisible.output : durableOutput;
+      const outputBytes = trace?.outputBytes
+        ?? (durable.schemaVersion === 1 ? durable.outputBytes : undefined)
+        ?? Buffer.byteLength(durableOutput, 'utf8');
+      const artifactId = durable.artifactRef?.id ?? trace?.artifactId;
+      fallbackToolSequence += 1;
+      const sequence = message.toolCallId
+        ? sequenceByCallId.get(message.toolCallId) ?? fallbackToolSequence
+        : fallbackToolSequence;
+      const outputView = options.includeToolOutputViews && call && message.toolCallId
+        ? createToolOutputView({
+          toolName: call.function.name,
+          success: durable.success,
+          summary: durable.summary,
+          rawOutput: durableOutput.length <= 64 * 1024 ? durableOutput : displayOutput,
+          outputBytes,
+          artifactRef: artifactId ? { id: artifactId, outputBytes } : undefined,
+          callId: message.toolCallId,
+          sequence,
+          turnId: trace?.turnId,
+          policy: DEFAULT_TOOL_OUTPUT_POLICY,
+        })
+        : undefined;
       entries.push({
         id: `${idBase}-tool`,
         role: 'tool',
@@ -771,6 +869,27 @@ export function sessionMessagesToTranscriptEntries(sessionId: string): Transcrip
           (message.toolCallId
             ? `Tool result ${message.toolCallId}\n${message.content}`
             : message.content),
+        toolActivity: call && message.toolCallId && outputView
+          ? {
+            state: durable.success ? 'success' : 'error',
+            name: call.function.name,
+            detail: redactTraceText(compactToolArgs(parseToolCallArgs(call.function.arguments))),
+            summary: durable.summary
+              ? redactTraceText(durable.summary.split(/\r?\n/u, 1)[0])
+              : undefined,
+            outputBytes,
+            body: redactTraceText(
+              durableOutput.length <= 64 * 1024 ? durableOutput : displayOutput,
+            ),
+            error: durable.error ? redactTraceText(durable.error) : undefined,
+            duration: typeof trace?.duration === 'number' ? `${trace.duration}ms` : undefined,
+            seq: sequence,
+            artifactHint: artifactId ? `/artifacts show ${artifactId} --full` : undefined,
+            callId: message.toolCallId,
+            turnId: trace?.turnId,
+            outputView,
+          }
+          : undefined,
       });
       return;
     }
@@ -963,7 +1082,10 @@ export interface ToolEventPresenter {
   finalizePendingAsSkipped(reason?: string): void;
 }
 
-export function createToolEventPresenter(events: UiEventSink): ToolEventPresenter {
+export function createToolEventPresenter(
+  events: UiEventSink,
+  options: ToolEventPresenterOptions = {},
+): ToolEventPresenter {
   const runningToolEntries = new Map<
     string,
     {
@@ -1008,7 +1130,7 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
       const content = toolFinishContent(event);
       const stored = runningToolEntries.get(event.callId);
       const seq = stored?.sequence ?? ++toolSequenceCounter;
-      const toolActivity = structuredToolFinishActivity(event, seq);
+      const toolActivity = structuredToolFinishActivity(event, seq, options);
 
       if (stored) {
         events.finalize(stored.entryId, {
@@ -1037,7 +1159,12 @@ export function createToolEventPresenter(events: UiEventSink): ToolEventPresente
         summary: event.summary,
         error: event.error,
         outputBytes: event.outputBytes,
-        artifactRef: event.artifactRef,
+        artifactRef: toolActivity.outputView?.detailRef?.artifactId
+          ? {
+            id: toolActivity.outputView.detailRef.artifactId,
+            outputBytes: toolActivity.outputView.detailRef.outputBytes,
+          }
+          : event.artifactRef,
         sequence: seq,
         batchCount: event.batchCount,
         batchIndex: event.batchIndex,
@@ -1356,7 +1483,10 @@ export class AgentChatController {
         role: envelope.success ? 'tool' : 'error',
         title: 'local',
         content: toolFinishContent(localToolResultEvent),
-        toolActivity: structuredToolFinishActivity(localToolResultEvent, 1),
+        toolActivity: structuredToolFinishActivity(localToolResultEvent, 1, {
+          projectPath: this.runtime.cwd,
+          turnId,
+        }),
       });
 
       this.runtime.store.addMessage({ role: 'assistant', content: assistantContent });
@@ -1458,7 +1588,12 @@ export class AgentChatController {
       ensureSession: this.runtime.ensureSession,
       setSession: session => {
         this.runtime.setSession(session);
-        this.events.replaceTranscript(sessionMessagesToTranscriptEntries(session.id));
+        const renderer = this.controllerOptions.uiRenderer
+          ?? this.runtime.config.ui?.renderer
+          ?? 'terminal';
+        this.events.replaceTranscript(sessionMessagesToTranscriptEntries(session.id, {
+          includeToolOutputViews: renderer === 'tui',
+        }));
       },
       sessionRestored: event => {
         this.events.sessionRestored?.(event);
@@ -1732,7 +1867,10 @@ export class AgentChatController {
     const verificationResults: VerificationCommandResult[] = [];
     const sessionMessagesToRecord: SessionMessage[] = [];
     const assistantStream = createAssistantStreamPresenter(this.events, abortSignal);
-    const toolEvents = createToolEventPresenter(this.events);
+    const toolEvents = createToolEventPresenter(this.events, {
+      projectPath: this.runtime.cwd,
+      turnId,
+    });
     let checkpointSequence = 0;
     const checkpointIds: string[] = [];
 

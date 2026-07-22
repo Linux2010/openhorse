@@ -8,6 +8,7 @@ import {
   statSync,
 } from 'fs';
 import { join } from 'path';
+import { SESSION_SIDECAR_SUFFIXES } from './session-storage';
 import {
   getCanonicalProjectKey,
   getConfigHome,
@@ -337,7 +338,7 @@ function listProjectSummaries(projectsDir: string): StorageProjectSummary[] {
     const metadata = projectPath ? readProjectMetadata(projectPath) : null;
     const sessionsDir = join(projectDir, 'sessions');
     const sessions = existsSync(sessionsDir)
-      ? readdirSync(sessionsDir).filter(file => file.endsWith('.json') && !file.endsWith('.harness.json') && !file.endsWith('.index.json')).length
+      ? readdirSync(sessionsDir).filter(file => file.endsWith('.json') && !SESSION_SIDECAR_SUFFIXES.some(s => file.endsWith(s))).length
       : 0;
 
     summaries.push({
@@ -367,7 +368,7 @@ function inferProjectPath(projectDir: string): string | undefined {
   const sessionsDir = join(projectDir, 'sessions');
   if (!existsSync(sessionsDir)) return undefined;
   for (const file of readdirSync(sessionsDir)) {
-    if (!file.endsWith('.json') || file.endsWith('.harness.json') || file.endsWith('.index.json')) continue;
+    if (!file.endsWith('.json') || SESSION_SIDECAR_SUFFIXES.some(s => file.endsWith(s))) continue;
     try {
       const parsed = JSON.parse(readFileSync(join(sessionsDir, file), 'utf8')) as { projectPath?: unknown };
       if (typeof parsed.projectPath === 'string' && parsed.projectPath) {

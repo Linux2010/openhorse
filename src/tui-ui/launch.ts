@@ -12,10 +12,14 @@ import {
 import { contextUsageStatusText, createStatusSnapshot } from '../runtime/ui-view-model';
 import { TuiRunner } from './runner';
 import { InlineTerminalSurface } from './inline-surface';
+import { FileToolDetailRepository } from '../runtime/tool-detail-repository';
+import { TranscriptInspectorSurface } from './transcript-inspector-surface';
+import { spawn } from 'child_process';
 
 const DISABLE_BRACKETED_PASTE = '\x1b[?2004l';
 const SHOW_CURSOR = '\x1b[?25h';
 const ENABLE_AUTOWRAP = '\x1b[?7h';
+const EXIT_ALTERNATE_SCREEN = '\x1b[?1049l';
 
 export interface TuiLaunchOptions {
   input?: NodeJS.ReadStream;
@@ -77,7 +81,9 @@ export async function launchTuiUI(
       /* best effort */
     }
     try {
-      output.write(`${SHOW_CURSOR}${ENABLE_AUTOWRAP}${DISABLE_BRACKETED_PASTE}\n`);
+      output.write(
+        `${SHOW_CURSOR}${ENABLE_AUTOWRAP}${DISABLE_BRACKETED_PASTE}${EXIT_ALTERNATE_SCREEN}\n`
+      );
     } catch {
       /* best effort */
     }
@@ -147,6 +153,15 @@ export async function launchTuiUI(
           await controller.stopActiveTurn();
         } catch {
           /* best effort — don't block cleanup */
+        }
+      }
+
+      if (runner) {
+        try {
+          await runner.closeModalSurface();
+          await runner.flushTranscriptCommits();
+        } catch {
+          /* best effort */
         }
       }
 
@@ -392,6 +407,7 @@ export async function launchTuiUI(
     // Primary-screen inline surface: no alternate screen (1049).
     const { width, height } = dimensions();
     surface = new InlineTerminalSurface({ output });
+    const inspectorSurface = new TranscriptInspectorSurface(output);
     // Mount enters the same serialized queue as subsequent paints. Start it
     // synchronously so input listeners are installed in this turn; awaiting it
     // here creates a window where early keystrokes are dropped.
@@ -415,6 +431,24 @@ export async function launchTuiUI(
       },
       surface,
       onSurfaceError: failRenderer,
+      detailRepository: new FileToolDetailRepository(),
+      inspectorSurface,
+      onOpenExternalEditor: async filePath => {
+        await surface.suspend();
+        input.off('data', handleData);
+        try {
+          if (typeof input.setRawMode === 'function') input.setRawMode(false);
+          input.pause();
+          await launchExternalEditor(filePath);
+        } finally {
+          if (!stopping) {
+            input.resume();
+            if (typeof input.setRawMode === 'function') input.setRawMode(true);
+            input.on('data', handleData);
+            await surface.restore(() => null, dimensions().width, dimensions().height);
+          }
+        }
+      },
     });
     restoreConsole = installTuiConsoleBridge(runner.events, () => stopping);
     const dispatchStatusSnapshot = (phase: 'ready' | 'running'): string => {
@@ -444,7 +478,7 @@ export async function launchTuiUI(
     // It's finalized when the user submits their first input.
     systemId = runner.events.append({
       role: 'system',
-      content: `OPENHORSE v${runtime.version}\nProject ${runtime.cwd}\n/ commands   @ files   ? shortcuts   Ctrl+C twice exits`,
+      content: `OPENHORSE v${runtime.version}\nProject ${runtime.cwd}\n/ commands   @ files   ? shortcuts   Ctrl+O tools   Ctrl+C twice exits`,
       live: true,
     });
     runner.events.setStatus(statusSnapshotString(runtime));
@@ -469,6 +503,79 @@ export async function launchTuiUI(
     failRenderer(error);
     throw error;
   }
+}
+
+export function parseExternalEditorCommand(commandLine: string): string[] {
+  const args: string[] = [];
+  let current = '';
+  let quote: 'single' | 'double' | null = null;
+  let escaped = false;
+  let started = false;
+
+  for (const character of commandLine.trim()) {
+    if (escaped) {
+      current += character;
+      escaped = false;
+      started = true;
+      continue;
+    }
+    if (character === '\\' && quote !== 'single') {
+      escaped = true;
+      started = true;
+      continue;
+    }
+    if (character === "'" && quote !== 'double') {
+      quote = quote === 'single' ? null : 'single';
+      started = true;
+      continue;
+    }
+    if (character === '"' && quote !== 'single') {
+      quote = quote === 'double' ? null : 'double';
+      started = true;
+      continue;
+    }
+    if (/\s/.test(character) && quote === null) {
+      if (started) {
+        args.push(current);
+        current = '';
+        started = false;
+      }
+      continue;
+    }
+    current += character;
+    started = true;
+  }
+
+  if (escaped || quote !== null) {
+    throw new Error('Invalid $VISUAL/$EDITOR command: unterminated quote or escape');
+  }
+  if (started) args.push(current);
+  return args;
+}
+
+function launchExternalEditor(filePath: string): Promise<void> {
+  const editorCommand = process.env.VISUAL || process.env.EDITOR || 'vi';
+  const [editor, ...editorArgs] = parseExternalEditorCommand(editorCommand);
+  if (!editor) {
+    return Promise.reject(new Error('$VISUAL/$EDITOR does not name an executable'));
+  }
+  return new Promise((resolve, reject) => {
+    const child = spawn(editor, [...editorArgs, filePath], { stdio: 'inherit' });
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(
+        new Error(
+          signal
+            ? `${editor} exited from signal ${signal}`
+            : `${editor} exited with code ${code ?? 'unknown'}`
+        )
+      );
+    });
+  });
 }
 
 function installTuiConsoleBridge(events: UiEventSink, isStopping: () => boolean): () => void {

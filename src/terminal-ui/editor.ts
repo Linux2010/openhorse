@@ -1,5 +1,6 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
+import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { spawnSync as nodeSpawnSync, type SpawnSyncReturns } from 'child_process';
 
@@ -22,11 +23,14 @@ export function selectEditor(env: NodeJS.ProcessEnv = process.env): string {
 export function openExternalEditor(options: EditorOptions = {}): EditorResult {
   const editor = selectEditor(options.env);
   const spawn = options.spawnSync ?? nodeSpawnSync;
-  const dir = mkdtempSync(join(tmpdir(), 'openhorse-edit-'));
+  // v0.2.23: unique temp dir with random component to avoid collisions.
+  const dir = mkdtempSync(join(tmpdir(), `openhorse-edit-${randomUUID().slice(0, 8)}-`));
   const file = join(dir, 'prompt.md');
 
   try {
-    writeFileSync(file, options.initialContent ?? '', 'utf8');
+    writeFileSync(file, options.initialContent ?? '', { encoding: 'utf8', mode: 0o600 });
+    // Explicit chmod for platforms where writeFileSync mode may not apply.
+    try { chmodSync(file, 0o600); } catch { /* best effort */ }
     const result = spawn(editor, [file], {
       stdio: 'inherit',
       shell: true,
@@ -47,6 +51,7 @@ export function openExternalEditor(options: EditorOptions = {}): EditorResult {
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    // v0.2.23: guaranteed cleanup of temp dir.
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
   }
 }
