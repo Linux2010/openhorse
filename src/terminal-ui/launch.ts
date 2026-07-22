@@ -38,6 +38,8 @@ import type {
   ToolPermissionRequest,
   UiEventSink,
 } from '../runtime/ui-events';
+import { isTargetCommand, parseTargetCommand } from '../commands/target-command';
+import { GoalCoordinator } from '../runtime/goals/coordinator';
 
 const ACCENT = chalk.hex('#80E6E8');
 const DIM = chalk.hex('#567089');
@@ -248,6 +250,35 @@ export function formatTerminalStatusMessage(
   width = terminalContentWidth(120)
 ): string {
   return truncateTerminalText(message.replace(/\s+/g, ' ').trim(), Math.max(1, width));
+}
+
+// --- v0.2.24: /target command result formatting ---
+
+import type { GoalControlInput } from '../runtime/goals/types';
+
+function formatTargetCommandResult(input: GoalControlInput): string {
+  switch (input.action) {
+    case 'show':
+      return 'Target: no active goal. Use /target <objective> to create one.';
+    case 'create':
+      return `Goal created: ${input.payload?.objective ?? ''}`;
+    case 'pause':
+      return 'Goal paused. Use /target resume to continue.';
+    case 'resume':
+      return 'Goal resumed. Will continue when runtime is idle.';
+    case 'edit':
+      return `Goal updated: ${input.payload?.objective ?? ''}`;
+    case 'replace':
+      return `Goal replaced: ${input.payload?.objective ?? ''}`;
+    case 'clear':
+      return 'Goal cleared.';
+    case 'set_budget':
+      return input.payload?.tokenBudget
+        ? `Goal token budget set to ${input.payload.tokenBudget}.`
+        : 'Goal token budget removed.';
+    default:
+      return 'Target command processed.';
+  }
 }
 
 export function formatTerminalSessionRestored(event: RuntimeSessionRestoredEvent): string {
@@ -1162,6 +1193,10 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
     },
   };
 
+  // v0.2.24: initialize goal coordinator for /target mode.
+  const goalCoordinator = new GoalCoordinator(runtime.cwd, runtime.getSession()?.id ?? 'new');
+  goalCoordinator.load();
+
   agentController = new AgentRuntimeController({
     runtime,
     eventSink,
@@ -1179,6 +1214,7 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
       events.append({ role: 'error', content: message });
     },
   });
+  agentController.setGoalCoordinator(goalCoordinator);
   const prompt = (): void => {
     if (stopping) return;
     editor.setPrompt(composer.prompt(promptText(runtime)));
@@ -1255,6 +1291,25 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
     input ??= answer;
 
     if (!composer.isActive()) {
+      // v0.2.24: intercept /target and /goal commands.
+      if (isTargetCommand(input)) {
+        const parsed = parseTargetCommand(input);
+        if (parsed.ok) {
+          events.append({
+            role: 'system',
+            content: formatTargetCommandResult(parsed.input),
+          });
+          // Route to controller for goal lifecycle.
+          if (parsed.input.action !== 'show') {
+            agentController.handle(parsed.input as unknown as AgentRuntimeInput);
+          }
+        } else {
+          events.append({ role: 'error', content: parsed.error });
+        }
+        prompt();
+        return;
+      }
+
       const edit = parseEditInput(input);
       if (edit.isEdit) {
         editor.stop();
