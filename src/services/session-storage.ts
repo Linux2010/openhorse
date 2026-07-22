@@ -5,7 +5,15 @@
  * 参考 OpenClaude 的 history.jsonl 和 sessions/ 目录。
  */
 
-import { existsSync, readFileSync, appendFileSync, readdirSync, unlinkSync, realpathSync, statSync } from 'fs';
+import {
+  existsSync,
+  readFileSync,
+  appendFileSync,
+  readdirSync,
+  unlinkSync,
+  realpathSync,
+  statSync,
+} from 'fs';
 import { randomUUID } from 'crypto';
 import { execFileSync } from 'child_process';
 import { join, resolve } from 'path';
@@ -28,7 +36,13 @@ import { redactTraceText } from './redaction';
 import type { LoopContinuationAction, LoopFinishReason } from '../framework/query';
 import type { Message } from './llm';
 import type { ContextUsageSnapshot } from './model-context';
-import { summarizeHarnessStateForMeta, upgradeHarnessState, type ContextCapsule, type HarnessSidecar, type HarnessState } from '../harness';
+import {
+  summarizeHarnessStateForMeta,
+  upgradeHarnessState,
+  type ContextCapsule,
+  type HarnessSidecar,
+  type HarnessState,
+} from '../harness';
 
 // ============================================================================
 // 类型定义
@@ -43,7 +57,7 @@ export interface ToolCallRecord {
   /** 函数信息 */
   function: {
     name: string;
-    arguments: string;  // JSON string
+    arguments: string; // JSON string
   };
 }
 
@@ -293,10 +307,16 @@ export interface SessionTraceEvent {
 export { redactTraceText } from './redaction';
 
 function sanitizeTraceEvent(
-  event: Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number },
+  event: Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number }
 ): Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number } {
   const sanitized = { ...event };
-  for (const key of ['argsSummary', 'error', 'note', 'permissionReason', 'continuationHint'] as const) {
+  for (const key of [
+    'argsSummary',
+    'error',
+    'note',
+    'permissionReason',
+    'continuationHint',
+  ] as const) {
     if (typeof sanitized[key] === 'string') {
       sanitized[key] = redactTraceText(sanitized[key]);
     }
@@ -323,7 +343,8 @@ function sanitizeTraceEvent(
     sanitized.workspaceNewByTurn = sanitized.workspaceNewByTurn.map(redactTraceText);
   }
   if (sanitized.workspaceModifiedPreExistingByTurn) {
-    sanitized.workspaceModifiedPreExistingByTurn = sanitized.workspaceModifiedPreExistingByTurn.map(redactTraceText);
+    sanitized.workspaceModifiedPreExistingByTurn =
+      sanitized.workspaceModifiedPreExistingByTurn.map(redactTraceText);
   }
   if (sanitized.workspaceResolvedByTurn) {
     sanitized.workspaceResolvedByTurn = sanitized.workspaceResolvedByTurn.map(redactTraceText);
@@ -351,13 +372,16 @@ function sanitizeTraceEvent(
     sanitized.verificationChangedFiles = sanitized.verificationChangedFiles.map(redactTraceText);
   }
   if (sanitized.verificationPassedCommands) {
-    sanitized.verificationPassedCommands = sanitized.verificationPassedCommands.map(redactTraceText);
+    sanitized.verificationPassedCommands =
+      sanitized.verificationPassedCommands.map(redactTraceText);
   }
   if (sanitized.verificationFailedCommands) {
-    sanitized.verificationFailedCommands = sanitized.verificationFailedCommands.map(redactTraceText);
+    sanitized.verificationFailedCommands =
+      sanitized.verificationFailedCommands.map(redactTraceText);
   }
   if (sanitized.verificationMissingCommands) {
-    sanitized.verificationMissingCommands = sanitized.verificationMissingCommands.map(redactTraceText);
+    sanitized.verificationMissingCommands =
+      sanitized.verificationMissingCommands.map(redactTraceText);
   }
   return sanitized;
 }
@@ -499,18 +523,26 @@ function parseSessionMetaFile(path: string): SessionMeta | null {
     }
     return parsed as SessionMeta;
   } catch (err) {
-    console.warn(`[session-storage] failed to parse meta file ${path}: ${err instanceof Error ? err.message : err}`);
+    console.warn(
+      `[session-storage] failed to parse meta file ${path}: ${err instanceof Error ? err.message : err}`
+    );
     return null;
   }
 }
 
-function isSessionMetaFile(file: string): boolean {
-  return file.endsWith('.json')
-    && !file.endsWith('.messages.json')
-    && !file.endsWith('.harness.json')
-    && !file.endsWith('.compact.json')
-    && !file.endsWith('.index.json');
+export function isSessionMetaFile(file: string): boolean {
+  return file.endsWith('.json') && !SESSION_SIDECAR_SUFFIXES.some(s => file.endsWith(s));
 }
+
+/** Shared exclusion list for session sidecar files. */
+export const SESSION_SIDECAR_SUFFIXES = [
+  '.messages.json',
+  '.harness.json',
+  '.compact.json',
+  '.runtime.json',
+  '.trace.json',
+  '.index.json',
+];
 
 function parseHarnessSidecarFile(path: string): HarnessSidecar | null {
   try {
@@ -545,7 +577,7 @@ function parseCompactCheckpointFile(path: string): CompactCheckpointV1 | null {
 
 function upsertNewestSession(sessionsById: Map<string, SessionMeta>, session: SessionMeta): void {
   const existing = sessionsById.get(session.id);
-  const existingTime = existing ? existing.updatedAt ?? existing.startTime : 0;
+  const existingTime = existing ? (existing.updatedAt ?? existing.startTime) : 0;
   const nextTime = session.updatedAt ?? session.startTime;
 
   if (!existing || nextTime >= existingTime) {
@@ -610,7 +642,9 @@ export function saveSessionMeta(session: SessionMeta): void {
   const payload = JSON.stringify(normalized, null, 2);
 
   ensureProjectDir(normalized.projectPath);
-  atomicWriteFileSync(getProjectSessionMetaPath(normalized.projectPath, normalized.id), payload, { mode: 0o600 });
+  atomicWriteFileSync(getProjectSessionMetaPath(normalized.projectPath, normalized.id), payload, {
+    mode: 0o600,
+  });
 }
 
 /**
@@ -749,7 +783,10 @@ export function updateSessionSkills(sessionId: string, skills: string[]): void {
   saveSessionMeta(session);
 }
 
-export function markSessionTranscriptDisplayStart(sessionId: string, timestamp: number = Date.now()): SessionMeta | null {
+export function markSessionTranscriptDisplayStart(
+  sessionId: string,
+  timestamp: number = Date.now()
+): SessionMeta | null {
   const session = loadSessionMeta(sessionId);
   if (!session) return null;
 
@@ -763,18 +800,21 @@ export function markSessionTranscriptDisplayStart(sessionId: string, timestamp: 
 export function persistSessionCompactHistory(
   sessionId: string,
   messages: Message[],
-  timestamp: number = Date.now(),
+  timestamp: number = Date.now()
 ): SessionMeta | null {
   const session = loadSessionMeta(sessionId);
   if (!session) return null;
 
-  const compactMessages = messages.map(message => ({
-    role: message.role,
-    content: message.content,
-    timestamp,
-    toolCallId: message.tool_call_id,
-    tool_calls: message.tool_calls,
-  } satisfies SessionMessage));
+  const compactMessages = messages.map(
+    message =>
+      ({
+        role: message.role,
+        content: message.content,
+        timestamp,
+        toolCallId: message.tool_call_id,
+        tool_calls: message.tool_calls,
+      }) satisfies SessionMessage
+  );
 
   appendSessionMessages(sessionId, compactMessages);
   return markSessionTranscriptDisplayStart(sessionId, timestamp);
@@ -874,10 +914,11 @@ export function loadSessionTranscriptMessages(sessionId: string): SessionMessage
 }
 
 function hasPersistedCompactContext(messages: SessionMessage[]): boolean {
-  return messages.some(message =>
-    message.content.includes('[OpenHorse Context State v2]')
-    || message.content.includes('[Context Summary]')
-    || message.content.includes('## Context Capsule')
+  return messages.some(
+    message =>
+      message.content.includes('[OpenHorse Context State v2]') ||
+      message.content.includes('[Context Summary]') ||
+      message.content.includes('## Context Capsule')
   );
 }
 
@@ -931,8 +972,8 @@ export function updateSessionSummary(sessionId: string, messages: SessionMessage
   const taskSummary = redactTraceText(firstUserMsg?.content ?? '').slice(0, 100);
 
   // 更新 session
-  session.toolsUsed = [...new Set(toolsUsed)];  // unique
-  session.filesModified = [...new Set(filesModified)];  // unique
+  session.toolsUsed = [...new Set(toolsUsed)]; // unique
+  session.filesModified = [...new Set(filesModified)]; // unique
   session.taskSummary = taskSummary.length > 100 ? taskSummary.slice(0, 100) + '...' : taskSummary;
   session.messageCount = messages.length;
   session.updatedAt = Date.now();
@@ -945,8 +986,9 @@ export function updateSessionSummary(sessionId: string, messages: SessionMessage
  * 获取项目最近的会话
  */
 export function getLastSession(projectPath: string): SessionMeta | null {
-  const sessions = listProjectSessions(projectPath)
-    .filter(session => (session.messageCount ?? 0) > 0);
+  const sessions = listProjectSessions(projectPath).filter(
+    session => (session.messageCount ?? 0) > 0
+  );
   return sessions[0] ?? null;
 }
 
@@ -1020,7 +1062,9 @@ export function appendSessionMessage(sessionId: string, message: SessionMessage)
   if (!session) return;
 
   ensureProjectDir(session.projectPath);
-  appendFileSync(getProjectSessionMessagesPath(session.projectPath, sessionId), line, { mode: 0o600 });
+  appendFileSync(getProjectSessionMessagesPath(session.projectPath, sessionId), line, {
+    mode: 0o600,
+  });
 
   // Update session index for fast search
   updateSessionIndex(sessionId, session.projectPath, message);
@@ -1039,7 +1083,9 @@ export function appendSessionMessages(sessionId: string, messages: SessionMessag
   if (!session) return;
 
   ensureProjectDir(session.projectPath);
-  appendFileSync(getProjectSessionMessagesPath(session.projectPath, sessionId), lines, { mode: 0o600 });
+  appendFileSync(getProjectSessionMessagesPath(session.projectPath, sessionId), lines, {
+    mode: 0o600,
+  });
 
   for (const message of messages) {
     updateSessionIndex(sessionId, session.projectPath, message);
@@ -1065,10 +1111,13 @@ function overwriteSessionMessages(sessionId: string, messages: SessionMessage[])
   const session = loadSessionMeta(sessionId);
   if (!session) return;
 
-  const content = messages.length > 0 ? messages.map(message => JSON.stringify(message)).join('\n') + '\n' : '';
+  const content =
+    messages.length > 0 ? messages.map(message => JSON.stringify(message)).join('\n') + '\n' : '';
 
   ensureProjectDir(session.projectPath);
-  atomicWriteFileSync(getProjectSessionMessagesPath(session.projectPath, sessionId), content, { mode: 0o600 });
+  atomicWriteFileSync(getProjectSessionMessagesPath(session.projectPath, sessionId), content, {
+    mode: 0o600,
+  });
 
   deleteSessionIndex(sessionId, session.projectPath);
   for (const message of messages) {
@@ -1150,7 +1199,11 @@ export function appendSessionTraceEvent(
     timestamp: safeEvent.timestamp ?? Date.now(),
   };
 
-  appendFileSync(getProjectSessionTracePath(session.projectPath, sessionId), `${JSON.stringify(traceEvent)}\n`, { mode: 0o600 });
+  appendFileSync(
+    getProjectSessionTracePath(session.projectPath, sessionId),
+    `${JSON.stringify(traceEvent)}\n`,
+    { mode: 0o600 }
+  );
   return traceEvent;
 }
 
@@ -1163,23 +1216,29 @@ export function readSessionTraceEvents(sessionId: string): SessionTraceEvent[] {
 
   try {
     const content = readFileSync(path, 'utf-8');
-    return content.trim().split('\n').filter(Boolean).flatMap(line => {
-      try {
-        const parsed = JSON.parse(line) as Partial<SessionTraceEvent>;
-        if (!parsed.type || !parsed.turnId || !parsed.timestamp) return [];
-        const sanitized = sanitizeTraceEvent({
-          ...parsed,
-          turnId: String(parsed.turnId),
-        } as Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number });
-        return [{
-          ...sanitized,
-          sessionId,
-          turnId: String(sanitized.turnId),
-        } as SessionTraceEvent];
-      } catch {
-        return [];
-      }
-    });
+    return content
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .flatMap(line => {
+        try {
+          const parsed = JSON.parse(line) as Partial<SessionTraceEvent>;
+          if (!parsed.type || !parsed.turnId || !parsed.timestamp) return [];
+          const sanitized = sanitizeTraceEvent({
+            ...parsed,
+            turnId: String(parsed.turnId),
+          } as Omit<SessionTraceEvent, 'sessionId' | 'timestamp'> & { timestamp?: number });
+          return [
+            {
+              ...sanitized,
+              sessionId,
+              turnId: String(sanitized.turnId),
+            } as SessionTraceEvent,
+          ];
+        } catch {
+          return [];
+        }
+      });
   } catch {
     return [];
   }
@@ -1202,7 +1261,9 @@ export function loadSessionHistory(sessionId: string): Message[] {
   const displayStartTime = session?.transcriptDisplayStartTime;
   let modelVisibleMessages = messages;
   if (typeof displayStartTime === 'number') {
-    const afterDisplayStart = messages.filter(message => (message.timestamp ?? 0) >= displayStartTime);
+    const afterDisplayStart = messages.filter(
+      message => (message.timestamp ?? 0) >= displayStartTime
+    );
     modelVisibleMessages = hasPersistedCompactContext(afterDisplayStart)
       ? afterDisplayStart
       : messages;
@@ -1299,9 +1360,8 @@ export function lookupSessionRef(
   const query = ref.trim();
   if (!query) return { status: 'not_found' };
 
-  const candidates = options.allProjects || !projectPath
-    ? listSessions()
-    : listProjectSessions(projectPath);
+  const candidates =
+    options.allProjects || !projectPath ? listSessions() : listProjectSessions(projectPath);
 
   const exactId = candidates.find(session => session.id === query);
   if (exactId) return { status: 'found', session: exactId };
@@ -1314,8 +1374,8 @@ export function lookupSessionRef(
     return { status: 'ambiguous', matches: exactNameMatches };
   }
 
-  const prefixMatches = candidates.filter(session =>
-    session.id.startsWith(query) || session.name?.startsWith(query)
+  const prefixMatches = candidates.filter(
+    session => session.id.startsWith(query) || session.name?.startsWith(query)
   );
 
   if (prefixMatches.length === 1) {

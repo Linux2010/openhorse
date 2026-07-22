@@ -27,6 +27,10 @@ export interface StructuredToolActivity {
   error?: string;
   seq?: number;
   artifactHint?: string;
+  callId?: string;
+  turnId?: string;
+  /** v0.2.23: Renderer-neutral tool output view for adaptive collapse. */
+  outputView?: import('./tool-output-presentation').ToolOutputView;
 }
 
 export interface TranscriptEntry {

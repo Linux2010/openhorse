@@ -67,6 +67,7 @@ export interface CommittedEntry {
 }
 
 export interface TranscriptCommitBatch {
+  batchId?: string;
   generation: number;
   reason: 'append' | 'finalize' | 'restore' | 'replace' | 'clear-divider';
   entries: CommittedEntry[];
@@ -75,6 +76,9 @@ export interface TranscriptCommitBatch {
 export interface TuiTerminalRenderResult {
   output: string;
   committedEntries: number;
+  batchId?: string;
+  generation?: number;
+  displayKeys?: string[];
 }
 
 /**
@@ -282,7 +286,13 @@ export class InlineTerminalSurface {
       if (!retryAfterResize) break;
       await this.waitForResizeCompletion();
     }
-    return { output, committedEntries: batch.entries.length };
+    return {
+      output,
+      committedEntries: batch.entries.length,
+      batchId: batch.batchId,
+      generation: batch.generation,
+      displayKeys: batch.entries.map(entry => entry.displayKey),
+    };
   }
 
   /** Render the live region frame (relative addressing, changed-row diff). */
@@ -291,6 +301,18 @@ export class InlineTerminalSurface {
     const requestedDuringResize = this.resizePending;
     await this.enqueue(async () => {
       if (requestedDuringResize || this.resizePending) return;
+      output = this.renderLiveInternal(frame);
+      await this.writeRaw(output);
+    });
+    return output;
+  }
+
+  /** Forget the diff baseline and repaint only the currently owned live region. */
+  async forceRedraw(frame: TuiFrame): Promise<string> {
+    let output = '';
+    await this.enqueue(async () => {
+      if (this.phase !== 'mounted' || this.resizePending) return;
+      this.previousFrame = null;
       output = this.renderLiveInternal(frame);
       await this.writeRaw(output);
     });
@@ -562,9 +584,16 @@ export class InlineTerminalSurface {
   }
 
   /** Restore after child process: re-enable bracketed paste, rebuild live frame. */
-  async restore(getLatestLiveFrame: LiveFrameProvider): Promise<void> {
+  async restore(
+    getLatestLiveFrame: LiveFrameProvider,
+    width = this.width,
+    height = this.height,
+  ): Promise<void> {
     await this.enqueue(async () => {
       if (this.phase !== 'suspended') return;
+      this.width = Math.max(1, Math.floor(width));
+      this.height = Math.max(1, Math.floor(height));
+      this.liveBandRows = InlineTerminalSurface.computeBandRows(this.height);
       this.phase = 'mounted';
       const chunks = [`${ENABLE_BRACKETED_PASTE}${HIDE_CURSOR}`];
       const liveFrame = getLatestLiveFrame();

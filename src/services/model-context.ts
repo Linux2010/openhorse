@@ -173,6 +173,13 @@ export const BUILTIN_MODELS: Record<string, ModelContextInfo> = {
     maxOutputTokens: 16384,
     provider: 'astroncodingplan',
   },
+  xopdeepseekv4pro: {
+    id: 'xopdeepseekv4pro',
+    label: 'XOP DeepSeek V4 Pro',
+    contextWindow: 1000000,
+    maxOutputTokens: 16384,
+    provider: 'astroncodingplan',
+  },
   'astron-code-latest': {
     id: 'astron-code-latest',
     label: 'Astron Code Latest',

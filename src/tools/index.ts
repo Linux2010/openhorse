@@ -11,16 +11,24 @@
  */
 
 import { spawn } from 'child_process';
-import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, createReadStream } from 'fs';
+import {
+  readFileSync,
+  writeFileSync,
+  readdirSync,
+  statSync,
+  existsSync,
+  createReadStream,
+} from 'fs';
 import { join, resolve, relative } from 'path';
 import { createInterface } from 'readline';
-import { buildTool, type OpenHorseTool, type ToolResult, type ToolContext } from '../framework/tool';
-import { setToolState } from '../framework/tool-state';
 import {
-  ARTIFACT_THRESHOLD,
-  storeArtifact,
-  truncateForContext,
-} from '../core/tool-artifacts';
+  buildTool,
+  type OpenHorseTool,
+  type ToolResult,
+  type ToolContext,
+} from '../framework/tool';
+import { setToolState } from '../framework/tool-state';
+import { ARTIFACT_THRESHOLD, storeArtifact, truncateForContext } from '../core/tool-artifacts';
 import {
   saveMemory,
   loadMemory,
@@ -38,10 +46,7 @@ import { TODO_TOOLS } from './todo';
 import { PLAN_TOOLS } from './plan';
 import { GIT_TOOLS } from './git';
 import { lspTools } from './lsp';
-import {
-  assessCommandSecurity,
-  isReadOnlyCommand,
-} from './bash_security';
+import { assessCommandSecurity, isReadOnlyCommand } from './bash_security';
 
 const BATCH_READ_ALLOWED_TOOLS = new Set(['git_status', 'list_files', 'glob', 'grep', 'read_file']);
 const BATCH_READ_MAX_STEPS = 8;
@@ -97,7 +102,7 @@ export const TOOLS: OpenHorseTool[] = [
   // File tools
   buildTool({
     name: 'read_file',
-    description: '读取文件的全部内容。返回文件内容字符串。',
+    description: '读取文件内容，支持从指定行开始分页。返回文件内容字符串。',
     parameters: {
       type: 'object',
       properties: {
@@ -109,6 +114,10 @@ export const TOOLS: OpenHorseTool[] = [
           type: 'number',
           description: '最大读取行数（可选，默认 500 行）',
         },
+        offset: {
+          type: 'number',
+          description: '开始读取的行号（可选，1-based，默认第 1 行）',
+        },
       },
       required: ['path'],
     },
@@ -118,11 +127,19 @@ export const TOOLS: OpenHorseTool[] = [
       if (!path || typeof path !== 'string') {
         return { success: false, output: '', error: 'read_file requires a path parameter' };
       }
-      return readFileSync_(path, args.maxLines as number | undefined, context.cwd);
+      const maxLines = readPositiveInteger(args.maxLines, 'maxLines', 500);
+      if (typeof maxLines === 'string') {
+        return { success: false, output: '', error: maxLines };
+      }
+      const offset = readPositiveInteger(args.offset, 'offset', 1);
+      if (typeof offset === 'string') {
+        return { success: false, output: '', error: offset };
+      }
+      return readFileSync_(path, maxLines, offset, context.cwd);
     },
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
-    userFacingName: (args) => `Read ${args.path as string}`,
+    userFacingName: args => `Read ${args.path as string}`,
     getSummary: (args, result) => {
       const path = args.path as string;
       if (!result.success) return `📄 read ${path} → error`;
@@ -166,11 +183,11 @@ export const TOOLS: OpenHorseTool[] = [
       // Destructive operation - ask for confirmation in default mode
       return { behavior: 'ask', reason: 'Write operation may modify existing files' };
     },
-    userFacingName: (args) => `Write ${args.path as string}`,
+    userFacingName: args => `Write ${args.path as string}`,
     getSummary: (args, result) => {
       const path = args.path as string;
       if (!result.success) return `💾 write ${path} → error`;
-      const bytes = Buffer.byteLength(args.content as string || '', 'utf8');
+      const bytes = Buffer.byteLength((args.content as string) || '', 'utf8');
       return `💾 write ${path} (${bytes}B)`;
     },
   }),
@@ -202,7 +219,7 @@ export const TOOLS: OpenHorseTool[] = [
     },
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
-    userFacingName: (args) => `List ${args.path as string}`,
+    userFacingName: args => `List ${args.path as string}`,
     getSummary: (args, result) => {
       const path = args.path as string;
       if (!result.success) return `📁 list ${path} → error`;
@@ -243,9 +260,16 @@ export const TOOLS: OpenHorseTool[] = [
         return { success: false, output: '', error: 'exec_command requires a command parameter' };
       }
       // Issue #32 #3.2: 传递 abortSignal
-      return execCommand_(command, args.cwd as string | undefined, args.timeout as number | undefined, args.maxOutput as number | undefined, context.abortSignal, context.cwd);
+      return execCommand_(
+        command,
+        args.cwd as string | undefined,
+        args.timeout as number | undefined,
+        args.maxOutput as number | undefined,
+        context.abortSignal,
+        context.cwd
+      );
     },
-    isDestructive: (args) => {
+    isDestructive: args => {
       const cmd = (args.command as string) || '';
       return /(rm\s+-rf|mkfs|dd\s)/.test(cmd);
     },
@@ -256,7 +280,10 @@ export const TOOLS: OpenHorseTool[] = [
       const security = assessCommandSecurity(cmd);
 
       if (security.level === 'blocked') {
-        return { behavior: 'deny', reason: security.reason || `Command blocked by safety policy: ${cmd.slice(0, 50)}` };
+        return {
+          behavior: 'deny',
+          reason: security.reason || `Command blocked by safety policy: ${cmd.slice(0, 50)}`,
+        };
       }
 
       if (security.level === 'safe' && security.isReadOnly) {
@@ -270,15 +297,15 @@ export const TOOLS: OpenHorseTool[] = [
       // Default: ask for confirmation
       return { behavior: 'ask', reason: 'Command requires confirmation' };
     },
-    isReadOnly: (args) => {
+    isReadOnly: args => {
       const cmd = (args.command as string) || '';
       return isReadOnlyCommand(cmd);
     },
-    isConcurrencySafe: (args) => {
+    isConcurrencySafe: args => {
       const cmd = (args.command as string) || '';
       return isReadOnlyCommand(cmd);
     },
-    userFacingName: (args) => `Exec ${compactOneLine((args.command as string) || '', 80)}`,
+    userFacingName: args => `Exec ${compactOneLine((args.command as string) || '', 80)}`,
     getSummary: (args, result) => {
       const command = (args.command as string) || '';
       const commandSummary = command ? `\n  $ ${compactOneLine(command, 160)}` : '';
@@ -293,7 +320,8 @@ export const TOOLS: OpenHorseTool[] = [
 
   buildTool({
     name: 'edit_file',
-    description: '对文件进行精确字符串替换。old_string 必须在文件中唯一匹配，否则拒绝执行。使用 replace_all 可替换所有精确匹配；只有显式 fuzzy_match=true 时才尝试宽松空白匹配。',
+    description:
+      '对文件进行精确字符串替换。old_string 必须在文件中唯一匹配，否则拒绝执行。使用 replace_all 可替换所有精确匹配；只有显式 fuzzy_match=true 时才尝试宽松空白匹配。',
     parameters: {
       type: 'object',
       properties: {
@@ -368,7 +396,7 @@ export const TOOLS: OpenHorseTool[] = [
     checkPermissions: (_args, _context) => {
       return { behavior: 'ask', reason: 'Edit operation modifies file contents' };
     },
-    userFacingName: (args) => `Edit ${args.path as string}`,
+    userFacingName: args => `Edit ${args.path as string}`,
     getSummary: (args, result) => {
       const path = args.path as string;
       if (!result.success) return `✏️ edit ${path} → error`;
@@ -404,7 +432,7 @@ export const TOOLS: OpenHorseTool[] = [
     },
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
-    userFacingName: (args) => `Glob ${args.pattern as string}`,
+    userFacingName: args => `Glob ${args.pattern as string}`,
     getSummary: (args, result) => {
       const pattern = args.pattern as string;
       if (!result.success) return `🔍 glob ${pattern} → error`;
@@ -444,11 +472,17 @@ export const TOOLS: OpenHorseTool[] = [
       if (!pattern || typeof pattern !== 'string') {
         return { success: false, output: '', error: 'grep requires a pattern parameter' };
       }
-      return grep_(pattern, args.path as string | undefined, args.glob as string | undefined, args.context as number | undefined, context.cwd);
+      return grep_(
+        pattern,
+        args.path as string | undefined,
+        args.glob as string | undefined,
+        args.context as number | undefined,
+        context.cwd
+      );
     },
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
-    userFacingName: (args) => `Grep ${args.pattern as string}`,
+    userFacingName: args => `Grep ${args.pattern as string}`,
     getSummary: (args, result) => {
       const pattern = args.pattern as string;
       if (!result.success) return `🔎 grep /${pattern}/ → error`;
@@ -459,13 +493,15 @@ export const TOOLS: OpenHorseTool[] = [
 
   buildTool({
     name: 'batch_read',
-    description: 'Run up to 8 read-only exploration tool calls in one ordered batch. Allowed tools: git_status, list_files, glob, grep, read_file.',
+    description:
+      'Run up to 8 read-only exploration tool calls in one ordered batch. Allowed tools: git_status, list_files, glob, grep, read_file.',
     parameters: {
       type: 'object',
       properties: {
         steps: {
           type: 'array',
-          description: 'Array of steps: [{ "tool": "read_file", "args": { "path": "package.json" } }]. Max 8 steps.',
+          description:
+            'Array of steps: [{ "tool": "read_file", "args": { "path": "package.json" } }]. Max 8 steps.',
           items: {
             type: 'object',
             properties: {
@@ -486,7 +522,7 @@ export const TOOLS: OpenHorseTool[] = [
     execute: async (args, context) => executeBatchRead(args, context),
     isReadOnly: () => true,
     isConcurrencySafe: () => true,
-    userFacingName: (args) => {
+    userFacingName: args => {
       const count = Array.isArray(args.steps) ? args.steps.length : 0;
       return `Batch read ${count} steps`;
     },
@@ -500,7 +536,8 @@ export const TOOLS: OpenHorseTool[] = [
   // Memory tools
   buildTool({
     name: 'memory_save',
-    description: 'Save a memory entry to the persistent memory system. Memories help tailor behavior to user preferences.',
+    description:
+      'Save a memory entry to the persistent memory system. Memories help tailor behavior to user preferences.',
     parameters: {
       type: 'object',
       properties: {
@@ -519,7 +556,8 @@ export const TOOLS: OpenHorseTool[] = [
         },
         content: {
           type: 'string',
-          description: 'Memory content. For feedback/project: use rule + Why + How to apply structure',
+          description:
+            'Memory content. For feedback/project: use rule + Why + How to apply structure',
         },
       },
       required: ['name', 'type', 'content'],
@@ -534,7 +572,11 @@ export const TOOLS: OpenHorseTool[] = [
         return { success: false, output: '', error: 'memory_save requires a name parameter' };
       }
       if (!type || !['user', 'feedback', 'project', 'reference'].includes(type)) {
-        return { success: false, output: '', error: 'memory_save requires a valid type: user, feedback, project, or reference' };
+        return {
+          success: false,
+          output: '',
+          error: 'memory_save requires a valid type: user, feedback, project, or reference',
+        };
       }
       if (!content || typeof content !== 'string') {
         return { success: false, output: '', error: 'memory_save requires a content parameter' };
@@ -563,7 +605,7 @@ export const TOOLS: OpenHorseTool[] = [
       }
     },
     isReadOnly: () => false,
-    userFacingName: (args) => `Memory save ${args.name as string}`,
+    userFacingName: args => `Memory save ${args.name as string}`,
     getSummary: (args, result) => {
       const name = args.name as string;
       const type = args.type as string;
@@ -574,7 +616,8 @@ export const TOOLS: OpenHorseTool[] = [
 
   buildTool({
     name: 'memory_recall',
-    description: 'Recall memories from the memory system. Returns matching memories or all if no query.',
+    description:
+      'Recall memories from the memory system. Returns matching memories or all if no query.',
     parameters: {
       type: 'object',
       properties: {
@@ -649,7 +692,7 @@ export const TOOLS: OpenHorseTool[] = [
       }
     },
     isReadOnly: () => true,
-    userFacingName: (args) => `Memory recall ${(args.query as string) || 'all'}`,
+    userFacingName: args => `Memory recall ${(args.query as string) || 'all'}`,
     getSummary: (args, result) => {
       const query = (args.query as string) || 'all';
       if (!result.success) return `🧠 recall "${query}" → error`;
@@ -701,7 +744,7 @@ export const TOOLS: OpenHorseTool[] = [
       }
     },
     isReadOnly: () => false,
-    userFacingName: (args) => `Memory forget ${args.name as string}`,
+    userFacingName: args => `Memory forget ${args.name as string}`,
     getSummary: (args, result) => {
       const name = args.name as string;
       if (!result.success) return `🧠 forget ${name} → error`;
@@ -712,7 +755,8 @@ export const TOOLS: OpenHorseTool[] = [
   // History search tool
   buildTool({
     name: 'history_search',
-    description: 'Search previous tool operations in current or past sessions. Helps find what was done before.',
+    description:
+      'Search previous tool operations in current or past sessions. Helps find what was done before.',
     parameters: {
       type: 'object',
       properties: {
@@ -731,7 +775,7 @@ export const TOOLS: OpenHorseTool[] = [
       },
       required: ['query'],
     },
-    execute: async (args) => {
+    execute: async args => {
       const query = args.query as string;
       if (!query || typeof query !== 'string') {
         return { success: false, output: '', error: 'history_search requires a query parameter' };
@@ -771,9 +815,10 @@ export const TOOLS: OpenHorseTool[] = [
                 if (matchesQuery) {
                   // Find corresponding tool result
                   const nextMsg = messages[i + 1];
-                  const resultPreview = nextMsg?.role === 'tool' && nextMsg.toolCallId === tc.id
-                    ? nextMsg.content.slice(0, 200)
-                    : '(no result)';
+                  const resultPreview =
+                    nextMsg?.role === 'tool' && nextMsg.toolCallId === tc.id
+                      ? nextMsg.content.slice(0, 200)
+                      : '(no result)';
 
                   results.push({
                     sessionId: session.id.slice(0, 8),
@@ -812,7 +857,7 @@ export const TOOLS: OpenHorseTool[] = [
       }
     },
     isReadOnly: () => true,
-    userFacingName: (args) => `History search ${args.query as string}`,
+    userFacingName: args => `History search ${args.query as string}`,
     getSummary: (args, result) => {
       const query = args.query as string;
       if (!result.success) return `📜 history "${query}" → error`;
@@ -898,7 +943,20 @@ function truncateToBytes(text: string, maxBytes: number): { text: string; bytes:
   return { text: buf.subarray(0, cut).toString('utf-8'), bytes: cut };
 }
 
-async function readFileSync_(path: string, maxLines?: number, cwd?: string): Promise<ToolResult> {
+function readPositiveInteger(value: unknown, name: string, defaultValue: number): number | string {
+  if (value === undefined) return defaultValue;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    return `read_file ${name} must be a positive integer`;
+  }
+  return value;
+}
+
+async function readFileSync_(
+  path: string,
+  maxLines: number,
+  offset: number,
+  cwd?: string
+): Promise<ToolResult> {
   try {
     const normalizedPath = normalizeToolPath(path);
     const resolved = safePath(path, cwd);
@@ -906,39 +964,53 @@ async function readFileSync_(path: string, maxLines?: number, cwd?: string): Pro
       return { success: false, output: '', error: `File not found: ${normalizedPath}` };
     }
     if (statSync(resolved).isDirectory()) {
-      return { success: false, output: '', error: `Path is a directory, not a file: ${normalizedPath}` };
+      return {
+        success: false,
+        output: '',
+        error: `Path is a directory, not a file: ${normalizedPath}`,
+      };
     }
 
     const content = readFileSync(resolved, 'utf-8');
     const lines = content.split('\n');
-    const limit = maxLines ?? 500;
     const maxBytes = 51200; // 50KB byte limit
+    if (offset > lines.length) {
+      return {
+        success: false,
+        output: '',
+        error: `read_file offset ${offset} is beyond the file (${lines.length} lines)`,
+      };
+    }
 
-    if (lines.length > limit) {
-      const truncated = lines.slice(0, limit).join('\n');
-      const byteLen = Buffer.byteLength(truncated, 'utf8');
-      const notice = `\n\n[... truncated, ${lines.length - limit} more lines]`;
+    const startIndex = offset - 1;
+    const selectedLines = lines.slice(startIndex, startIndex + maxLines);
+    const selected = selectedLines.join('\n');
+    const remainingLines = Math.max(0, lines.length - startIndex - selectedLines.length);
+
+    if (remainingLines > 0) {
+      const byteLen = Buffer.byteLength(selected, 'utf8');
+      const notice = `\n\n[... truncated, ${remainingLines} more lines; showing lines ${offset}-${offset + selectedLines.length - 1} of ${lines.length}]`;
       if (byteLen > maxBytes) {
-        const cut = truncateToBytes(truncated, maxBytes);
+        const cut = truncateToBytes(selected, maxBytes);
         return {
           success: true,
           output: cut.text + `\n\n[... truncated at ${cut.bytes}B]`,
         };
       }
-      return { success: true, output: truncated + notice };
+      return { success: true, output: selected + notice };
     }
 
-    // Also apply byte limit to full content
-    const byteLen = Buffer.byteLength(content, 'utf8');
+    // Also apply byte limit to the selected page.
+    const byteLen = Buffer.byteLength(selected, 'utf8');
     if (byteLen > maxBytes) {
-      const cut = truncateToBytes(content, maxBytes);
+      const cut = truncateToBytes(selected, maxBytes);
       return {
         success: true,
         output: cut.text + `\n\n[... truncated at ${cut.bytes}B of ${byteLen}B]`,
       };
     }
 
-    return { success: true, output: content };
+    return { success: true, output: selected };
   } catch (err: any) {
     return { success: false, output: '', error: String(err.message) };
   }
@@ -949,7 +1021,10 @@ async function writeFileSync_(path: string, content: string, cwd?: string): Prom
     const normalizedPath = normalizeToolPath(path);
     const resolved = safePath(path, cwd);
     writeFileSync(resolved, content, 'utf-8');
-    return { success: true, output: `Wrote ${content.split('\n').length} lines to ${normalizedPath}` };
+    return {
+      success: true,
+      output: `Wrote ${content.split('\n').length} lines to ${normalizedPath}`,
+    };
   } catch (err: any) {
     return { success: false, output: '', error: String(err.message) };
   }
@@ -993,9 +1068,11 @@ async function listFiles_(path: string, maxDepth?: number, cwd?: string): Promis
 
   // Limit output to 500 entries
   const maxEntries = 500;
-  const output = results.length > maxEntries
-    ? results.slice(0, maxEntries).join('\n') + `\n\n[... truncated, ${results.length - maxEntries} more entries]`
-    : results.join('\n');
+  const output =
+    results.length > maxEntries
+      ? results.slice(0, maxEntries).join('\n') +
+        `\n\n[... truncated, ${results.length - maxEntries} more entries]`
+      : results.join('\n');
 
   return { success: true, output };
 }
@@ -1009,8 +1086,8 @@ async function execCommand_(
   abortSignal?: AbortSignal,
   baseCwd?: string
 ): Promise<ToolResult> {
-  return new Promise((resolve) => {
-    const workdir = cwd ? safePath(cwd, baseCwd) : baseCwd ?? process.cwd();
+  return new Promise(resolve => {
+    const workdir = cwd ? safePath(cwd, baseCwd) : (baseCwd ?? process.cwd());
     const timeoutMs = timeout ?? 30000;
     const maxBytes = maxOutput ?? 51200; // Default 50KB, Issue #28 fix
 
@@ -1123,7 +1200,7 @@ async function execCommand_(
       }
     });
 
-    child.on('close', (code) => {
+    child.on('close', code => {
       if (interrupted === 'aborted') {
         finish({
           success: false,
@@ -1161,12 +1238,14 @@ async function execCommand_(
         finish({
           success: true,
           output: finalOutput || '(no output)',
-          error: stderrTruncated ? errOutput + '\n\n[... stderr truncated]' : errOutput || undefined,
+          error: stderrTruncated
+            ? errOutput + '\n\n[... stderr truncated]'
+            : errOutput || undefined,
         });
       }
     });
 
-    child.on('error', (err) => {
+    child.on('error', err => {
       finish({
         success: false,
         output: '',
@@ -1180,7 +1259,7 @@ async function execCommand_(
  * Fuzzy match result
  */
 interface FuzzyMatchResult {
-  matches: string[];  // Actual strings found in content
+  matches: string[]; // Actual strings found in content
   strategy: 'whitespace' | 'line';
 }
 
@@ -1277,7 +1356,10 @@ function formatEditPreview(params: {
  */
 function fuzzyMatch(content: string, oldString: string): FuzzyMatchResult | null {
   // Strategy 1: Line-by-line matching (allow different indentation)
-  const oldLines = oldString.split('\n').map(l => l.trim()).filter(Boolean);
+  const oldLines = oldString
+    .split('\n')
+    .map(l => l.trim())
+    .filter(Boolean);
   const contentLines = content.split('\n');
   const lineMatches: string[] = [];
 
@@ -1339,7 +1421,11 @@ async function editFile_(
       return { success: false, output: '', error: `File not found: ${normalizedPath}` };
     }
     if (statSync(resolved).isDirectory()) {
-      return { success: false, output: '', error: `Path is a directory, not a file: ${normalizedPath}` };
+      return {
+        success: false,
+        output: '',
+        error: `Path is a directory, not a file: ${normalizedPath}`,
+      };
     }
 
     const content = readFileSync(resolved, 'utf-8');
@@ -1383,7 +1469,11 @@ async function editFile_(
       const fuzzyResult = fuzzyMatch(content, old_string);
 
       if (fuzzyResult === null) {
-        return { success: false, output: '', error: `old_string not found in file: ${old_string.slice(0, 100)}...` };
+        return {
+          success: false,
+          output: '',
+          error: `old_string not found in file: ${old_string.slice(0, 100)}...`,
+        };
       }
 
       if (preview) {
@@ -1412,7 +1502,10 @@ async function editFile_(
         return {
           success: false,
           output: '',
-          error: `Fuzzy match found ${fuzzyResult.matches.length} candidates. Provide a more specific string. First 3 candidates:\n${fuzzyResult.matches.slice(0, 3).map((m, i) => `  ${i + 1}: "${m.slice(0, 80)}..."`).join('\n')}`,
+          error: `Fuzzy match found ${fuzzyResult.matches.length} candidates. Provide a more specific string. First 3 candidates:\n${fuzzyResult.matches
+            .slice(0, 3)
+            .map((m, i) => `  ${i + 1}: "${m.slice(0, 80)}..."`)
+            .join('\n')}`,
         };
       }
 
@@ -1474,13 +1567,17 @@ function escapeRegExp(str: string): string {
  */
 async function glob_(pattern: string, basePath?: string, cwd?: string): Promise<ToolResult> {
   try {
-    const normalizedBasePath = basePath ? normalizeToolPath(basePath) : cwd ?? process.cwd();
-    const base = basePath ? safePath(basePath, cwd) : cwd ?? process.cwd();
+    const normalizedBasePath = basePath ? normalizeToolPath(basePath) : (cwd ?? process.cwd());
+    const base = basePath ? safePath(basePath, cwd) : (cwd ?? process.cwd());
     if (!existsSync(base)) {
       return { success: false, output: '', error: `Path not found: ${normalizedBasePath}` };
     }
     if (!statSync(base).isDirectory()) {
-      return { success: false, output: '', error: `Path is not a directory: ${normalizedBasePath}` };
+      return {
+        success: false,
+        output: '',
+        error: `Path is not a directory: ${normalizedBasePath}`,
+      };
     }
 
     const results: string[] = [];
@@ -1557,9 +1654,11 @@ async function glob_(pattern: string, basePath?: string, cwd?: string): Promise<
     // Limit output to 200 matches
     const maxMatches = 200;
     const sorted = results.sort();
-    const output = sorted.length > maxMatches
-      ? sorted.slice(0, maxMatches).join('\n') + `\n\n[... truncated, ${sorted.length - maxMatches} more matches]`
-      : sorted.join('\n');
+    const output =
+      sorted.length > maxMatches
+        ? sorted.slice(0, maxMatches).join('\n') +
+          `\n\n[... truncated, ${sorted.length - maxMatches} more matches]`
+        : sorted.join('\n');
 
     return { success: true, output };
   } catch (err: any) {
@@ -1578,8 +1677,8 @@ async function grep_(
   cwd?: string
 ): Promise<ToolResult> {
   try {
-    const normalizedBasePath = basePath ? normalizeToolPath(basePath) : cwd ?? process.cwd();
-    const base = basePath ? safePath(basePath, cwd) : cwd ?? process.cwd();
+    const normalizedBasePath = basePath ? normalizeToolPath(basePath) : (cwd ?? process.cwd());
+    const base = basePath ? safePath(basePath, cwd) : (cwd ?? process.cwd());
     if (!existsSync(base)) {
       return { success: false, output: '', error: `Path not found: ${normalizedBasePath}` };
     }
@@ -1638,11 +1737,11 @@ async function grep_(
         const lines: string[] = [];
         const relPath = relative(base, file);
 
-        rl.on('line', (line) => {
+        rl.on('line', line => {
           lines.push(line);
         });
 
-        await new Promise<void>((resolve) => {
+        await new Promise<void>(resolve => {
           rl.on('close', resolve);
         });
 
@@ -1735,7 +1834,9 @@ function parseBatchReadSteps(rawSteps: unknown): { steps?: BatchReadStepInput[];
       try {
         stepArgs = JSON.parse(stepArgs);
       } catch {
-        return { error: `batch_read step ${i + 1} args must be an object or valid JSON object string` };
+        return {
+          error: `batch_read step ${i + 1} args must be an object or valid JSON object string`,
+        };
       }
     }
     if (!isRecord(stepArgs)) {
@@ -1752,11 +1853,16 @@ function buildBatchReadPayload(
   success: boolean,
   summary: string,
   steps: BatchReadStepOutput[],
-  error?: string,
+  error?: string
 ): ToolResult {
   const payload: Record<string, unknown> = {
     success,
-    output: steps.map(step => `${step.index}. ${step.tool}: ${step.summary || (step.success ? 'ok' : step.error || 'error')}`).join('\n'),
+    output: steps
+      .map(
+        step =>
+          `${step.index}. ${step.tool}: ${step.summary || (step.success ? 'ok' : step.error || 'error')}`
+      )
+      .join('\n'),
     summary,
     steps,
   };
@@ -1772,10 +1878,18 @@ function buildBatchReadPayload(
   };
 }
 
-async function executeBatchRead(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+async function executeBatchRead(
+  args: Record<string, unknown>,
+  context: ToolContext
+): Promise<ToolResult> {
   const parsed = parseBatchReadSteps(args.steps);
   if (parsed.error || !parsed.steps) {
-    return buildBatchReadPayload(false, parsed.error || 'Invalid batch_read request', [], parsed.error);
+    return buildBatchReadPayload(
+      false,
+      parsed.error || 'Invalid batch_read request',
+      [],
+      parsed.error
+    );
   }
 
   const runtimeTools = getRuntimeTools();
@@ -1784,25 +1898,39 @@ async function executeBatchRead(args: Record<string, unknown>, context: ToolCont
     const tool = runtimeTools.find(t => t.name === step.tool);
     if (!BATCH_READ_ALLOWED_TOOLS.has(step.tool)) {
       const error = `Tool ${step.tool} is not allowed in batch_read`;
-      return buildBatchReadPayload(false, error, [{
-        index: i + 1,
-        tool: step.tool,
-        args: step.args,
-        success: false,
+      return buildBatchReadPayload(
+        false,
         error,
-        output: '',
-      }], error);
+        [
+          {
+            index: i + 1,
+            tool: step.tool,
+            args: step.args,
+            success: false,
+            error,
+            output: '',
+          },
+        ],
+        error
+      );
     }
     if (!tool || tool.isReadOnly?.(step.args) !== true) {
       const error = `Tool ${step.tool} is unavailable or not read-only`;
-      return buildBatchReadPayload(false, error, [{
-        index: i + 1,
-        tool: step.tool,
-        args: step.args,
-        success: false,
+      return buildBatchReadPayload(
+        false,
         error,
-        output: '',
-      }], error);
+        [
+          {
+            index: i + 1,
+            tool: step.tool,
+            args: step.args,
+            success: false,
+            error,
+            output: '',
+          },
+        ],
+        error
+      );
     }
   }
 
@@ -1818,9 +1946,10 @@ async function executeBatchRead(args: Record<string, unknown>, context: ToolCont
         summary?: unknown;
         error?: unknown;
       };
-      const output = typeof envelope.output === 'string'
-        ? envelope.output
-        : JSON.stringify(envelope.output ?? '');
+      const output =
+        typeof envelope.output === 'string'
+          ? envelope.output
+          : JSON.stringify(envelope.output ?? '');
       stepResults.push({
         index: i + 1,
         tool: step.tool,
@@ -1877,7 +2006,7 @@ export async function executeTool(
       name: process.env.OPENHORSE_NAME || 'openhorse',
       mode: process.env.OPENHORSE_MODE || 'development',
     },
-    abortSignal,  // Issue #32 #3.2: 透传 abortSignal
+    abortSignal, // Issue #32 #3.2: 透传 abortSignal
     sessionId: toolContext?.sessionId,
     turnId: toolContext?.turnId,
   };
@@ -1914,7 +2043,11 @@ export async function executeTool(
   return JSON.stringify(payload);
 }
 
-function summarizeToolResult(tool: OpenHorseTool, args: Record<string, unknown>, result: ToolResult): string | undefined {
+function summarizeToolResult(
+  tool: OpenHorseTool,
+  args: Record<string, unknown>,
+  result: ToolResult
+): string | undefined {
   try {
     return tool.getSummary?.(args, result);
   } catch {
@@ -1926,7 +2059,9 @@ function summarizeToolResult(tool: OpenHorseTool, args: Record<string, unknown>,
  * 获取可用工具名称列表
  */
 export function getToolNames(): string {
-  return getRuntimeTools().map(t => t.name).join(', ');
+  return getRuntimeTools()
+    .map(t => t.name)
+    .join(', ');
 }
 
 // Re-export bash_security module

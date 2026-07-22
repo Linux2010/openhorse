@@ -1,9 +1,19 @@
 export { ContextHarness, createContextHarness } from './context-harness';
 export type { ContextHarnessOptions } from './context-harness';
-export { createTaskContract, updateTaskContract } from './contract';
+export {
+  createTaskContract,
+  extractExplicitObjective,
+  normalizeTaskContract,
+  updateTaskContract,
+} from './contract';
 export { ContextLedger } from './ledger';
 export type { AddLedgerEntryInput } from './ledger';
-export { createContextCapsule, renderContextCapsule, renderHarnessStateForCompact } from './capsule';
+export {
+  createContextCapsule,
+  normalizeContextCapsule,
+  renderContextCapsule,
+  renderHarnessStateForCompact,
+} from './capsule';
 export { assembleHarnessMessages, buildHarnessContext, renderHarnessContext } from './assembler';
 export type { HarnessContextBuildResult, PromptAssemblyOptions } from './assembler';
 export { buildEvidenceIndex, bumpIncludedEvidence, estimateTokens, rankEvidence } from './evidence';

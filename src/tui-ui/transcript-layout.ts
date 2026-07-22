@@ -9,6 +9,7 @@ import type {
   StructuredToolActivity,
   TranscriptEntry,
 } from '../runtime/ui-events';
+import type { ToolOutputStepSummary } from '../runtime/tool-output-presentation';
 import { writeFrameText, type TuiFrame } from '../tui-core/frame';
 import {
   sanitizeTerminalText,
@@ -33,6 +34,7 @@ export type TranscriptLayoutEntry = Omit<TranscriptEntry, 'id'> & {
 export interface TranscriptLayoutOptions {
   width: number;
   theme?: TuiTheme;
+  toolOutputMode?: 'adaptive' | 'collapsed' | 'full';
 }
 
 interface StyledUnit {
@@ -54,7 +56,7 @@ export function layoutTranscriptEntry(
   let rows: StyledRow[];
 
   if (isToolEntry(entry)) {
-    rows = layoutToolEntry(entry, width, theme);
+    rows = layoutToolEntry(entry, width, theme, options.toolOutputMode ?? 'adaptive');
   } else {
     switch (entry.role) {
       case 'assistant':
@@ -178,6 +180,7 @@ function layoutToolEntry(
   entry: TranscriptLayoutEntry,
   width: number,
   theme: ResolvedTuiTheme,
+  viewMode: 'adaptive' | 'collapsed' | 'full',
 ): StyledRow[] {
   const activity = entry.toolActivity;
   if (!activity && entry.role === 'tool') {
@@ -203,7 +206,28 @@ function layoutToolEntry(
       theme.commandText,
     ));
   }
-  const bodyText = activity?.body !== undefined ? activity.body : entry.content;
+  const outputView = activity?.outputView;
+  if (viewMode !== 'full' && outputView?.aggregate) {
+    const visibleSteps = prioritizeAggregateSteps(outputView.aggregate.steps).slice(0, 3);
+    for (const step of visibleSteps) {
+      const marker = step.state === 'success' ? '✓' : step.state === 'error' ? '✗' : '-';
+      const target = step.target ? ` ${sanitizeInlineText(step.target)}` : '';
+      const summary = step.summary ? `  ${sanitizeInlineText(step.summary)}` : '';
+      rows.push(...wrapStyledSpans([{
+        text: `  ${marker} ${step.index}. ${sanitizeInlineText(step.toolName)}${target}${summary}`,
+        style: step.state === 'error' ? theme.toolError : theme.toolMeta,
+      }], width));
+    }
+  }
+  const bodyText = outputView
+    ? viewMode === 'full'
+      ? activity?.body ?? entry.content
+      : viewMode === 'collapsed'
+        ? ''
+        : outputView.mode === 'inline' || outputView.mode === 'preview'
+          ? outputView.preview
+          : ''
+    : activity?.body !== undefined ? activity.body : entry.content;
   if (bodyText) {
     const safeAnsi = retainSafeToolSgr(bodyText);
     const body = parseAnsiToStyledSpans(safeAnsi).map(span => ({
@@ -213,11 +237,35 @@ function layoutToolEntry(
     rows.push(...wrapStyledSpans(body, width));
   }
 
+  if (
+    outputView
+    && viewMode !== 'full'
+    && (viewMode === 'collapsed' || outputView.mode !== 'inline')
+  ) {
+    const omitted = outputView.omittedBytes > 0
+      ? `${formatByteCount(outputView.omittedBytes)} omitted`
+      : 'details available';
+    const more = outputView.aggregate && outputView.aggregate.steps.length > 3
+      ? ` · +${outputView.aggregate.steps.length - 3} more`
+      : '';
+    rows.push(...wrapStyledSpans([{
+      text: `  ↳ collapsed${more} · ${omitted} · Ctrl+O details`,
+      style: theme.toolMeta,
+    }], width));
+  }
+
   if (activity?.error && !entry.content.includes(activity.error)) {
     rows.push(...layoutLiteralRole(activity.error, width, '  ', theme.toolError, theme.toolError));
   }
 
   return rows;
+}
+
+function prioritizeAggregateSteps(steps: ToolOutputStepSummary[]): ToolOutputStepSummary[] {
+  return [...steps].sort((a, b) => {
+    const priority = (state: string): number => state === 'error' ? 0 : state === 'skipped' ? 1 : 2;
+    return priority(a.state) - priority(b.state) || a.index - b.index;
+  });
 }
 
 function toolFallbackName(entry: TranscriptLayoutEntry): string {

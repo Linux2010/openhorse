@@ -1,6 +1,20 @@
-import { createTuiFrame, diffTuiFrames, renderFrameRows, setFrameCursor, writeFrameText } from '../src/tui-core/frame';
+import {
+  createTuiFrame,
+  diffTuiFrames,
+  renderFrameRows,
+  setFrameCursor,
+  writeFrameText,
+} from '../src/tui-core/frame';
 import { TuiInputParser } from '../src/tui-core/input-parser';
-import { cursorHide, cursorShow, disableAutoWrap, enableAutoWrap, moveTo, renderTerminalFrame, TuiTerminalWriter } from '../src/tui-core/terminal-writer';
+import {
+  cursorHide,
+  cursorShow,
+  disableAutoWrap,
+  enableAutoWrap,
+  moveTo,
+  renderTerminalFrame,
+  TuiTerminalWriter,
+} from '../src/tui-core/terminal-writer';
 
 describe('tui-core input parser', () => {
   it('keeps split UTF-8 CJK bytes intact before emitting text', () => {
@@ -13,12 +27,30 @@ describe('tui-core input parser', () => {
     expect(parser.feed(second)).toEqual([{ type: 'text', value: '源小？事收到' }]);
   });
 
+  it('detects split UTF-8 multiline paste after preserving byte boundaries', () => {
+    const parser = new TuiInputParser();
+    const bytes = Buffer.from('第一行\n第二行', 'utf8');
+    const first = bytes.subarray(0, bytes.length - 1);
+    const second = bytes.subarray(bytes.length - 1);
+
+    expect(parser.feed(first, { detectUnbracketedMultilinePaste: true })).toEqual([
+      { type: 'paste', value: '第一行\n第二' },
+    ]);
+    expect(parser.feed(second, { detectUnbracketedMultilinePaste: true })).toEqual([
+      { type: 'text', value: '行' },
+    ]);
+  });
+
   it('parses deletion and control keys without confusing DEL backspace for forward delete', () => {
     const parser = new TuiInputParser();
 
-    expect(parser.feed(Buffer.from('\x7f'))).toEqual([{ type: 'key', key: 'backspace', raw: '\x7f' }]);
+    expect(parser.feed(Buffer.from('\x7f'))).toEqual([
+      { type: 'key', key: 'backspace', raw: '\x7f' },
+    ]);
     expect(parser.feed(Buffer.from('\b'))).toEqual([{ type: 'key', key: 'backspace', raw: '\b' }]);
-    expect(parser.feed(Buffer.from('\x1b[3~'))).toEqual([{ type: 'key', key: 'delete', raw: '\x1b[3~' }]);
+    expect(parser.feed(Buffer.from('\x1b[3~'))).toEqual([
+      { type: 'key', key: 'delete', raw: '\x1b[3~' },
+    ]);
     expect(parser.feed(Buffer.from('\x03\x03'))).toEqual([
       { type: 'key', key: 'ctrl+c', raw: '\x03' },
       { type: 'key', key: 'ctrl+c', raw: '\x03' },
@@ -49,18 +81,14 @@ describe('tui-core input parser', () => {
     expect(parser.feed(Buffer.from('\x1b[2'))).toEqual([]);
     expect(parser.feed(Buffer.from('00~one\n'))).toEqual([]);
     expect(parser.feed(Buffer.from('two\x1b[20'))).toEqual([]);
-    expect(parser.feed(Buffer.from('1~'))).toEqual([
-      { type: 'paste', value: 'one\ntwo' },
-    ]);
+    expect(parser.feed(Buffer.from('1~'))).toEqual([{ type: 'paste', value: 'one\ntwo' }]);
   });
 
   it('keeps split CSI keys intact across chunks', () => {
     const parser = new TuiInputParser();
 
     expect(parser.feed(Buffer.from('\x1b['))).toEqual([]);
-    expect(parser.feed(Buffer.from('D'))).toEqual([
-      { type: 'key', key: 'left', raw: '\x1b[D' },
-    ]);
+    expect(parser.feed(Buffer.from('D'))).toEqual([{ type: 'key', key: 'left', raw: '\x1b[D' }]);
   });
 
   // --- 切片2: emoji / grapheme / long input ---
@@ -69,18 +97,14 @@ describe('tui-core input parser', () => {
     const parser = new TuiInputParser();
     // 👋 = F0 9F 91 8B (4 bytes), 你好 = CJK
     const emoji = '👋你好';
-    expect(parser.feed(Buffer.from(emoji, 'utf8'))).toEqual([
-      { type: 'text', value: emoji },
-    ]);
+    expect(parser.feed(Buffer.from(emoji, 'utf8'))).toEqual([{ type: 'text', value: emoji }]);
   });
 
   it('handles grapheme clusters with combining marks', () => {
     const parser = new TuiInputParser();
     // é as e + combining acute accent (U+0065 U+0301)
     const text = 'é';
-    expect(parser.feed(Buffer.from(text, 'utf8'))).toEqual([
-      { type: 'text', value: text },
-    ]);
+    expect(parser.feed(Buffer.from(text, 'utf8'))).toEqual([{ type: 'text', value: text }]);
   });
 
   it('handles very long input without splitting key sequences', () => {
@@ -121,11 +145,7 @@ describe('tui-core frame model', () => {
 
     writeFrameText(frame, 0, 0, 'abc你');
 
-    expect(renderFrameRows(frame)).toEqual([
-      'abc ',
-      '你  ',
-      '    ',
-    ]);
+    expect(renderFrameRows(frame)).toEqual(['abc ', '你  ', '    ']);
   });
 
   it('keeps cursor as frame-owned state separate from row diffs', () => {
@@ -178,7 +198,7 @@ describe('tui-core frame model', () => {
   it('clamps cursor to frame bounds', () => {
     const frame = createTuiFrame(10, 4);
     setFrameCursor(frame, 99, 99, true);
-    expect(frame.cursor.row).toBe(3);  // max height - 1
+    expect(frame.cursor.row).toBe(3); // max height - 1
     expect(frame.cursor.column).toBe(9); // max width - 1
     setFrameCursor(frame, -5, -5, true);
     expect(frame.cursor.row).toBe(0);
@@ -221,19 +241,21 @@ describe('tui-core terminal writer', () => {
       changedRows: [0, 1],
       cursorChanged: true,
     });
-    expect(result.output).toBe([
-      disableAutoWrap(),
-      cursorHide(),
-      moveTo(0, 0),
-      '\x1b[2K',
-      'hello   ',
-      moveTo(1, 0),
-      '\x1b[2K',
-      '你      ',
-      moveTo(1, 2),
-      cursorShow(),
-      enableAutoWrap(),
-    ].join(''));
+    expect(result.output).toBe(
+      [
+        disableAutoWrap(),
+        cursorHide(),
+        moveTo(0, 0),
+        '\x1b[2K',
+        'hello   ',
+        moveTo(1, 0),
+        '\x1b[2K',
+        '你      ',
+        moveTo(1, 2),
+        cursorShow(),
+        enableAutoWrap(),
+      ].join('')
+    );
   });
 
   it('updates only changed rows and then parks the cursor at the declared frame position', () => {
@@ -249,16 +271,18 @@ describe('tui-core terminal writer', () => {
     const result = renderTerminalFrame(previous, next);
 
     expect(result.diff.changedRows).toEqual([1]);
-    expect(result.output).toBe([
-      disableAutoWrap(),
-      cursorHide(),
-      moveTo(1, 0),
-      '\x1b[2K',
-      'new         ',
-      moveTo(1, 3),
-      cursorShow(),
-      enableAutoWrap(),
-    ].join(''));
+    expect(result.output).toBe(
+      [
+        disableAutoWrap(),
+        cursorHide(),
+        moveTo(1, 0),
+        '\x1b[2K',
+        'new         ',
+        moveTo(1, 3),
+        cursorShow(),
+        enableAutoWrap(),
+      ].join('')
+    );
   });
 
   it('can move only the cursor without rewriting transcript rows', () => {
@@ -272,13 +296,9 @@ describe('tui-core terminal writer', () => {
     const result = renderTerminalFrame(previous, next);
 
     expect(result.diff.changedRows).toEqual([]);
-    expect(result.output).toBe([
-      disableAutoWrap(),
-      cursorHide(),
-      moveTo(0, 5),
-      cursorShow(),
-      enableAutoWrap(),
-    ].join(''));
+    expect(result.output).toBe(
+      [disableAutoWrap(), cursorHide(), moveTo(0, 5), cursorShow(), enableAutoWrap()].join('')
+    );
   });
 
   it('stores previous frames inside the writer before writing later diffs', () => {

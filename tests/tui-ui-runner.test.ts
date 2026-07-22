@@ -1,13 +1,15 @@
 import stringWidth from 'string-width';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { TuiRunner } from '../src/tui-ui/runner';
 import { InlineTerminalSurface, MemoryOutput } from '../src/tui-ui/inline-surface';
+import { TranscriptInspectorSurface } from '../src/tui-ui/transcript-inspector-surface';
 import { renderStyledFrameRow, type TuiFrame } from '../src/tui-core/frame';
 import { styleKey, type StyledRow } from '../src/tui-core/style';
 import { makeToolStartedEvent, makeToolFinishedEvent, resetToolEventSequence } from './test-helpers';
 import type { SessionMeta } from '../src/services/session-storage';
+import type { ToolDetailRepository } from '../src/runtime/tool-detail-repository';
 
 function createOutput() {
   const writes: string[] = [];
@@ -87,6 +89,150 @@ describe('tui-ui runner', () => {
     expect(submitted).toEqual(['hello']);
     expect(runner.getState().prompt).toEqual({ value: '', cursor: 0 });
     expect(runner.renderFullFrame().cursor).toEqual({ row: 7, column: 4, visible: true });
+  });
+
+  it('handles TUI-only tool output mode and redraw commands locally', () => {
+    const { output } = createOutput();
+    const submitted: string[] = [];
+    const runner = new TuiRunner({
+      output,
+      width: 48,
+      height: 10,
+      onSubmit: input => {
+        submitted.push(input);
+      },
+    });
+
+    runner.feedInput(Buffer.from('/tool-output full'));
+    runner.feedInput(Buffer.from('\r'));
+    expect(runner.getState().toolOutputViewMode).toBe('full');
+    expect(runner.getState().statusMessage).toBe('tool output: full');
+
+    runner.feedInput(Buffer.from('/redraw'));
+    runner.feedInput(Buffer.from('\r'));
+    expect(submitted).toEqual([]);
+  });
+
+  it('preserves draft and parser ownership across the Ctrl+O Inspector', async () => {
+    const output = new MemoryOutput();
+    const inlineSurface = new InlineTerminalSurface({ output });
+    await inlineSurface.mount(80, 24);
+    const inspectorSurface = new TranscriptInspectorSurface(output);
+    const editorViews: string[] = [];
+    const repository: ToolDetailRepository = {
+      list: async () => [],
+      read: async () => ({
+        content: '完整工具输出',
+        offsetBytes: 0,
+        totalBytes: 18,
+        redacted: false,
+      }),
+    };
+    const runner = new TuiRunner({
+      output,
+      width: 80,
+      height: 24,
+      surface: inlineSurface,
+      inspectorSurface,
+      detailRepository: repository,
+      onOpenExternalEditor: filePath => {
+        editorViews.push(readFileSync(filePath, 'utf8'));
+      },
+    });
+    runner.events.toolFinished?.({
+      callId: 'call-inspector',
+      name: 'read_file',
+      args: { path: 'README.md' },
+      success: true,
+      duration: 2,
+      summary: 'read README.md',
+      outputBytes: 18,
+      artifactRef: { id: 'artifact-inspector', outputBytes: 18 },
+      sequence: 1,
+    });
+    runner.feedInput(Buffer.from('未提交草稿'));
+    runner.feedInput(Buffer.from('\x0f'));
+    await runner.waitForModalSurface();
+
+    expect(inspectorSurface.isMounted).toBe(true);
+    expect(runner.getState().prompt.value).toBe('未提交草稿');
+    runner.feedInput(Buffer.from('\x05'));
+    expect(runner.getState().inspector?.expandedCallIds).toEqual(['call-inspector']);
+
+    runner.feedInput(Buffer.from('q'));
+    await runner.waitForModalSurface();
+    expect(inspectorSurface.isMounted).toBe(false);
+    expect(runner.getState().prompt.value).toBe('未提交草稿');
+    expect(output.text()).toContain('\x1b[?1049h');
+    expect(output.text()).toContain('\x1b[?1049l');
+
+    runner.feedInput(Buffer.from('\x0f'));
+    await runner.waitForModalSurface();
+    runner.feedInput(Buffer.from('['));
+    await runner.waitForModalSurface();
+    expect(output.text()).toContain('完整工具输出');
+    expect(runner.getState().statusMessage).toBe('Exported 1 tool result to scrollback.');
+
+    runner.feedInput(Buffer.from('\x0f'));
+    await runner.waitForModalSurface();
+    runner.feedInput(Buffer.from('v'));
+    await runner.waitForModalSurface();
+    expect(editorViews).toEqual(['完整工具输出']);
+    expect(runner.getState().prompt.value).toBe('未提交草稿');
+  });
+
+  it('routes the complete Inspector keyboard navigation set', async () => {
+    const output = new MemoryOutput();
+    const inspectorSurface = new TranscriptInspectorSurface(output);
+    const repository: ToolDetailRepository = {
+      list: async () => [],
+      read: async () => ({ content: 'detail', offsetBytes: 0, totalBytes: 6, redacted: false }),
+    };
+    const runner = new TuiRunner({
+      output,
+      width: 80,
+      height: 24,
+      inspectorSurface,
+      detailRepository: repository,
+    });
+    ['read_file', 'exec_command', 'grep'].forEach((name, index) => {
+      runner.events.toolFinished?.({
+        callId: `call-${index}`,
+        name,
+        args: {},
+        success: true,
+        duration: 1,
+        summary: `${name} summary`,
+        outputBytes: 6,
+        sequence: index + 1,
+      });
+    });
+
+    runner.feedInput(Buffer.from('\x0f'));
+    await runner.waitForModalSurface();
+    expect(runner.getState().inspector?.selectedIndex).toBe(2);
+    runner.feedInput(Buffer.from('k'));
+    expect(runner.getState().inspector?.selectedIndex).toBe(1);
+    runner.feedInput(Buffer.from('j'));
+    expect(runner.getState().inspector?.selectedIndex).toBe(2);
+    runner.feedInput(Buffer.from('g'));
+    expect(runner.getState().inspector?.selectedIndex).toBe(0);
+    runner.feedInput(Buffer.from('G'));
+    expect(runner.getState().inspector?.selectedIndex).toBe(2);
+    runner.feedInput(Buffer.from('\x04'));
+    expect(runner.getState().inspector?.detailOffset).toBe(10);
+    runner.feedInput(Buffer.from('\x15'));
+    expect(runner.getState().inspector?.detailOffset).toBe(0);
+
+    runner.feedInput(Buffer.from('/'));
+    runner.feedInput(Buffer.from('read'));
+    runner.feedInput(Buffer.from('\r'));
+    expect(runner.getState().inspector?.searchQuery).toBe('read');
+    expect(runner.getState().inspector?.selectedIndex).toBe(0);
+    runner.feedInput(Buffer.from('n'));
+    expect(runner.getState().inspector?.selectedIndex).toBe(0);
+    runner.feedInput(Buffer.from('q'));
+    await runner.waitForModalSurface();
   });
 
   it('keeps unbracketed multiline paste as one prompt value instead of submitting per line', () => {
@@ -848,13 +994,39 @@ describe('tui-ui runner', () => {
     runner.events.finalize(assistantId);
 
     // The surface should have received the committed entry in its stream.
-    await surface.whenIdle();
+    await runner.flushTranscriptCommits();
     const text = out.text();
     // User entry (role: user → prefix '› ') should be in committed output.
     expect(stripAnsi(text)).toContain('› hello world');
     // Assistant entry should also be there.
     expect(text).toContain('response');
 
+    await surface.unmount();
+  });
+
+  it('retains and retries a finalized prefix after one acknowledgement mismatch', async () => {
+    const out = new MemoryOutput();
+    const surface = new InlineTerminalSurface({ output: out });
+    await surface.mount(80, 24);
+    const commit = jest.spyOn(surface, 'commit').mockImplementationOnce(async batch => ({
+      output: '',
+      committedEntries: 0,
+      batchId: `${batch.batchId}-mismatch`,
+      generation: batch.generation,
+      displayKeys: [],
+    }));
+    const { output } = createOutput();
+    const runner = new TuiRunner({ output, width: 80, height: 24, surface });
+
+    runner.events.append({ role: 'user', content: 'must survive mismatch' });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await runner.flushTranscriptCommits();
+    await new Promise<void>(resolve => setImmediate(resolve));
+
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(runner.getState().transcript).toHaveLength(0);
+    expect(runner.counters.commitCount).toBe(1);
+    expect(out.text()).toContain('must survive mismatch');
     await surface.unmount();
   });
 
@@ -873,14 +1045,14 @@ describe('tui-ui runner', () => {
         { id: 'old-3', role: 'user', content: 'old-three' },
       ],
     });
-    await surface.whenIdle();
+    await runner.flushTranscriptCommits();
     out.chunks = [];
 
     runner.dispatch({
       type: 'replaceTranscript',
       entries: [{ id: 'new-1', role: 'assistant', content: 'shorter-generation' }],
     });
-    await surface.whenIdle();
+    await runner.flushTranscriptCommits();
 
     expect(out.text()).toContain('shorter-generation');
     await surface.unmount();

@@ -22,6 +22,7 @@ import type { TuiPickerItem } from './pickers';
 
 /** Maximum subtask timeline entries (bounded for long-session safety). */
 const MAX_SUBTASK_TIMELINE = 100;
+const MAX_RECENT_TOOL_DETAILS = 512;
 
 export type TuiPromptState = Pick<PromptState, 'value' | 'cursor'>;
 
@@ -53,6 +54,19 @@ export type TuiOverlayState =
   | { type: 'shortcuts' }
   | null;
 
+// --- v0.2.23: Tool Inspector state ---
+
+export interface ToolInspectorState {
+  selectedIndex: number;
+  expandedCallIds: string[];
+  listOffset: number;
+  detailOffset: number;
+  searchQuery: string;
+  searchDirection: 1 | -1;
+  loadingCallIds: string[];
+  error?: string;
+}
+
 export interface TuiUiState {
   transcript: TuiTranscriptRecord[];
   runtimeToolEvents: TuiRuntimeToolEvent[];
@@ -68,6 +82,22 @@ export interface TuiUiState {
   statusState: TuiStatusState;
   processing: boolean;
   overlay: TuiOverlayState;
+  /** v0.2.23: Tool output view mode for adaptive collapse. */
+  toolOutputViewMode: 'adaptive' | 'collapsed' | 'full';
+  /** v0.2.23: Bounded recent tool detail summaries (max 512). */
+  recentToolDetails: TuiToolDetailSummary[];
+  /** v0.2.23: Inspector state (null when closed). */
+  inspector: ToolInspectorState | null;
+}
+
+export interface TuiToolDetailSummary {
+  callId: string;
+  sequence: number;
+  toolName: string;
+  outputBytes: number;
+  state: 'success' | 'error' | 'skipped';
+  summary?: string;
+  artifactId?: string;
 }
 
 export type TuiUiAction =
@@ -91,7 +121,19 @@ export type TuiUiAction =
   | { type: 'showFilePicker'; base: string; query: string; items: TuiPickerItem[] }
   | { type: 'showShortcuts' }
   | { type: 'moveOverlaySelection'; delta: number }
-  | { type: 'closeOverlay' };
+  | { type: 'closeOverlay' }
+  // --- v0.2.23: Tool Inspector actions ---
+  | { type: 'setToolOutputViewMode'; mode: 'adaptive' | 'collapsed' | 'full' }
+  | { type: 'openToolInspector' }
+  | { type: 'closeToolInspector' }
+  | { type: 'moveToolInspectorSelection'; delta: number }
+  | { type: 'setToolInspectorSelection'; index: number }
+  | { type: 'toggleToolInspectorEntry'; callId: string }
+  | { type: 'toggleAllToolInspectorEntries' }
+  | { type: 'scrollToolInspector'; delta: number }
+  | { type: 'setToolInspectorSearch'; query: string }
+  | { type: 'toolDetailLoaded'; callId: string }
+  | { type: 'toolDetailLoadFailed'; callId: string; error: string };
 
 export const initialTuiUiState: TuiUiState = {
   transcript: [],
@@ -112,6 +154,10 @@ export const initialTuiUiState: TuiUiState = {
   },
   processing: false,
   overlay: null,
+  // v0.2.23
+  toolOutputViewMode: 'adaptive',
+  recentToolDetails: [],
+  inspector: null,
 };
 
 export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState {
@@ -177,6 +223,10 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
         queuedTranscriptCount: 0,
         committedTranscriptCount: 0,
         transcriptGeneration: state.transcriptGeneration + 1,
+        recentToolDetails: mergeRecentToolDetails(
+          state.recentToolDetails,
+          action.entries.flatMap(toolDetailsFromTranscriptEntry),
+        ),
       };
     }
 
@@ -262,7 +312,20 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
     }
 
     case 'toolFinished': {
-      const next = appendRuntimeToolEvent(state, { type: 'finished', ...action.event });
+      const event = action.event;
+      const detail: TuiToolDetailSummary = {
+        callId: event.callId,
+        sequence: event.sequence,
+        toolName: event.name,
+        outputBytes: event.outputBytes ?? 0,
+        state: event.skipped ? 'skipped' : event.success ? 'success' : 'error',
+        summary: event.summary ?? event.error,
+        artifactId: event.artifactRef?.id,
+      };
+      const next = appendRuntimeToolEvent({
+        ...state,
+        recentToolDetails: mergeRecentToolDetails(state.recentToolDetails, [detail]),
+      }, { type: 'finished', ...event });
       return updateStatusCounts(next);
     }
 
@@ -326,6 +389,127 @@ export function tuiUiReducer(state: TuiUiState, action: TuiUiAction): TuiUiState
 
     case 'closeOverlay':
       return { ...state, overlay: null };
+
+    // --- v0.2.23: Tool Inspector actions ---
+
+    case 'setToolOutputViewMode':
+      return { ...state, toolOutputViewMode: action.mode };
+
+    case 'openToolInspector':
+      return {
+        ...state,
+        inspector: {
+          selectedIndex: Math.max(0, state.recentToolDetails.length - 1),
+          expandedCallIds: [],
+          listOffset: 0,
+          detailOffset: 0,
+          searchQuery: '',
+          searchDirection: 1,
+          loadingCallIds: [],
+        },
+      };
+
+    case 'closeToolInspector':
+      return { ...state, inspector: null };
+
+    case 'moveToolInspectorSelection': {
+      if (!state.inspector) return state;
+      const newIndex = clampNumber(
+        state.inspector.selectedIndex + action.delta,
+        0,
+        Math.max(0, state.recentToolDetails.length - 1),
+      );
+      return {
+        ...state,
+        inspector: { ...state.inspector, selectedIndex: newIndex, detailOffset: 0 },
+      };
+    }
+
+    case 'setToolInspectorSelection': {
+      if (!state.inspector) return state;
+      return {
+        ...state,
+        inspector: {
+          ...state.inspector,
+          selectedIndex: Math.max(0, action.index),
+          detailOffset: 0,
+        },
+      };
+    }
+
+    case 'toggleToolInspectorEntry': {
+      if (!state.inspector) return state;
+      const expanded = state.inspector.expandedCallIds.includes(action.callId)
+        ? state.inspector.expandedCallIds.filter(id => id !== action.callId)
+        : [...state.inspector.expandedCallIds, action.callId];
+      return {
+        ...state,
+        inspector: { ...state.inspector, expandedCallIds: expanded },
+      };
+    }
+
+    case 'toggleAllToolInspectorEntries': {
+      if (!state.inspector) return state;
+      const allExpanded = state.inspector.expandedCallIds.length === state.recentToolDetails.length;
+      return {
+        ...state,
+        inspector: {
+          ...state.inspector,
+          expandedCallIds: allExpanded ? [] : state.recentToolDetails.map(e => e.callId),
+        },
+      };
+    }
+
+    case 'scrollToolInspector': {
+      if (!state.inspector) return state;
+      return {
+        ...state,
+        inspector: {
+          ...state.inspector,
+          detailOffset: Math.max(0, state.inspector.detailOffset + action.delta),
+        },
+      };
+    }
+
+    case 'setToolInspectorSearch': {
+      if (!state.inspector) return state;
+      return {
+        ...state,
+        inspector: {
+          ...state.inspector,
+          searchQuery: action.query,
+          searchDirection: action.query === state.inspector.searchQuery
+            ? (state.inspector.searchDirection === 1 ? -1 : 1) as 1 | -1
+            : 1,
+          selectedIndex: 0,
+          detailOffset: 0,
+        },
+      };
+    }
+
+    case 'toolDetailLoaded': {
+      if (!state.inspector) return state;
+      return {
+        ...state,
+        inspector: {
+          ...state.inspector,
+          loadingCallIds: state.inspector.loadingCallIds.filter(id => id !== action.callId),
+          error: undefined,
+        },
+      };
+    }
+
+    case 'toolDetailLoadFailed': {
+      if (!state.inspector) return state;
+      return {
+        ...state,
+        inspector: {
+          ...state.inspector,
+          loadingCallIds: state.inspector.loadingCallIds.filter(id => id !== action.callId),
+          error: action.error,
+        },
+      };
+    }
   }
 }
 
@@ -364,6 +548,39 @@ export function markTranscriptQueued(state: TuiUiState, count: number): TuiUiSta
 /** Advance the committed boundary after successful surface write. */
 export function markTranscriptCommitted(state: TuiUiState, count: number): TuiUiState {
   return { ...state, committedTranscriptCount: state.committedTranscriptCount + count };
+}
+
+export interface TranscriptCommitAcknowledgement {
+  generation: number;
+  recordIds: string[];
+}
+
+/** Release only the exact finalized prefix confirmed by the surface write. */
+export function acknowledgeTranscriptCommit(
+  state: TuiUiState,
+  acknowledgement: TranscriptCommitAcknowledgement,
+): { state: TuiUiState; accepted: boolean } {
+  if (acknowledgement.generation !== state.transcriptGeneration) {
+    return { state, accepted: false };
+  }
+  const count = acknowledgement.recordIds.length;
+  if (count === 0 || count > state.queuedTranscriptCount || count > state.committableTranscriptCount) {
+    return { state, accepted: false };
+  }
+  const prefix = state.transcript.slice(0, count);
+  if (prefix.some((entry, index) => !entry.finalized || entry.id !== acknowledgement.recordIds[index])) {
+    return { state, accepted: false };
+  }
+  return {
+    accepted: true,
+    state: {
+      ...state,
+      transcript: state.transcript.slice(count),
+      committableTranscriptCount: state.committableTranscriptCount - count,
+      queuedTranscriptCount: state.queuedTranscriptCount - count,
+      committedTranscriptCount: 0,
+    },
+  };
 }
 
 export function createTuiUiEventSink(
@@ -433,8 +650,40 @@ function appendRuntimeToolEvent(state: TuiUiState, event: TuiRuntimeToolEvent): 
   const next = [...withoutDuplicate, event];
   return {
     ...state,
-    runtimeToolEvents: next.slice(-100),
+    runtimeToolEvents: next.slice(-MAX_RECENT_TOOL_DETAILS * 2),
   };
+}
+
+function mergeRecentToolDetails(
+  current: TuiToolDetailSummary[],
+  incoming: TuiToolDetailSummary[],
+): TuiToolDetailSummary[] {
+  const byCallId = new Map(current.map(detail => [detail.callId, detail]));
+  for (const detail of incoming) {
+    byCallId.delete(detail.callId);
+    byCallId.set(detail.callId, detail);
+  }
+  return Array.from(byCallId.values()).slice(-MAX_RECENT_TOOL_DETAILS);
+}
+
+function toolDetailsFromTranscriptEntry(entry: TranscriptEntry): TuiToolDetailSummary[] {
+  const activity = entry.toolActivity;
+  const detailRef = activity?.outputView?.detailRef;
+  if (!activity || !detailRef) return [];
+  const state = activity.state === 'error'
+    ? 'error'
+    : activity.state === 'skipped'
+      ? 'skipped'
+      : 'success';
+  return [{
+    callId: detailRef.callId,
+    sequence: detailRef.sequence,
+    toolName: activity.name,
+    outputBytes: detailRef.outputBytes,
+    state,
+    summary: activity.summary ?? activity.outputView?.summary,
+    artifactId: detailRef.artifactId,
+  }];
 }
 
 /** Count tools with a 'started' event but no matching 'finished' event. */

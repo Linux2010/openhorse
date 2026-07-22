@@ -882,7 +882,10 @@ describe('Ink UI helpers', () => {
       });
       appendSessionMessage(session.id, { role: 'assistant', content: 'Done.', timestamp: 1003 });
 
-      const entries = sessionMessagesToTranscriptEntries(session.id);
+      const plainEntries = sessionMessagesToTranscriptEntries(session.id);
+      const entries = sessionMessagesToTranscriptEntries(session.id, { includeToolOutputViews: true });
+
+      expect(plainEntries[2].toolActivity).toBeUndefined();
 
       expect(entries.map(entry => entry.content)).toEqual([
         'inspect files',
@@ -890,6 +893,17 @@ describe('Ink UI helpers', () => {
         '✓ list_files .',
         'Done.',
       ]);
+      expect(entries[2].toolActivity).toMatchObject({
+        name: 'list_files',
+        callId: 'call-list-files',
+        seq: 1,
+        outputBytes: 12,
+      });
+      expect(entries[2].toolActivity?.outputView?.detailRef).toMatchObject({
+        callId: 'call-list-files',
+        sequence: 1,
+      });
+      expect(entries[2].toolActivity?.outputView?.preview).toBe('package.json');
     } finally {
       if (originalConfigDir === undefined) {
         delete process.env.OPENHORSE_CONFIG_DIR;
