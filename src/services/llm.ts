@@ -362,6 +362,8 @@ export class LLMService {
   private usingFallback = false;
   private lastRequestDiagnostics: LLMRequestDiagnostics;
   private usageObservers = new Set<(event: LLMUsageEvent) => void>();
+  /** v0.2.25: injected resilience coordinator (optional — falls back to old withRetry if absent). */
+  resilience?: import('./provider-resilience').ProviderResilienceCoordinator;
 
   constructor(config: LLMConfig) {
     // v0.2.25: disable SDK built-in retry (maxRetries=0). OpenHorse owns retry policy.
@@ -434,10 +436,21 @@ export class LLMService {
       params.tools = tools as ChatCompletionTool[];
     }
 
+    // v0.2.25: Use resilience coordinator when available.
     let response: any;
     try {
-      response = await this.client.chat.completions.create(params as any);
+      if (this.resilience) {
+        const result = await this.resilience.execute(
+          { logicalRequestId: `chat-${Date.now()}`, operation: 'root_chat', providerKey: 'default', requestedModel: this.config.model },
+          async () => ({ response: await this.client.chat.completions.create(params as any) }),
+        );
+        response = result.result;
+      } else {
+        response = await this.client.chat.completions.create(params as any);
+      }
     } catch (error) {
+      // v0.2.25: ProviderRetryExhaustedError is a recoverable turn failure.
+      if (error instanceof Error && error.name === 'ProviderRetryExhaustedError') throw error;
       if (isAbortError(error)) throw error;
       throw toLLMProviderError(error);
     }
