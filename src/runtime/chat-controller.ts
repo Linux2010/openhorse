@@ -2450,6 +2450,32 @@ export class AgentChatController {
       }
       this.events.setStatus(finalModel ? `Completed with ${finalModel}` : 'Completed');
     } catch (error: unknown) {
+      // v0.2.25: Provider retry exhausted is a recoverable turn failure.
+      if (error instanceof Error && error.name === 'ProviderRetryExhaustedError') {
+        const diag = (error as any).diagnostics;
+        const attempts = diag?.attempts?.length ?? '?';
+        const kind = diag?.attempts?.[diag.attempts.length - 1]?.failureKind ?? 'unknown';
+        this.events.setStatus(
+          `Provider unavailable (${kind}, ${attempts} attempts). Retry exhausted — ready for next input.`
+        );
+        this.events.append({
+          role: 'error',
+          title: 'provider',
+          content: `Provider retry exhausted after ${attempts} attempts (${kind}). The turn was not completed. You can try again or wait for the provider to recover.`,
+          errorLayer: 'provider',
+        });
+
+        // v0.2.25: If a goal is active, pause it on provider retry exhaustion
+        // so it doesn't auto-continue and burn retries.
+        try {
+          const gc = (this as any).goalCoordinator;
+          if (gc?.goal?.status === 'active') {
+            gc.deferContinuation();
+          }
+        } catch { /* best effort */ }
+
+        return;
+      }
       if (isAbortError(error, abortSignal)) {
         assistantStream.discardSegment();
         this.events.setStatus('Interrupted.');

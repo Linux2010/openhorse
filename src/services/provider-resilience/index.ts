@@ -5,6 +5,7 @@
 export { ProviderResilienceCoordinator, ProviderRetryExhaustedError } from './coordinator';
 export { classifyProviderError } from './error-classifier';
 export { ProviderCircuitBreaker } from './circuit-breaker';
+export { ProviderRequestGate } from './request-gate';
 export {
   reconcileStreamOverlap,
   buildRecoveryInstruction,
