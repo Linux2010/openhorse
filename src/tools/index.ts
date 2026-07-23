@@ -46,7 +46,6 @@ import { TODO_TOOLS } from './todo';
 import { PLAN_TOOLS } from './plan';
 import { GIT_TOOLS } from './git';
 import { lspTools } from './lsp';
-import { GOAL_MODEL_TOOLS } from './goal';
 import { assessCommandSecurity, isReadOnlyCommand } from './bash_security';
 
 const BATCH_READ_ALLOWED_TOOLS = new Set(['git_status', 'list_files', 'glob', 'grep', 'read_file']);
@@ -93,9 +92,6 @@ export const TOOLS: OpenHorseTool[] = [
 
   // LSP tools (P0 - Phase 6)
   ...lspTools,
-
-  // Goal tools (P0 - v0.2.24 target mode)
-  ...GOAL_MODEL_TOOLS,
 
   // Todo tools (P1)
   ...TODO_TOOLS,
