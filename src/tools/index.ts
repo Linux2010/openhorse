@@ -1747,6 +1747,7 @@ async function grep_(
 
     // Get list of files to search
     const files: string[] = [];
+    const skippedDangling: string[] = [];
 
     function collectFiles(dir: string) {
       try {
@@ -1760,6 +1761,15 @@ async function grep_(
             // Check glob filter if provided
             if (globPattern) {
               if (!matchGlobSimple(entry.name, globPattern)) continue;
+            }
+            // Skip dangling symlinks — collect their paths for a warning.
+            if (entry.isSymbolicLink()) {
+              try {
+                statSync(fullPath);
+              } catch {
+                skippedDangling.push(fullPath);
+                continue;
+              }
             }
             files.push(fullPath);
           }
@@ -1775,10 +1785,18 @@ async function grep_(
       return new RegExp(`^${regex}$`).test(name);
     }
 
-    if (statSync(base).isDirectory()) {
+    const baseStat = safeStatSync(base);
+    if (!baseStat) {
+      return { success: false, output: '', error: `Cannot access path: ${base} (may be a dangling symlink or missing)` };
+    }
+    if (baseStat.isDirectory()) {
       collectFiles(base);
     } else {
-      files.push(base);
+      // Skip dangling symlinks / unreadable single files early.
+      const fileStat = safeStatSync(base);
+      if (fileStat && fileStat.isFile()) {
+        files.push(base);
+      }
     }
 
     // Search each file
@@ -1786,8 +1804,13 @@ async function grep_(
       if (results.length >= maxResults) break;
 
       try {
+        // Skip dangling symlinks and unreadable files before creating the stream.
+        const fileStat = safeStatSync(file);
+        if (!fileStat || !fileStat.isFile()) continue;
+
+        const stream = createReadStream(file, { encoding: 'utf-8' });
         const rl = createInterface({
-          input: createReadStream(file, { encoding: 'utf-8' }),
+          input: stream,
           crlfDelay: Infinity,
         });
 
@@ -1798,7 +1821,9 @@ async function grep_(
           lines.push(line);
         });
 
-        await new Promise<void>(resolve => {
+        // Guard against stream errors (dangling symlinks, permission denied, etc.)
+        await new Promise<void>((resolve, reject) => {
+          stream.on('error', reject);
           rl.on('close', resolve);
         });
 
@@ -1826,11 +1851,15 @@ async function grep_(
       }
     }
 
+    const symlinkWarning = skippedDangling.length > 0
+      ? `\n⚠️  Skipped ${skippedDangling.length} dangling symlink(s): ${skippedDangling.slice(0, 3).join(', ')}${skippedDangling.length > 3 ? '...' : ''}\n`
+      : '';
+
     if (results.length === 0) {
-      return { success: true, output: 'No matches found' };
+      return { success: true, output: 'No matches found' + symlinkWarning };
     }
 
-    return { success: true, output: results.slice(0, maxResults).join('\n') };
+    return { success: true, output: results.slice(0, maxResults).join('\n') + symlinkWarning };
   } catch (err: any) {
     return { success: false, output: '', error: String(err.message) };
   }
