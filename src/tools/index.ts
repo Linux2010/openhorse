@@ -18,6 +18,7 @@ import {
   statSync,
   existsSync,
   createReadStream,
+  lstatSync,
 } from 'fs';
 import { join, resolve, relative } from 'path';
 import { createInterface } from 'readline';
@@ -922,6 +923,40 @@ function normalizeToolPath(input: string): string {
   return value;
 }
 
+/** Safely stat a path, returning null for dangling symlinks or missing files
+ *  instead of throwing ENOENT. Uses lstatSync to avoid following symlinks
+ *  when checking existence. */
+function safeStatSync(resolved: string): ReturnType<typeof statSync> | null {
+  try {
+    // lstatSync does NOT follow symlinks — safe for dangling ones.
+    const lst = lstatSync(resolved);
+    if (lst.isSymbolicLink()) {
+      // For symlinks, use statSync (follows the link) inside try/catch.
+      // If the target doesn't exist, statSync throws ENOENT — catch and return null.
+      try {
+        return statSync(resolved);
+      } catch {
+        return null; // dangling symlink
+      }
+    }
+    return statSync(resolved);
+  } catch {
+    return null; // path doesn't exist at all
+  }
+}
+
+/** Read a file safely, returning null for dangling symlinks or unreadable files. */
+function safeReadFileSync(resolved: string): string | null {
+  try {
+    // Check if it's a dangling symlink before attempting read.
+    const st = safeStatSync(resolved);
+    if (!st || st.isDirectory()) return null;
+    return readFileSync(resolved, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
 /** Resolve tool path parameters relative to the current tool cwd. */
 function safePath(input: string, cwd = process.cwd()): string {
   return resolve(cwd, normalizeToolPath(input));
@@ -963,7 +998,15 @@ async function readFileSync_(
     if (!existsSync(resolved)) {
       return { success: false, output: '', error: `File not found: ${normalizedPath}` };
     }
-    if (statSync(resolved).isDirectory()) {
+    const st = safeStatSync(resolved);
+    if (!st) {
+      return {
+        success: false,
+        output: '',
+        error: `Cannot access file: ${normalizedPath} (may be a dangling symlink or missing)`,
+      };
+    }
+    if (st.isDirectory()) {
       return {
         success: false,
         output: '',
@@ -971,7 +1014,14 @@ async function readFileSync_(
       };
     }
 
-    const content = readFileSync(resolved, 'utf-8');
+    const content = safeReadFileSync(resolved);
+    if (content === null) {
+      return {
+        success: false,
+        output: '',
+        error: `Cannot read file: ${normalizedPath}`,
+      };
+    }
     const lines = content.split('\n');
     const maxBytes = 51200; // 50KB byte limit
     if (offset > lines.length) {
@@ -1420,7 +1470,11 @@ async function editFile_(
     if (!existsSync(resolved)) {
       return { success: false, output: '', error: `File not found: ${normalizedPath}` };
     }
-    if (statSync(resolved).isDirectory()) {
+    const fileStat = safeStatSync(resolved);
+    if (!fileStat) {
+      return { success: false, output: '', error: `Cannot access file: ${normalizedPath} (may be a dangling symlink)` };
+    }
+    if (fileStat.isDirectory()) {
       return {
         success: false,
         output: '',
@@ -1428,7 +1482,10 @@ async function editFile_(
       };
     }
 
-    const content = readFileSync(resolved, 'utf-8');
+    const content = safeReadFileSync(resolved);
+    if (content === null) {
+      return { success: false, output: '', error: `Cannot read file: ${normalizedPath}` };
+    }
 
     // Check if old_string exists exactly
     const count = (content.match(new RegExp(escapeRegExp(old_string), 'g')) || []).length;
