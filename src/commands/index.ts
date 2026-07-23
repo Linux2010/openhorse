@@ -58,6 +58,7 @@ import {
   type SessionTraceEvent,
 } from '../services/session-storage';
 import { loadSessionIndex, searchSessions } from '../services/session-index';
+import { GoalCoordinator } from '../runtime/goals/coordinator';
 import { getAutoCompact } from '../services/compact/auto-compact';
 import { CompactCoordinator } from '../services/compact/coordinator';
 import { createContextHarness } from '../harness';
@@ -2360,8 +2361,73 @@ function handleStorage(_ctx: CommandContext, args: string): CommandResult {
   return { success: true };
 }
 
-function handleTarget(_ctx: CommandContext, _args: string): CommandResult {
-  return { success: true };
+function handleTarget(ctx: CommandContext, args: string): CommandResult {
+  const trimmed = args.trim();
+  // GoalCoordinator needs projectPath + sessionId — derive from context
+  const projectPath = ctx.cwd ?? process.cwd();
+  const sessionId = ctx.sessionId ?? 'default';
+  const coordinator = new GoalCoordinator(projectPath, sessionId);
+
+  // /target (no args) — show current goal
+  if (!trimmed) {
+    const snap = coordinator.snapshot();
+    if (!snap) {
+      console.log(chalk.gray('No goal is currently set. Use /target <objective> to create one.'));
+      return { success: true };
+    }
+    console.log(chalk.bold('Goal: ') + snap.objective);
+    console.log(chalk.gray(`Status: ${snap.status}  |  Continuations: ${snap.continuationCount}`));
+    console.log(chalk.gray(`Tokens: ${snap.tokensUsed}  |  Time: ${snap.timeUsedMs}ms`));
+    return { success: true };
+  }
+
+  // Sub-commands
+  const subCommand = trimmed.split(/\s+/)[0].toLowerCase();
+  const rest = trimmed.slice(subCommand.length).trim();
+
+  switch (subCommand) {
+    case 'pause': {
+      const ok = coordinator.pause();
+      console.log(ok ? chalk.yellow('Goal paused.') : chalk.red('Cannot pause.'));
+      return { success: ok };
+    }
+    case 'resume': {
+      const ok = coordinator.resume();
+      console.log(ok ? chalk.green('Goal resumed.') : chalk.red('Cannot resume.'));
+      return { success: ok };
+    }
+    case 'clear': {
+      const ok = coordinator.clear();
+      console.log(ok ? chalk.gray('Goal cleared.') : chalk.gray('No goal to clear.'));
+      return { success: ok };
+    }
+    case 'status': {
+      const snap = coordinator.snapshot();
+      if (!snap) { console.log(chalk.gray('No goal set.')); return { success: true }; }
+      console.log(chalk.bold(`Status: ${snap.status}`));
+      console.log(`Objective: ${snap.objective}`);
+      console.log(`Continuations: ${snap.continuationCount}  |  Tokens: ${snap.tokensUsed}`);
+      return { success: true };
+    }
+    case 'edit': {
+      if (!rest) { console.log(chalk.red('Usage: /target edit <new objective text>')); return { success: false }; }
+      const ok = coordinator.edit(rest);
+      console.log(ok ? chalk.green('Goal objective updated.') : chalk.red('Cannot edit.'));
+      return { success: ok };
+    }
+    case 'replace': {
+      if (!rest) { console.log(chalk.red('Usage: /target replace <new objective text>')); return { success: false }; }
+      const ok = coordinator.replace(rest);
+      console.log(ok ? chalk.green('Goal replaced.') : chalk.red('Cannot replace.'));
+      return { success: ok };
+    }
+    default: {
+      // Treat as new objective
+      const result = coordinator.create(trimmed);
+      console.log(result.ok ? chalk.green('Goal created: ') + trimmed : chalk.red(result.error ?? 'Failed'));
+      return { success: result.ok };
+    }
+  }
 }
 
 function handleDiff(ctx: CommandContext, args: string): CommandResult {
