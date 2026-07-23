@@ -58,6 +58,8 @@ import {
   type SessionTraceEvent,
 } from '../services/session-storage';
 import { loadSessionIndex, searchSessions } from '../services/session-index';
+import { GoalCoordinator, type GoalEvent } from '../runtime/goal-coordinator';
+import { setGoalCoordinator, getGoalCoordinator } from '../tools/goal';
 import { getAutoCompact } from '../services/compact/auto-compact';
 import { CompactCoordinator } from '../services/compact/coordinator';
 import { createContextHarness } from '../harness';
@@ -2360,6 +2362,86 @@ function handleStorage(_ctx: CommandContext, args: string): CommandResult {
   return { success: true };
 }
 
+function handleTarget(ctx: CommandContext, args: string): CommandResult {
+  const trimmed = args.trim();
+  const coordinator = getGoalCoordinator();
+
+  if (!coordinator) {
+    console.log(chalk.red('Goal system not available.'));
+    return { success: false };
+  }
+
+  // /target (no args) — show current goal
+  if (!trimmed) {
+    const goal = coordinator.getState();
+    if (!goal) {
+      console.log(chalk.gray('No goal is currently set. Use /target <objective> to create one.'));
+      return { success: true };
+    }
+    console.log(chalk.bold('Goal: ') + goal.objective);
+    console.log(chalk.gray(`ID: ${goal.goalId}  |  Status: ${goal.status}  |  Turns: ${goal.accounting.turnCount}`));
+    console.log(chalk.gray(`Tokens: ${goal.accounting.promptTokens}P + ${goal.accounting.completionTokens}C  |  Cost: $${goal.accounting.cost.toFixed(4)}`));
+    if (goal.tokenBudget) console.log(chalk.gray(`Budget: ${goal.tokenBudget} tokens`));
+    if (goal.blocked) console.log(chalk.yellow(`Blocked: ${goal.blocked.reason} (${goal.blocked.consecutiveTurns} turns)`));
+    if (goal.completion) console.log(chalk.green(`Completed: ${goal.completion.summary}`));
+    return { success: true };
+  }
+
+  // Sub-commands
+  const subCommand = trimmed.split(/\s+/)[0].toLowerCase();
+  const rest = trimmed.slice(subCommand.length).trim();
+
+  try {
+    switch (subCommand) {
+      case 'pause': {
+        coordinator.pause();
+        console.log(chalk.yellow('Goal paused. Use /target resume to continue.'));
+        return { success: true };
+      }
+      case 'resume': {
+        coordinator.resume();
+        console.log(chalk.green('Goal resumed.'));
+        return { success: true };
+      }
+      case 'clear': {
+        coordinator.clear();
+        console.log(chalk.gray('Goal cleared.'));
+        return { success: true };
+      }
+      case 'status': {
+        const g = coordinator.getState();
+        if (!g) { console.log(chalk.gray('No goal set.')); return { success: true }; }
+        console.log(chalk.bold(`Status: ${g.status}`));
+        console.log(`Objective: ${g.objective}`);
+        console.log(`Turns: ${g.accounting.turnCount}  |  Cost: $${g.accounting.cost.toFixed(4)}`);
+        return { success: true };
+      }
+      case 'edit': {
+        if (!rest) { console.log(chalk.red('Usage: /target edit <new objective text>')); return { success: false }; }
+        coordinator.editObjective(rest);
+        console.log(chalk.green('Goal objective updated.'));
+        return { success: true };
+      }
+      case 'replace': {
+        if (!rest) { console.log(chalk.red('Usage: /target replace <new objective text>')); return { success: false }; }
+        coordinator.clear();
+        coordinator.create(rest);
+        console.log(chalk.green('Goal replaced.'));
+        return { success: true };
+      }
+      default: {
+        // Treat as new objective
+        coordinator.create(trimmed);
+        console.log(chalk.green('Goal created: ') + trimmed);
+        return { success: true };
+      }
+    }
+  } catch (err) {
+    console.log(chalk.red(String(err)));
+    return { success: false };
+  }
+}
+
 function handleDiff(ctx: CommandContext, args: string): CommandResult {
   const maxFilesMatch = args.match(/--max-files(?:=|\s+)(\d+)/);
   const maxFiles = maxFilesMatch ? Number(maxFilesMatch[1]) : 40;
@@ -3148,6 +3230,24 @@ function continueAsSlashChat(name: string, args: string): CommandResult {
 
 const COMMANDS: SlashCommand[] = [
   // Coding workflows
+  {
+    name: 'target',
+    description: 'Create, view, pause, resume, or clear a persistent goal target',
+    argumentHint: '[objective | pause | resume | clear | status | edit <text>]',
+    category: 'workflow',
+    priority: 3,
+    type: 'builtin',
+    execute: (ctx, args) => handleTarget(ctx, args),
+  },
+  {
+    name: 'goal',
+    description: 'Alias for /target — manage a persistent goal target',
+    argumentHint: '[objective | pause | resume | clear | status | edit <text>]',
+    category: 'workflow',
+    priority: 2,
+    type: 'builtin',
+    execute: (ctx, args) => handleTarget(ctx, args),
+  },
   {
     name: 'diff',
     description: 'Summarize current git workspace changes and touched files',

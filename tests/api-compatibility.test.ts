@@ -253,6 +253,9 @@ const _toolState: ToolState = {
   planMode: false,
   currentPlan: null,
   lastEditFileArgs: null,
+  goalActive: false,
+  goalId: null,
+  goalStatus: null,
 };
 
 const _todoItem: TodoItem = { content: 'do X', status: 'pending', activeForm: 'doing X' };

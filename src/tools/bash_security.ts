@@ -109,6 +109,19 @@ export const READ_ONLY_COMMANDS = [
   'ps',
   'top',
   'htop',
+  'lsof',
+  'pgrep',
+
+  // Package managers (checking/listing is read-only)
+  'npm',
+  'npx',
+  'yarn',
+  'pnpm',
+  'pip',
+  'pip3',
+  'cargo',
+  'top',
+  'htop',
   'jobs',
 
   // JSON/YAML processing (read-only when no file write)
@@ -208,6 +221,10 @@ export function isReadOnlyCommand(cmd: string): boolean {
   // Check if command starts with a read-only command
   const baseCmd = trimmedCmd.split(' ')[0];
   if (READ_ONLY_COMMANDS.includes(baseCmd)) {
+    // Pipe to shell interpreters is always dangerous.
+    if (/\|\s*(sh|bash|zsh|dash|fish|python|perl|ruby|lua|node)\b/.test(trimmedCmd)) {
+      return false;
+    }
     // Additional checks for commands that might modify files or execute code.
     if (baseCmd === 'sed' && trimmedCmd.includes('-i')) {
       return false; // sed -i modifies files
@@ -226,6 +243,17 @@ export function isReadOnlyCommand(cmd: string): boolean {
     }
     if (baseCmd === 'sort' && (/(^|\s)-o\b/.test(trimmedCmd) || trimmedCmd.includes('>'))) {
       return false; // sort -o / redirect writes a file
+    }
+    // npm/pip/cargo/yarn install commands have side effects
+    if ((baseCmd === 'npm' || baseCmd === 'yarn' || baseCmd === 'pnpm') &&
+        /\b(install|add|remove|uninstall|publish|link|unlink|deprecate|audit fix|fund)\b/.test(trimmedCmd)) {
+      return false;
+    }
+    if ((baseCmd === 'pip' || baseCmd === 'pip3') && /\binstall\b/.test(trimmedCmd)) {
+      return false; // pip install modifies system
+    }
+    if (baseCmd === 'cargo' && /\b(install|publish|update|remove)\b/.test(trimmedCmd)) {
+      return false;
     }
     return true;
   }

@@ -6,9 +6,11 @@ import type { CompactCoordinator } from '../services/compact';
 import type { OpenHorseCLIConfig } from '../services/config';
 import type { SessionMeta, SessionTraceEvent } from '../services/session-storage';
 import type { RuntimeSubtaskEvent } from './subagents/types';
+import type { GoalEvent } from './goal-coordinator';
 
 /** Re-export so the runtime event protocol can reference subtask events. */
 export type { RuntimeSubtaskEvent } from './subagents/types';
+export type { GoalEvent } from './goal-coordinator';
 
 export type TranscriptRole = 'user' | 'assistant' | 'tool' | 'system' | 'command' | 'error' | 'status';
 
@@ -239,5 +241,7 @@ export interface UiEventSink {
   harnessDiagnosticsUpdated?: (diagnostics: RuntimeHarnessDiagnostics) => void;
   /** Subagent lifecycle event (queued/running/completed/...). Renderer-independent. */
   subtaskEvent?: (event: RuntimeSubtaskEvent) => void;
+  /** v0.2.24 — Goal state change event (created/status_changed/turn_started/...). */
+  goalEvent?: (event: GoalEvent) => void;
   setProcessing: (processing: boolean) => void;
 }
