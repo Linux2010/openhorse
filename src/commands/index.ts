@@ -2360,6 +2360,10 @@ function handleStorage(_ctx: CommandContext, args: string): CommandResult {
   return { success: true };
 }
 
+function handleTarget(_ctx: CommandContext, _args: string): CommandResult {
+  return { success: true };
+}
+
 function handleDiff(ctx: CommandContext, args: string): CommandResult {
   const maxFilesMatch = args.match(/--max-files(?:=|\s+)(\d+)/);
   const maxFiles = maxFilesMatch ? Number(maxFilesMatch[1]) : 40;
@@ -3148,6 +3152,24 @@ function continueAsSlashChat(name: string, args: string): CommandResult {
 
 const COMMANDS: SlashCommand[] = [
   // Coding workflows
+  {
+    name: 'target',
+    description: 'Create, view, pause, resume, or clear a persistent goal target',
+    argumentHint: '[objective | pause | resume | clear | status | edit <text>]',
+    category: 'workflow',
+    priority: 3,
+    type: 'builtin',
+    execute: (ctx, args) => handleTarget(ctx, args),
+  },
+  {
+    name: 'goal',
+    description: 'Alias for /target — manage a persistent goal target',
+    argumentHint: '[objective | pause | resume | clear | status | edit <text>]',
+    category: 'workflow',
+    priority: 2,
+    type: 'builtin',
+    execute: (ctx, args) => handleTarget(ctx, args),
+  },
   {
     name: 'diff',
     description: 'Summarize current git workspace changes and touched files',

@@ -254,6 +254,11 @@ export function getProjectSessionTracePath(projectPath: string, sessionId: strin
   return join(getProjectSessionsDir(projectPath), `${sessionId}.trace.jsonl`);
 }
 
+/** 项目内单个会话 Goal sidecar 路径 */
+export function getProjectSessionGoalPath(projectPath: string, sessionId: string): string {
+  return join(getProjectSessionsDir(projectPath), `${sessionId}.goal.json`);
+}
+
 /** 项目 Memory 目录路径 */
 export function getProjectMemoryDir(projectPath: string): string {
   return join(getProjectDir(projectPath), 'memory');

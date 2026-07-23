@@ -33,6 +33,8 @@ export interface CompactOptions {
   contextCapsule?: ContextCapsule;
   /** Full Context Harness state that must survive compaction */
   harnessState?: HarnessState;
+  /** v0.2.24 — Goal objective that must survive compaction */
+  goalObjective?: string;
   /** LLM service for high-quality summarization (optional, falls back to heuristic) */
   llm?: LLMService;
   /** Why this compaction happened */

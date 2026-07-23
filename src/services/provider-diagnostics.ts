@@ -156,7 +156,12 @@ function hintFor(type: ProviderErrorType): string {
 function retryableFor(type: ProviderErrorType, status?: number, message?: string): boolean {
   if (type === 'rate_limit' || type === 'provider_busy') return true;
   if (type === 'auth_failed' || type === 'quota_or_credit_exhausted' || type === 'model_not_found') return false;
-  if (type === 'invalid_endpoint') return false;
+  // invalid_endpoint: network-level errors (DNS, connection refused) are retryable;
+  // configuration errors (invalid URL, unsupported protocol) are not.
+  if (type === 'invalid_endpoint') {
+    if (message && /\b(econnrefused|etimedout|enotfound|econnreset|epipe|network|connection)\b/i.test(message)) return true;
+    return false;
+  }
   if (status === 500 || status === 502 || status === 503 || status === 504) return true;
   if (!message) return false;
   return matchesAny(message.toLowerCase(), [

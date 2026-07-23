@@ -16,6 +16,10 @@ export interface ToolState {
   todos: TodoItem[];
   planMode: boolean;
   currentPlan: string | null;
+  /** v0.2.24 — Goal target mode (set by create_goal / update_goal) */
+  goalActive: boolean;
+  goalId: string | null;
+  goalStatus: string | null;
   lastEditFileArgs: {
     path: string;
     old_string: string;
@@ -35,6 +39,9 @@ const initialState: ToolState = {
   todos: [],
   planMode: false,
   currentPlan: null,
+  goalActive: false,
+  goalId: null,
+  goalStatus: null,
   lastEditFileArgs: null,
 };
 

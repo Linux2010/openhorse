@@ -364,10 +364,12 @@ export class LLMService {
   private usageObservers = new Set<(event: LLMUsageEvent) => void>();
 
   constructor(config: LLMConfig) {
+    // v0.2.25: disable SDK built-in retry (maxRetries=0). OpenHorse owns retry policy.
     this.client = new OpenAI({
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
       timeout: config.timeout ?? 60000,
+      maxRetries: 0,
       dangerouslyAllowBrowser: true,
     });
 
