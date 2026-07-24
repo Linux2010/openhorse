@@ -57,14 +57,13 @@ def main() -> int:
         wait_for(master, out, "›", timeout=10)
         print("✓ Terminal UI booted")
 
-        # 1. Create
+        # 1. Create — immediately pause to prevent auto-continuation.
         send(master, "/target fix all tests and verify")
         wait_for(master, out, "Goal created", timeout=5)
         print("✓ /target create")
-
-        # Auto-continuation starts immediately — interrupt it first.
-        send_raw(master, b"\x03"); time.sleep(0.5)
-        out.append(drain(master))
+        # Pause immediately to stop auto-continuation before testing commands.
+        send(master, "/target pause")
+        wait_for(master, out, "paused", timeout=5)
 
         # 2. Show via /target status
         send_raw(master, b"\x15"); time.sleep(0.15)
@@ -83,32 +82,30 @@ def main() -> int:
         wait_for(master, out, "paused", timeout=5)
         print("✓ /target pause")
 
-        # 5. Resume — will trigger auto-continuation, interrupt it
-        send(master, "/target resume")
-        wait_for(master, out, "resumed", timeout=5)
-        print("✓ /target resume")
-        # Interrupt the auto-started turn from resume.
-        send_raw(master, b"\x03"); time.sleep(0.5)
-        out.append(drain(master))
-
-        # 6. Budget
+        # 5. Budget (while paused — no active turn)
         send(master, "/target budget 50000")
         wait_for(master, out, "50000", timeout=5)
         print("✓ /target budget 50000")
 
-        # 7. Budget off
+        # 6. Budget off
         send(master, "/target budget off")
         wait_for(master, out, "removed", timeout=5)
         print("✓ /target budget off")
 
-        # 8. Replace
+        # 7. Replace
         send(master, "/target replace completely new goal")
         wait_for(master, out, "replaced", timeout=5)
         print("✓ /target replace")
 
-        # 9. Edit
+        # 8. Edit
         send(master, "/target edit updated objective text")
         wait_for(master, out, "updated", timeout=5)
+        print("✓ /target edit")
+
+        # 9. Resume
+        send(master, "/target resume")
+        wait_for(master, out, "resumed", timeout=5)
+        print("✓ /target resume")
         print("✓ /target edit")
 
         # 10. Clear with --yes

@@ -1267,6 +1267,24 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
         return;
       }
 
+      // v0.2.26: allow /target pause/status/resume even during active turn.
+      if (isTargetCommand(answer)) {
+        const parsed = parseTargetCommand(answer);
+        if (parsed.ok && (parsed.input.action === 'pause' || parsed.input.action === 'show' || parsed.input.action === 'resume' || parsed.input.action === 'set_budget' || parsed.input.action === 'clear')) {
+          // For pause/resume, interrupt the current turn first.
+          if (parsed.input.action === 'pause' || parsed.input.action === 'resume') {
+            agentController.handle({ type: 'interrupt', source: 'keyboard' } as AgentRuntimeInput);
+          }
+          events.append({
+            role: 'system',
+            content: formatTargetCommandResult(parsed.input, goalCoordinator),
+          });
+          agentController.handle(parsed.input as unknown as AgentRuntimeInput);
+          prompt();
+          return;
+        }
+      }
+
       const result = agentController.handle({ type: 'submit', text: answer, source: 'composer' });
       if (result.type === 'exit_requested') {
         void stop();

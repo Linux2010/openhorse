@@ -220,6 +220,8 @@ export class AgentRuntimeController {
 
   interrupt(): AgentRuntimeInterruptResult {
     const shouldExit = this.turnController.registerExitIntent();
+    // v0.2.26: pause active goal on interrupt to prevent immediate restart.
+    this.goalCoordinator?.deferContinuation();
     if (this.turnController.hasActiveTurn()) {
       this.turnController.interruptActiveTurn();
       if (shouldExit) return { type: 'exit_requested' };
