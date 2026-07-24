@@ -117,6 +117,9 @@ export interface OpenHorseCLIConfig {
 // Agent 内部默认值（用户无需关心）
 // ============================================================================
 
+/** v0.2.26: suppress repeated legacy config warnings. */
+let _legacyConfigWarned = false;
+
 const INTERNAL_DEFAULTS = {
   // 以下参数由 Agent 根据任务自动选择，不暴露给用户配置
   // maxTokens:    代码 8192 / 分析 4096 / 简短 512
@@ -409,8 +412,10 @@ export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHor
   if (!modelRegistry) {
     // Legacy 4-field fallback
     if (isLegacyConfig(rawConfig)) {
-      console.warn('[openhorse] Using legacy configuration format.');
-      console.warn(getLegacyMigrationHint());
+      if (!_legacyConfigWarned) {
+        _legacyConfigWarned = true;
+        console.warn('[openhorse] Using legacy configuration format. Migrate to providers+models for v0.2.26+.');
+      }
     }
     resolvedModel =
       toNonEmptyString(overrides.model)

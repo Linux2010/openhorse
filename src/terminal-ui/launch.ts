@@ -256,10 +256,19 @@ export function formatTerminalStatusMessage(
 
 import type { GoalControlInput } from '../runtime/goals/types';
 
-function formatTargetCommandResult(input: GoalControlInput): string {
+function formatTargetCommandResult(input: GoalControlInput, coordinator?: GoalCoordinator): string {
   switch (input.action) {
-    case 'show':
+    case 'show': {
+      const goal = coordinator?.goal;
+      if (goal) {
+        const status = goal.status;
+        const obj = goal.objective.length > 60 ? goal.objective.slice(0, 57) + '...' : goal.objective;
+        const turns = goal.continuationCount;
+        const tokens = goal.tokensUsed >= 1000 ? `${(goal.tokensUsed / 1000).toFixed(1)}K` : String(goal.tokensUsed);
+        return `Target: ${status} · ${obj} · ${turns} turns · ${tokens} tokens`;
+      }
       return 'Target: no active goal. Use /target <objective> to create one.';
+    }
     case 'create':
       return `Goal created: ${input.payload?.objective ?? ''}`;
     case 'pause':
@@ -1297,7 +1306,7 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
         if (parsed.ok) {
           events.append({
             role: 'system',
-            content: formatTargetCommandResult(parsed.input),
+            content: formatTargetCommandResult(parsed.input, goalCoordinator),
           });
           // Route to controller for goal lifecycle.
           if (parsed.input.action !== 'show') {
