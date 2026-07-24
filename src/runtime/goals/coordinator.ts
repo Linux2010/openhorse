@@ -236,8 +236,9 @@ export class GoalCoordinator {
       if (outcome.pendingTerminalRequest.requestedStatus === 'complete') {
         const audit = auditCompletion({
           objective: updated.objective,
-          evidenceRefs: [],
-          verificationSummary: '',
+          // v0.2.26: use actual evidence from the turn outcome.
+          evidenceRefs: (outcome as any).evidenceRefs ?? [],
+          verificationSummary: (outcome as any).verificationSummary ?? outcome.finishReason,
         });
         updated.completionAudit = audit;
         if (audit.passed) {

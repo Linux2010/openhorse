@@ -62,6 +62,10 @@ def main() -> int:
         wait_for(master, out, "Goal created", timeout=5)
         print("✓ /target create")
 
+        # Auto-continuation starts immediately — interrupt it first.
+        send_raw(master, b"\x03"); time.sleep(0.5)
+        out.append(drain(master))
+
         # 2. Show via /target status
         send_raw(master, b"\x15"); time.sleep(0.15)
         send(master, "/target status")
@@ -79,10 +83,13 @@ def main() -> int:
         wait_for(master, out, "paused", timeout=5)
         print("✓ /target pause")
 
-        # 5. Resume
+        # 5. Resume — will trigger auto-continuation, interrupt it
         send(master, "/target resume")
         wait_for(master, out, "resumed", timeout=5)
         print("✓ /target resume")
+        # Interrupt the auto-started turn from resume.
+        send_raw(master, b"\x03"); time.sleep(0.5)
+        out.append(drain(master))
 
         # 6. Budget
         send(master, "/target budget 50000")
