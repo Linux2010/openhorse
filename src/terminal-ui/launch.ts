@@ -1312,6 +1312,22 @@ export async function launchTerminalUI(runtime: OpenHorseUiRuntime): Promise<voi
           if (parsed.input.action !== 'show') {
             agentController.handle(parsed.input as unknown as AgentRuntimeInput);
           }
+          // v0.2.26: auto-start the first turn when a goal is created or resumed.
+          if (
+            (parsed.input.action === 'create' || parsed.input.action === 'resume') &&
+            goalCoordinator?.isActive
+          ) {
+            const req = goalCoordinator.buildContinuationRequest();
+            if (req) {
+              agentController.handle({
+                type: 'submit',
+                text: req.goal?.continuationIndex
+                  ? `[goal continuation #${req.goal.continuationIndex}]`
+                  : 'Continue pursuing the goal.',
+                source: 'programmatic',
+              } as AgentRuntimeInput);
+            }
+          }
         } else {
           events.append({ role: 'error', content: parsed.error });
         }
