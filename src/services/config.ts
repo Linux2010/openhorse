@@ -30,6 +30,14 @@ import {
   type SubagentRole,
   type CostConfig,
 } from './global-config';
+import {
+  buildRegistry,
+  isLegacyConfig,
+  getLegacyMigrationHint,
+  type ModelRegistry,
+  type ResolvedModelProfile,
+} from './model-registry';
+import { ModelClientPool } from './model-client-pool';
 import { delimiter } from 'path';
 import {
   DEFAULT_SUBAGENT_CONFIG,
@@ -77,6 +85,10 @@ export interface OpenHorseCLIConfig {
   model: string;
   /** 备用模型（主模型失败时切换） */
   fallbackModel?: string;
+  /** v0.2.26 — Resolved model registry (providers + models). */
+  modelRegistry?: ModelRegistry;
+  /** v0.2.26 — Provider client pool. */
+  modelClientPool?: ModelClientPool;
   /** How to handle tool permission checks that need confirmation. */
   toolConfirmation: ToolConfirmationPolicy;
   /** Remote MCP service used by web_search. */
@@ -104,6 +116,9 @@ export interface OpenHorseCLIConfig {
 // ============================================================================
 // Agent 内部默认值（用户无需关心）
 // ============================================================================
+
+/** v0.2.26: suppress repeated legacy config warnings. */
+let _legacyConfigWarned = false;
 
 const INTERNAL_DEFAULTS = {
   // 以下参数由 Agent 根据任务自动选择，不暴露给用户配置
@@ -364,6 +379,56 @@ function loadSubagentConfig(
 export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHorseCLIConfig {
   const globalConfig = loadGlobalConfig();
 
+  // v0.2.26 — build ModelRegistry from providers+models if configured.
+  // Falls back to legacy 4-field format with a console warning.
+  let modelRegistry: ModelRegistry | undefined;
+  let modelClientPool: ModelClientPool | undefined;
+  let resolvedModel = 'gpt-4o';
+  let resolvedFallback: string | undefined;
+
+  const rawConfig = globalConfig as unknown as Record<string, unknown>;
+  if (rawConfig.providers && rawConfig.models) {
+    // New providers+models format
+    const result = buildRegistry({
+      providers: rawConfig.providers as never,
+      models: rawConfig.models as never,
+      defaultModel: globalConfig.defaultModel,
+      fallbackModel: globalConfig.fallbackModel,
+    });
+    if (result.valid && result.registry) {
+      modelRegistry = result.registry;
+      modelClientPool = new ModelClientPool();
+      resolvedModel = modelRegistry.defaultProfile?.id ?? 'gpt-4o';
+      resolvedFallback = modelRegistry.fallbackProfile?.id ?? undefined;
+    } else {
+      console.error('[openhorse] Invalid providers+models configuration:');
+      for (const err of result.errors) {
+        console.error(`  ${err.path}: ${err.message}`);
+      }
+      // Fall through to legacy
+    }
+  }
+
+  if (!modelRegistry) {
+    // Legacy 4-field fallback
+    if (isLegacyConfig(rawConfig)) {
+      if (!_legacyConfigWarned) {
+        _legacyConfigWarned = true;
+        console.warn('[openhorse] Using legacy configuration format. Migrate to providers+models for v0.2.26+.');
+      }
+    }
+    resolvedModel =
+      toNonEmptyString(overrides.model)
+      ?? toNonEmptyString(globalConfig.defaultModel)
+      ?? toNonEmptyString(process.env.OPENHORSE_MODEL)
+      ?? 'gpt-4o';
+    resolvedFallback =
+      toNonEmptyString(overrides.fallbackModel)
+      ?? toNonEmptyString(globalConfig.fallbackModel)
+      ?? toNonEmptyString(process.env.OPENHORSE_FALLBACK_MODEL)
+      ?? undefined;
+  }
+
   const config: OpenHorseCLIConfig = {
     // 用户核心配置
     apiKey:
@@ -377,16 +442,10 @@ export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHor
       ?? toNonEmptyString(process.env.OPENHORSE_API_BASE_URL)
       ?? toNonEmptyString(process.env.OPENHORSE_BASE_URL)
       ?? undefined,
-    model:
-      toNonEmptyString(overrides.model)
-      ?? toNonEmptyString(globalConfig.defaultModel)
-      ?? toNonEmptyString(process.env.OPENHORSE_MODEL)
-      ?? 'gpt-4o',
-    fallbackModel:
-      toNonEmptyString(overrides.fallbackModel)
-      ?? toNonEmptyString(globalConfig.fallbackModel)
-      ?? toNonEmptyString(process.env.OPENHORSE_FALLBACK_MODEL)
-      ?? undefined,
+    model: resolvedModel,
+    fallbackModel: resolvedFallback,
+    modelRegistry,
+    modelClientPool,
     toolConfirmation:
       normalizeToolConfirmationPolicy(overrides.toolConfirmation)
       ?? normalizeToolConfirmationPolicy(globalConfig.toolConfirmation)

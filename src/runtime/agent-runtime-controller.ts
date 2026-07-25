@@ -1,4 +1,5 @@
 import { parseInput } from '../commands/parser';
+import { isTargetCommand } from '../commands/target-command';
 import type {
   AgentRuntimeEventSink,
   AgentRuntimeInput,
@@ -167,6 +168,14 @@ export class AgentRuntimeController {
         return { type: 'command_ignored' };
       }
 
+      // v0.2.26: user steering input during active goal — update constraints
+      // without replacing the root objective.
+      const gc = this.goalCoordinator;
+      if (gc?.goal && !isTargetCommand(submitted)) {
+        // Record the steering as a constraint update without changing objective.
+        gc.edit(gc.goal.objective); // no-op edit to bump revision, steering is via prompt
+      }
+
       this.turnController.clearExitIntent();
       this.turnController.requestRevision(submitted);
       this.emitStatus(this.options.revisionStatus ?? 'Revision received. Interrupting current response...');
@@ -181,12 +190,38 @@ export class AgentRuntimeController {
       })
       .finally(() => {
         this.activeRun = null;
+        // v0.2.26: schedule goal continuation after turn completes.
+        this.scheduleGoalContinuation();
       });
     return { type: 'started' };
   }
 
+  // --- v0.2.26: goal continuation scheduling ---
+
+  private scheduleGoalContinuation(): void {
+    const coord = this.goalCoordinator;
+    if (!coord || !coord.isActive || coord.goal?.status !== 'active') return;
+    if (!coord.canContinue) return; // don't continue if deferred, budget exceeded, etc.
+
+    // Defer to next tick to let the current turn's events settle.
+    setImmediate(() => {
+      if (this.stopping || this.turnController.hasActiveTurn()) return;
+      if (!coord.isActive || coord.goal?.status !== 'active') return; // re-check after tick
+      const req = coord.buildContinuationRequest();
+      if (req) {
+        this.handle({
+          type: 'submit',
+          text: `[goal continuation #${coord.goal!.continuationCount + 1}]`,
+          source: 'programmatic',
+        } as AgentRuntimeInput);
+      }
+    });
+  }
+
   interrupt(): AgentRuntimeInterruptResult {
     const shouldExit = this.turnController.registerExitIntent();
+    // v0.2.26: pause active goal on interrupt to prevent immediate restart.
+    this.goalCoordinator?.deferContinuation();
     if (this.turnController.hasActiveTurn()) {
       this.turnController.interruptActiveTurn();
       if (shouldExit) return { type: 'exit_requested' };

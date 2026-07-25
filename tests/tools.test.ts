@@ -308,7 +308,9 @@ describe('exec_command tool', () => {
   });
 
   test('checkPermissions still asks for arbitrary commands', () => {
-    const perm = tool.checkPermissions?.({ command: 'npm run start' }, ctx);
+    // 'npm run start' is now in the read-only whitelist (v0.2.25 bash_security update)
+    // Use a command that is not in the whitelist instead.
+    const perm = tool.checkPermissions?.({ command: 'make install' }, ctx);
     expect(perm?.behavior).toBe('ask');
   });
 
