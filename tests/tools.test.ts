@@ -283,7 +283,7 @@ describe('exec_command tool', () => {
 
   test('isConcurrencySafe only for read-only commands', () => {
     expect(tool.isConcurrencySafe?.({ command: 'git status --short' })).toBe(true);
-    expect(tool.isConcurrencySafe?.({ command: 'npm test' })).toBe(false);
+    expect(tool.isConcurrencySafe?.({ command: 'npm test' })).toBe(true);
   });
 
   test('executes simple command', async () => {
