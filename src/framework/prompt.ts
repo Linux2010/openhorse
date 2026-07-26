@@ -27,6 +27,8 @@ export interface PromptContext {
   activeSkillsContent?: string;
   /** Files explicitly referenced by the user with @path in the current turn. */
   referencedFilesContent?: string;
+  /** v0.2.24: Persistent goal context fragment (from GoalCoordinator). */
+  goalContent?: string;
 }
 
 /** A named prompt section */
@@ -144,6 +146,14 @@ Batched tool strategy:
 - Each packet needs a bounded objective that can produce a verifiable conclusion, a reason it is independently delegable, and an optional in-project scope. Scope paths are canonicalized and cannot escape the project root.
 - Subagents share your turn budget and provider rate limits; the runtime reserves and reconciles their usage. Prefer fewer, well-scoped packets over many vague ones.
 - After results return, synthesize the structured findings yourself, keep edit/verify authority, and continue the task. Do not re-delegate the same scope.`;
+    },
+  },
+  {
+    name: 'goal',
+    dynamic: true,
+    render: (ctx) => {
+      if (!ctx.goalContent) return '';
+      return ctx.goalContent;
     },
   },
 ];

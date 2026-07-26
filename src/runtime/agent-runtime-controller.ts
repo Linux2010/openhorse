@@ -106,6 +106,13 @@ export class AgentRuntimeController {
   /** v0.2.24: set the goal coordinator for /target mode. */
   setGoalCoordinator(coord: import('./goals/coordinator').GoalCoordinator): void {
     this.goalCoordinator = coord;
+    // Wire goal tools to the coordinator so model can call get_goal/create_goal/update_goal.
+    const { setGoalToolCoordinator } = require('./goals/tools') as typeof import('./goals/tools');
+    setGoalToolCoordinator(coord);
+    // Wire goal prompt injection into the chat controller.
+    if ('setGoalCoordinator' in this.runner) {
+      (this.runner as any).setGoalCoordinator(coord);
+    }
   }
 
   constructor(private readonly options: AgentRuntimeControllerOptions) {
@@ -218,6 +225,34 @@ export class AgentRuntimeController {
     });
   }
 
+  /** v0.2.26: finalize goal turn with usage data from the last loop. */
+  private finalizeGoalTurn(turnId: string | number): void {
+    const coord = this.goalCoordinator;
+    if (!coord?.goal || coord.goal.status !== 'active') return;
+
+    const usage = this.options.runtime.store.getSnapshot().tokenUsage;
+    const loopStats = this.options.runtime.store.getSnapshot().lastLoopStats;
+
+    const outcome: import('./goals/types').AgentTurnOutcome = {
+      turnId: String(turnId),
+      sessionId: this.options.runtime.getSession()?.id ?? '',
+      goalId: coord.goal.goalId,
+      goalRevision: coord.goal.revision,
+      startedAt: coord.goal.updatedAt,
+      endedAt: Date.now(),
+      finishReason: loopStats?.finishReason ?? 'unknown',
+      usage: {
+        promptTokens: usage?.promptTokens ?? 0,
+        completionTokens: usage?.completionTokens ?? 0,
+        subagentTokens: 0,
+        totalTokens: (usage?.promptTokens ?? 0) + (usage?.completionTokens ?? 0),
+      },
+      madeProgress: loopStats ? loopStats.toolCalls > 0 : true,
+    };
+
+    coord.finalizeTurn(outcome);
+  }
+
   interrupt(): AgentRuntimeInterruptResult {
     const shouldExit = this.turnController.registerExitIntent();
     // v0.2.26: pause active goal on interrupt to prevent immediate restart.
@@ -277,6 +312,10 @@ export class AgentRuntimeController {
         }
       } finally {
         const revision = this.turnController.finishTurn(turn.id);
+
+        // v0.2.26: finalize goal turn with usage data.
+        this.finalizeGoalTurn(turn.id);
+
         if (revision?.trim()) {
           this.emitStatus(this.options.restartingStatus ?? 'Restarting with latest instruction...');
           nextInput = revision;

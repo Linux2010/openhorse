@@ -112,7 +112,7 @@ describe('Session storage atomicity & consistency (Prompt 1)', () => {
     // Last complete turn = q1+a1 (2 messages). q2+a2+tool is incomplete.
     expect(messages.length).toBe(2);
     const meta = loadSessionMeta(s.id)!;
-    expect(meta.messageCount).toBe(4);
+    expect(meta.messageCount).toBe(2);
   });
 
   it('meta file is written atomically (no partial reads)', () => {

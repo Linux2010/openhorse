@@ -13,6 +13,7 @@
  */
 
 import { LLMService, type LLMConfig, type Message } from '../../services/llm';
+import type { ProviderResilienceCoordinator } from '../../services/provider-resilience';
 import type { LoopStats } from '../../framework';
 import { query, type QueryEvent, type QueryParams } from '../../framework/query';
 import type { ExecuteChildQuery } from './runner';
@@ -25,6 +26,8 @@ export interface SubagentLlmFactoryDeps {
   rootConfig: Pick<LLMConfig, 'apiKey' | 'baseUrl' | 'model' | 'fallbackModel'>;
   /** Injectable LLMService factory (production: `new LLMService(config)`). */
   createLlm?: (config: LLMConfig) => LLMService;
+  /** v0.2.26: shared resilience coordinator injected into child LLM services. */
+  resilience?: ProviderResilienceCoordinator;
   /** Injectable query loop (production: `query`). */
   runQuery?: (params: QueryParams) => AsyncIterable<QueryEvent>;
   /** Shared gate; a child that observes a 429 enters cooldown for siblings. */
@@ -62,6 +65,11 @@ export function createProductionExecuteQuery(deps: SubagentLlmFactoryDeps): Exec
   const runQuery = deps.runQuery ?? (((params: QueryParams) => query(params)) as (params: QueryParams) => AsyncIterable<QueryEvent>);
   return async (messages, toolSet, abortSignal): Promise<{ content: string; usage: SubtaskUsage }> => {
     const llm = createLlm(createChildLlmConfig(deps.rootConfig));
+    // v0.2.26: inject the shared resilience coordinator so child requests
+    // also go through the retry/circuit-breaker/stream-recovery layer.
+    if (deps.resilience) {
+      llm.resilience = deps.resilience;
+    }
     let finalContent = '';
     const usage: SubtaskUsage = { ...EMPTY_SUBTASK_USAGE };
     let modelRequests = 0;

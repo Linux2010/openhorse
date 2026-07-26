@@ -22,6 +22,10 @@
  *     release during cooldown.
  */
 
+import type { ProviderRequestGate } from '../../services/provider-resilience/request-gate';
+
+const NULL_PROVIDER_GATE: ProviderRequestGate | null = null;
+
 export interface ProviderGateOptions {
   /** Maximum children running concurrently. */
   maxConcurrent: number;
@@ -29,6 +33,8 @@ export interface ProviderGateOptions {
   now?: () => number;
   /** Optional timer scheduler (defaults to setTimeout). Injectable for tests. */
   scheduleTimer?: (fn: () => void, ms: number) => { clear(): void };
+  /** v0.2.26: shared gate — cooldown is bridged to the root gate when set. */
+  sharedGate?: ProviderRequestGate;
 }
 
 /** Thrown when an acquire is aborted via its signal. */
@@ -51,6 +57,8 @@ export class SubagentProviderGate {
   private readonly maxConcurrent: number;
   private readonly now: () => number;
   private readonly scheduleTimer: (fn: () => void, ms: number) => { clear(): void };
+  /** v0.2.26: shared gate for cooldown bridging across root/child/compact. */
+  private readonly sharedGate: ProviderRequestGate | null;
   private active = 0;
   private cooldownUntil = 0;
   private waiters: Waiter[] = [];
@@ -64,6 +72,7 @@ export class SubagentProviderGate {
       : 1;
     this.now = options.now ?? (() => Date.now());
     this.scheduleTimer = options.scheduleTimer ?? defaultScheduleTimer;
+    this.sharedGate = options.sharedGate ?? null;
   }
 
   /** Whether the provider is currently in a cooldown window. */
@@ -87,6 +96,10 @@ export class SubagentProviderGate {
     if (until > this.cooldownUntil) {
       this.cooldownUntil = until;
       this.armCooldownTimer();
+    }
+    // v0.2.26: bridge cooldown to the shared gate so root/compact also respect it.
+    if (this.sharedGate) {
+      this.sharedGate.enterCooldown('subagents', until, `Subagent 429/rate-limit, retry-after ${retryAfterMs}ms`);
     }
   }
 

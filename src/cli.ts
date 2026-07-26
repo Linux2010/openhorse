@@ -8,6 +8,8 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { init, type OpenHorseRuntime } from './init';
 import { LLMService } from './services/llm';
+import { ProviderResilienceCoordinator } from './services/provider-resilience';
+import { ModelCoordinator } from './runtime/model-coordinator';
 import { loadConfig, isConfigured, resolveUIRenderer, SUPPORTED_UI_RENDERERS, type UIRenderer } from './services/config';
 import { ensureConfigDir } from './services/config-dir';
 import { recordFirstStartTime, incrementSessionCount } from './services/global-config';
@@ -194,6 +196,16 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OpenHorseUiRunt
       model: config.model,
       fallbackModel: config.fallbackModel,
     });
+    // v0.2.26: inject the ProviderResilienceCoordinator so chat() and
+    // chatStream() go through the resilience layer.
+    llm.resilience = new ProviderResilienceCoordinator();
+
+    // v0.2.26: initialize ModelCoordinator for /model switching.
+    const modelCoordinator = new ModelCoordinator();
+    if (config.modelRegistry && config.modelClientPool) {
+      modelCoordinator.bind(config.modelRegistry, config.modelClientPool);
+      modelCoordinator.initModel(config.model);
+    }
 
     if (config.apiBaseUrl) {
       discoverModelContexts(config.apiBaseUrl, config.apiKey).catch(() => undefined);

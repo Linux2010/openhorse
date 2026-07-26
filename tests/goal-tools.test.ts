@@ -1,15 +1,14 @@
 /**
  * v0.2.24 — Goal model tools unit tests.
+ * v0.2.26 — Updated for OpenHorseTool format with setGoalToolCoordinator binding.
  */
 
 import { GoalCoordinator } from '../src/runtime/goals/coordinator';
 import {
-  buildGetGoalTool,
-  buildCreateGoalTool,
-  buildUpdateGoalTool,
-  executeGetGoal,
-  executeCreateGoal,
-  executeUpdateGoal,
+  getGoalTool,
+  createGoalTool,
+  updateGoalTool,
+  setGoalToolCoordinator,
 } from '../src/runtime/goals/tools';
 
 describe('Goal model tools', () => {
@@ -17,80 +16,96 @@ describe('Goal model tools', () => {
 
   beforeEach(() => {
     coordinator = new GoalCoordinator('/test/project', 'test-session');
+    setGoalToolCoordinator(coordinator);
   });
 
   describe('get_goal', () => {
-    it('returns null when no goal exists', () => {
-      const bindings = { coordinator };
-      expect(executeGetGoal(bindings)).toBeNull();
+    it('returns null when no goal exists', async () => {
+      const result = await getGoalTool.execute({}, { cwd: '/test', config: { name: 'test', mode: 'test' } });
+      expect(result.success).toBe(true);
+      expect(result.output).toBe('No active goal.');
     });
 
-    it('returns goal snapshot when goal exists', () => {
+    it('returns goal snapshot when goal exists', async () => {
       coordinator.create('test objective');
-      const bindings = { coordinator };
-      const snap = executeGetGoal(bindings);
-      expect(snap).not.toBeNull();
-      expect(snap!.objective).toBe('test objective');
+      const result = await getGoalTool.execute({}, { cwd: '/test', config: { name: 'test', mode: 'test' } });
+      expect(result.success).toBe(true);
+      expect(result.output).toContain('test objective');
     });
 
     it('has tool definition with correct name', () => {
-      const tool = buildGetGoalTool();
-      expect(tool.name).toBe('get_goal');
+      expect(getGoalTool.name).toBe('get_goal');
+    });
+
+    it('is read-only', () => {
+      expect(getGoalTool.isReadOnly!({})).toBe(true);
     });
   });
 
   describe('create_goal', () => {
-    it('creates a goal from explicit objective', () => {
-      const bindings = { coordinator };
-      const result = executeCreateGoal(bindings, 'Run CI');
-      expect(result.ok).toBe(true);
-      if (result.ok) expect(result.goal.objective).toBe('Run CI');
+    it('creates a goal from explicit objective', async () => {
+      const result = await createGoalTool.execute(
+        { objective: 'Run CI' },
+        { cwd: '/test', config: { name: 'test', mode: 'test' } },
+      );
+      expect(result.success).toBe(true);
+      expect(result.output).toContain('Run CI');
     });
 
-    it('rejects empty objective', () => {
-      coordinator.create = () => ({ ok: false as const, error: 'Objective cannot be empty.' });
-      const bindings = { coordinator };
-      const result = executeCreateGoal(bindings, '');
-      expect(result.ok).toBe(false);
+    it('rejects empty objective', async () => {
+      // Coordinator rejects empty objectives
+      const result = await createGoalTool.execute(
+        { objective: '' },
+        { cwd: '/test', config: { name: 'test', mode: 'test' } },
+      );
+      expect(result.success).toBe(false);
     });
 
-    it('rejects duplicate goal if active', () => {
+    it('rejects duplicate goal if active', async () => {
       coordinator.create('first goal');
-      const bindings = { coordinator };
-      const result = executeCreateGoal(bindings, 'second goal');
-      expect(result.ok).toBe(false);
+      const result = await createGoalTool.execute(
+        { objective: 'second goal' },
+        { cwd: '/test', config: { name: 'test', mode: 'test' } },
+      );
+      expect(result.success).toBe(false);
     });
 
     it('has tool definition', () => {
-      const tool = buildCreateGoalTool();
-      expect(tool.name).toBe('create_goal');
+      expect(createGoalTool.name).toBe('create_goal');
     });
   });
 
   describe('update_goal', () => {
-    it('requests complete status on active goal', () => {
+    it('requests complete status on active goal', async () => {
       coordinator.create('test');
-      const bindings = { coordinator };
-      const result = executeUpdateGoal(bindings, 'complete');
-      expect(result.ok).toBe(true);
+      const result = await updateGoalTool.execute(
+        { status: 'complete' },
+        { cwd: '/test', config: { name: 'test', mode: 'test' } },
+      );
+      expect(result.success).toBe(true);
+      expect(result.output).toContain('complete');
     });
 
-    it('requests blocked status', () => {
+    it('requests blocked status', async () => {
       coordinator.create('test');
-      const bindings = { coordinator };
-      const result = executeUpdateGoal(bindings, 'blocked');
-      expect(result.ok).toBe(true);
+      const result = await updateGoalTool.execute(
+        { status: 'blocked' },
+        { cwd: '/test', config: { name: 'test', mode: 'test' } },
+      );
+      expect(result.success).toBe(true);
+      expect(result.output).toContain('blocked');
     });
 
-    it('rejects update when no goal exists', () => {
-      const bindings = { coordinator };
-      const result = executeUpdateGoal(bindings, 'complete');
-      expect(result.ok).toBe(false);
+    it('rejects update when no goal exists', async () => {
+      const result = await updateGoalTool.execute(
+        { status: 'complete' },
+        { cwd: '/test', config: { name: 'test', mode: 'test' } },
+      );
+      expect(result.success).toBe(false);
     });
 
     it('has tool definition', () => {
-      const tool = buildUpdateGoalTool();
-      expect(tool.name).toBe('update_goal');
+      expect(updateGoalTool.name).toBe('update_goal');
     });
   });
 });

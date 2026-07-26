@@ -35,6 +35,7 @@ import {
   type QueryEvent,
   type QueryCompactCommit,
 } from '../framework';
+import { buildGoalContextFragment } from './goals/prompt';
 import { createContextHarness } from '../harness';
 import type { HarnessState } from '../harness/types';
 import { executeTool, getRuntimeTools } from '../tools';
@@ -1267,6 +1268,13 @@ export interface AgentChatControllerOptions {
 export type InkChatControllerOptions = AgentChatControllerOptions;
 
 export class AgentChatController {
+  /** v0.2.26: optional goal coordinator for prompt injection and turn finalization. */
+  private goalCoordinator: import('./goals/coordinator').GoalCoordinator | null = null;
+
+  setGoalCoordinator(coord: import('./goals/coordinator').GoalCoordinator | null): void {
+    this.goalCoordinator = coord;
+  }
+
   constructor(
     private readonly runtime: OpenHorseUiRuntime,
     private readonly events: UiEventSink,
@@ -1800,6 +1808,7 @@ export class AgentChatController {
             modelLabel: this.runtime.llm.getModel(),
             rootObjectiveSummary: harness.toJSON()?.rootObjective ?? input,
             abortSignal,
+            resilience: this.runtime.llm.resilience,
             onSubtaskEvent: event => {
               this.handleSubtaskEvent(event, sessionId, turnId);
             },
@@ -1850,6 +1859,9 @@ export class AgentChatController {
       projectInstructionsContent: snapshot.projectInstructionsContent,
       activeSkillsContent: skillResolution.promptInjection,
       referencedFilesContent: buildReferencedFilesPrompt(input, this.runtime.cwd),
+      goalContent: this.goalCoordinator?.goal?.status === 'active'
+        ? buildGoalContextFragment(this.goalCoordinator.goal)?.text
+        : undefined,
     };
     const systemPrompt = buildSystemPrompt(promptCtx);
     const messages: Message[] = [
@@ -2468,7 +2480,7 @@ export class AgentChatController {
         // v0.2.25: If a goal is active, pause it on provider retry exhaustion
         // so it doesn't auto-continue and burn retries.
         try {
-          const gc = (this as any).goalCoordinator;
+          const gc = this.goalCoordinator;
           if (gc?.goal?.status === 'active') {
             gc.deferContinuation();
           }

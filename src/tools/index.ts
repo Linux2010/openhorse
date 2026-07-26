@@ -47,6 +47,7 @@ import { TODO_TOOLS } from './todo';
 import { PLAN_TOOLS } from './plan';
 import { GIT_TOOLS } from './git';
 import { lspTools } from './lsp';
+import { GOAL_TOOLS } from '../runtime/goals/tools';
 import { assessCommandSecurity, isReadOnlyCommand } from './bash_security';
 
 const BATCH_READ_ALLOWED_TOOLS = new Set(['git_status', 'list_files', 'glob', 'grep', 'read_file']);
@@ -99,6 +100,9 @@ export const TOOLS: OpenHorseTool[] = [
 
   // Plan mode tools (P1)
   ...PLAN_TOOLS,
+
+  // Goal tools (P0 - v0.2.24)
+  ...GOAL_TOOLS,
 
   // File tools
   buildTool({

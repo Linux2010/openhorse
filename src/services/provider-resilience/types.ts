@@ -58,6 +58,7 @@ export interface ProviderKey {
 
 export type ProviderOperation =
   | 'root_chat'
+  | 'root_chat_stream'
   | 'goal_continuation'
   | 'subagent_chat'
   | 'compact_summary'

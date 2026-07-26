@@ -526,7 +526,163 @@ export class LLMService {
     };
 
     try {
-      const response = await withRetry(
+      // v0.2.26: Use resilience coordinator when available for streaming too.
+      if (this.resilience) {
+        const streamResult = await this.resilience.execute(
+          {
+            logicalRequestId: `stream-${Date.now()}`,
+            operation: 'root_chat_stream',
+            providerKey: 'default',
+            requestedModel: this.config.model,
+            abortSignal: options?.abortSignal,
+          },
+          async (_attempt: number, signal?: AbortSignal) => {
+            throwIfAborted(signal);
+
+            const params: Record<string, unknown> = {
+              model: this.config.model,
+              messages: this.toOpenAIMessages(messages),
+              max_tokens: this.config.maxTokens,
+              temperature: this.config.temperature,
+              stream: true,
+              stream_options: { include_usage: true },
+            };
+
+            if (tools && tools.length > 0) {
+              params.tools = tools as ChatCompletionTool[];
+            }
+
+            onThinking?.();
+
+            const requestOptions = signal ? { signal } : undefined;
+            const stream = await this.client.chat.completions.create(
+              params as any,
+              requestOptions as any,
+            ) as unknown as AsyncIterable<any>;
+
+            let content = '';
+            let usedModel = this.config.model;
+            let usage: LLMUsage | undefined;
+            let providerRequestId: string | undefined;
+            const toolCallsMap = new Map<string, {
+              id: string;
+              type: 'function';
+              function: { name: string; arguments: string };
+            }>();
+
+            for await (const chunk of stream) {
+              throwIfAborted(signal);
+
+              // Debug: log raw chunk when tool_calls present
+              if (process.env.OPENHORSE_DEBUG_TOOLS === 'true') {
+                const delta = chunk.choices?.[0]?.delta;
+                if (delta?.tool_calls || chunk.choices?.[0]?.message?.tool_calls) {
+                  console.log('[DEBUG] Raw chunk:', JSON.stringify(chunk, null, 2));
+                }
+              }
+
+              const delta = chunk.choices?.[0]?.delta;
+
+              const text = delta?.content ?? '';
+              if (text) {
+                content += text;
+                onChunk?.(text);
+              }
+
+              for (const tc of delta?.tool_calls ?? []) {
+                const idx = tc.index ?? 0;
+                const existing = toolCallsMap.get(idx);
+                if (!existing) {
+                  toolCallsMap.set(idx, {
+                    id: tc.id ?? `call_${idx}`,
+                    type: 'function',
+                    function: { name: tc.function?.name ?? '', arguments: tc.function?.arguments ?? '' },
+                  });
+                } else {
+                  if (tc.id) existing.id = tc.id;
+                  if (tc.function?.name) existing.function.name = tc.function.name;
+                  if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
+                }
+              }
+
+              const msg = chunk.choices?.[0]?.message;
+              if (msg?.tool_calls && !delta?.tool_calls) {
+                for (const msgTc of msg.tool_calls) {
+                  const existing = toolCallsMap.get(msgTc.index ?? 0);
+                  if (!existing && msgTc.id) {
+                    toolCallsMap.set(msgTc.index ?? 0, {
+                      id: msgTc.id,
+                      type: 'function',
+                      function: { name: msgTc.function?.name ?? '', arguments: msgTc.function?.arguments ?? '' },
+                    });
+                  } else if (existing && msgTc.function?.arguments) {
+                    existing.function.arguments += msgTc.function.arguments;
+                  }
+                }
+              }
+
+              if (chunk.usage) {
+                usage = extractLLMUsage(chunk.usage, chunk, chunk.id ?? providerRequestId);
+              }
+
+              if (chunk.id) providerRequestId = chunk.id;
+
+              if (chunk.model) {
+                usedModel = chunk.model;
+              }
+            }
+
+            const toolCalls = Array.from(toolCallsMap.entries())
+              .sort(([a], [b]) => Number(a) - Number(b))
+              .map(([, value]) => value);
+
+            for (const tc of toolCalls) {
+              if (!tc.function.arguments || tc.function.arguments.trim() === '') {
+                tc.function.arguments = '{}';
+              } else {
+                try {
+                  const parsed = JSON.parse(tc.function.arguments);
+                  tc.function.arguments = JSON.stringify(parsed);
+                } catch {
+                  tc.function.arguments = '{}';
+                }
+              }
+            }
+
+            if (usage) this.publishUsage(usage, usedModel, 'chat_stream');
+
+            return {
+              response: {
+                content,
+                model: usedModel,
+                usage,
+                toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+              } as LLMResponse,
+              usage: usage ? {
+                promptTokens: usage.promptTokens,
+                completionTokens: usage.completionTokens,
+                totalTokens: usage.promptTokens + usage.completionTokens,
+              } : undefined,
+              providerRequestId,
+            };
+          },
+        );
+
+        // Unpack resilience result
+        const response: LLMResponse = streamResult.result;
+        this.consecutive529Errors = 0;
+        requestDiagnostics.finalModel = response.model;
+        requestDiagnostics.usingFallback = this.usingFallback;
+        this.lastRequestDiagnostics = {
+          ...requestDiagnostics,
+          retryErrorTypes: [...requestDiagnostics.retryErrorTypes],
+        };
+        return response;
+      }
+
+      // Legacy path: without resilience coordinator
+      else {
+        const response = await withRetry(
         async () => {
           throwIfAborted(options?.abortSignal);
 
@@ -668,6 +824,7 @@ export class LLMService {
         retryErrorTypes: [...requestDiagnostics.retryErrorTypes],
       };
       return response;
+      } // end legacy else branch
     } catch (error) {
       requestDiagnostics.finalModel = this.config.model;
       requestDiagnostics.usingFallback = this.usingFallback;

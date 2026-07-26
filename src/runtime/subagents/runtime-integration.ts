@@ -19,6 +19,7 @@ import { filterToolsForRole, assertNoForbiddenTools } from './presets';
 import { createChildToolExecutorGuard, ScopeHolder } from './child-executor-guard';
 import type { RuntimeSubtaskEvent, SubagentConfig, SubtaskUsage } from './types';
 import type { LLMConfig } from '../../services/llm';
+import type { ProviderResilienceCoordinator } from '../../services/provider-resilience';
 import type { OpenHorseCLIConfig } from '../../services/config';
 
 /**
@@ -66,6 +67,8 @@ export interface SubagentTurnInputs {
    * `/cost` and telemetry must reflect the truth.
    */
   onChildUsage?: (taskId: string, role: import('./types').SubagentRole, usage: import('./types').SubtaskUsage, modelLabel?: string) => void;
+  /** v0.2.26: shared resilience coordinator for child LLM requests. */
+  resilience?: ProviderResilienceCoordinator;
 }
 
 /**
@@ -121,7 +124,10 @@ export function createSubagentBundleForTurn(inputs: SubagentTurnInputs): Subagen
     scopeHolder,
   });
 
-  const providerGate = new SubagentProviderGate({ maxConcurrent: config.maxParallel });
+  const providerGate = new SubagentProviderGate({
+    maxConcurrent: config.maxParallel,
+    sharedGate: inputs.resilience ? (inputs as any).sharedGate ?? undefined : undefined,
+  });
   const budget = new SubagentBudgetLedger(budgetLimitsFromConfig({
     maxModelRequestsPerTurn: config.maxModelRequestsPerTurn,
     maxModelRequestsPerTask: config.maxModelRequestsPerTask,
@@ -136,6 +142,7 @@ export function createSubagentBundleForTurn(inputs: SubagentTurnInputs): Subagen
     rootConfig: rootLlmConfig,
     providerGate,
     maxTurnsPerTask: config.maxTurnsPerTask,
+    resilience: inputs.resilience,
   });
 
   const supervisorDeps: SubagentSupervisorDeps = {
