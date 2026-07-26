@@ -280,7 +280,7 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
 
     void runtime.shutdown().catch(error => {
       const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`OpenHorse shutdown warning: ${message}\n`);
+      process.stderr.write(`Orion Code shutdown warning: ${message}\n`);
     });
   }, [app, cursorController, runtime]);
 
@@ -644,7 +644,7 @@ export function ReplScreen({ runtime, cursorController, resizeEpoch = 0 }: ReplS
 
   const staticItems = useMemo<StaticTranscriptItem[]>(
     () => [
-      { id: 'openhorse-banner', type: 'banner' },
+      { id: 'orion-code-banner', type: 'banner' },
       ...staticTranscriptEntries(transcriptState).map(entry => ({ ...entry, type: 'entry' as const })),
     ],
     [transcriptState]

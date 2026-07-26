@@ -1,5 +1,5 @@
 /**
- * openhorse - Fork Subagent
+ * orion code - Fork Subagent
  *
  * Fork 一个子 Agent 继承父上下文，执行独立任务后返回结果。
  * 参考 OpenClaude 的 forkSubagent.ts 实现。
@@ -107,7 +107,7 @@ export async function forkSubagent(options: ForkOptions): Promise<ForkResult> {
       return JSON.stringify({ success: false, error: `Unknown tool: ${name}` });
     }
     // 调用工具的 execute
-    const context = { cwd, config: { name: 'openhorse', mode: 'development' } };
+    const context = { cwd, config: { name: 'orion-code', mode: 'development' } };
     try {
       const result = await tool.execute(args, context);
       return JSON.stringify(result);

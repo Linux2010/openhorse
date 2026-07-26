@@ -5,7 +5,7 @@ describe('subagent config resolution', () => {
   const envBackup: Record<string, string | undefined> = {};
 
   beforeEach(() => {
-    for (const key of ['OPENHORSE_SUBAGENTS', 'OPENHORSE_SUBAGENT_MAX_PARALLEL']) {
+    for (const key of ['ORION_CODE_SUBAGENTS', 'ORION_CODE_SUBAGENT_MAX_PARALLEL']) {
       envBackup[key] = process.env[key];
       delete process.env[key];
     }
@@ -26,14 +26,14 @@ describe('subagent config resolution', () => {
     expect(config.subagents!.roles).toEqual(['research', 'review', 'test-investigate']);
   });
 
-  it('respects OPENHORSE_SUBAGENTS env override', () => {
-    process.env.OPENHORSE_SUBAGENTS = 'off';
+  it('respects ORION_CODE_SUBAGENTS env override', () => {
+    process.env.ORION_CODE_SUBAGENTS = 'off';
     const config = loadConfig({ apiKey: 'test-key' });
     expect(config.subagents!.mode).toBe('off');
   });
 
-  it('respects OPENHORSE_SUBAGENT_MAX_PARALLEL env override', () => {
-    process.env.OPENHORSE_SUBAGENT_MAX_PARALLEL = '1';
+  it('respects ORION_CODE_SUBAGENT_MAX_PARALLEL env override', () => {
+    process.env.ORION_CODE_SUBAGENT_MAX_PARALLEL = '1';
     const config = loadConfig({ apiKey: 'test-key' });
     expect(config.subagents!.maxParallel).toBe(1);
   });

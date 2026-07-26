@@ -23,20 +23,20 @@ describe('web_search MCP delegation', () => {
   const originalFetch = global.fetch;
 
   beforeEach(() => {
-    process.env.OPENHORSE_CONFIG_DIR = configDir;
-    process.env.OPENHORSE_WEBSEARCH_API_KEY = 'sk-test-websearch';
-    process.env.OPENHORSE_WEBSEARCH_MCP_ENDPOINT = 'https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp';
-    delete process.env.OPENHORSE_WEBSEARCH_PROVIDER;
-    delete process.env.OPENHORSE_WEBSEARCH_MCP_PROVIDER;
-    delete process.env.OPENHORSE_WEBSEARCH_AUTH_TYPE;
-    delete process.env.OPENHORSE_WEBSEARCH_API_KEY_HEADER;
-    delete process.env.OPENHORSE_WEBSEARCH_API_KEY_QUERY_PARAM;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
+    process.env.ORION_CODE_WEBSEARCH_API_KEY = 'sk-test-websearch';
+    process.env.ORION_CODE_WEBSEARCH_MCP_ENDPOINT = 'https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp';
+    delete process.env.ORION_CODE_WEBSEARCH_PROVIDER;
+    delete process.env.ORION_CODE_WEBSEARCH_MCP_PROVIDER;
+    delete process.env.ORION_CODE_WEBSEARCH_AUTH_TYPE;
+    delete process.env.ORION_CODE_WEBSEARCH_API_KEY_HEADER;
+    delete process.env.ORION_CODE_WEBSEARCH_API_KEY_QUERY_PARAM;
     delete process.env.DASHSCOPE_API_KEY;
-    delete process.env.OPENHORSE_API_KEY;
-    delete process.env.OPENHORSE_API_BASE_URL;
+    delete process.env.ORION_CODE_API_KEY;
+    delete process.env.ORION_CODE_API_BASE_URL;
     delete process.env.TAVILY_API_KEY;
     delete process.env.BRAVE_API_KEY;
-    delete process.env.OPENHORSE_WEBSEARCH_API;
+    delete process.env.ORION_CODE_WEBSEARCH_API;
     delete process.env.WEB_SEARCH_API;
     delete process.env.GLM_API_KEY;
     delete process.env.ZHIPU_API_KEY;
@@ -114,34 +114,34 @@ describe('web_search MCP delegation', () => {
   });
 
   test('returns configuration error when WebSearch MCP API key is missing', async () => {
-    process.env.OPENHORSE_WEBSEARCH_PROVIDER = 'native';
-    delete process.env.OPENHORSE_WEBSEARCH_API_KEY;
+    process.env.ORION_CODE_WEBSEARCH_PROVIDER = 'native';
+    delete process.env.ORION_CODE_WEBSEARCH_API_KEY;
     delete process.env.DASHSCOPE_API_KEY;
-    delete process.env.OPENHORSE_API_KEY;
+    delete process.env.ORION_CODE_API_KEY;
 
     const result = await webSearchTool.execute({ query: 'openhorse' }, ctx);
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('WEBSEARCH_MCP_NOT_CONFIGURED');
-    expect(result.error).toContain('OPENHORSE_WEBSEARCH_API_KEY');
+    expect(result.error).toContain('ORION_CODE_WEBSEARCH_API_KEY');
   });
 
   test('falls back to DuckDuckGo when auto MCP rejects configured Coding Plan key', async () => {
-    delete process.env.OPENHORSE_WEBSEARCH_API_KEY;
-    process.env.OPENHORSE_API_KEY = 'sk-sp-test-dedicated';
-    process.env.OPENHORSE_API_BASE_URL = 'https://coding.dashscope.aliyuncs.com/v1';
+    delete process.env.ORION_CODE_WEBSEARCH_API_KEY;
+    process.env.ORION_CODE_API_KEY = 'sk-sp-test-dedicated';
+    process.env.ORION_CODE_API_BASE_URL = 'https://coding.dashscope.aliyuncs.com/v1';
     global.fetch = jest.fn()
       .mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
       .mockResolvedValueOnce(new Response(`
         <html>
-          <a class="result__a" href="https://example.com/openhorse">OpenHorse</a>
+          <a class="result__a" href="https://example.com/orion-code">Orion Code</a>
         </html>
       `, { status: 200, headers: { 'content-type': 'text/html' } })) as any;
 
     const result = await webSearchTool.execute({ query: 'openhorse' }, ctx);
 
     expect(result.success).toBe(true);
-    expect(result.output).toContain('[OpenHorse](https://example.com/openhorse)');
+    expect(result.output).toContain('[Orion Code](https://example.com/orion-code)');
     expect(result.metadata?.source).toBe('websearch-adapter');
     expect(result.metadata?.provider).toBe('duckduckgo');
     expect(result.metadata?.mcpError).toBe('WEBSEARCH_MCP_HTTP_ERROR');
@@ -150,9 +150,9 @@ describe('web_search MCP delegation', () => {
   });
 
   test('supports query-parameter auth for extensible MCP providers', async () => {
-    delete process.env.OPENHORSE_WEBSEARCH_API_KEY;
-    delete process.env.OPENHORSE_WEBSEARCH_MCP_ENDPOINT;
-    process.env.OPENHORSE_WEBSEARCH_PROVIDER = 'tavily-mcp';
+    delete process.env.ORION_CODE_WEBSEARCH_API_KEY;
+    delete process.env.ORION_CODE_WEBSEARCH_MCP_ENDPOINT;
+    process.env.ORION_CODE_WEBSEARCH_PROVIDER = 'tavily-mcp';
     process.env.TAVILY_API_KEY = 'tvly-test';
 
     const fetchMock = jest.fn()
@@ -196,16 +196,16 @@ describe('web_search MCP delegation', () => {
   });
 
   test('supports explicit Tavily adapter mode like OpenClaude', async () => {
-    delete process.env.OPENHORSE_WEBSEARCH_API_KEY;
-    process.env.OPENHORSE_WEBSEARCH_PROVIDER = 'tavily';
+    delete process.env.ORION_CODE_WEBSEARCH_API_KEY;
+    process.env.ORION_CODE_WEBSEARCH_PROVIDER = 'tavily';
     process.env.TAVILY_API_KEY = 'tvly-test';
 
     const fetchMock = jest.fn().mockResolvedValueOnce(jsonResponse({
       results: [
         {
-          title: 'OpenHorse',
-          url: 'https://example.com/openhorse',
-          content: 'OpenHorse search adapter result',
+          title: 'Orion Code',
+          url: 'https://example.com/orion-code',
+          content: 'Orion Code search adapter result',
         },
       ],
     }));
@@ -218,6 +218,6 @@ describe('web_search MCP delegation', () => {
     expect(result.metadata?.provider).toBe('tavily');
     expect(fetchMock.mock.calls[0][0]).toBe('https://api.tavily.com/search');
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer tvly-test');
-    expect(result.output).toContain('[OpenHorse](https://example.com/openhorse)');
+    expect(result.output).toContain('[Orion Code](https://example.com/orion-code)');
   });
 });

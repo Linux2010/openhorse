@@ -22,11 +22,11 @@ import { createContextUsageSnapshot } from '../src/services/model-context';
 describe('session commands', () => {
   const testConfigDir = mkdtempSync(join(tmpdir(), 'openhorse-session-commands-'));
   const projectDir = mkdtempSync(join(tmpdir(), 'openhorse-project-'));
-  const originalConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+  const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
   let logSpy: jest.SpyInstance;
 
   beforeAll(() => {
-    process.env.OPENHORSE_CONFIG_DIR = testConfigDir;
+    process.env.ORION_CODE_CONFIG_DIR = testConfigDir;
   });
 
   beforeEach(() => {
@@ -45,9 +45,9 @@ describe('session commands', () => {
       rmSync(projectDir, { recursive: true, force: true });
     }
     if (originalConfigDir !== undefined) {
-      process.env.OPENHORSE_CONFIG_DIR = originalConfigDir;
+      process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
     } else {
-      delete process.env.OPENHORSE_CONFIG_DIR;
+      delete process.env.ORION_CODE_CONFIG_DIR;
     }
   });
 

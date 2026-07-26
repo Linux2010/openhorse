@@ -1,5 +1,5 @@
 /**
- * openhorse - Worker Pool
+ * orion code - Worker Pool
  *
  * 管理多个并发 Subagent，支持任务队列和结果收集。
  */

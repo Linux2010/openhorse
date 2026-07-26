@@ -1,11 +1,11 @@
-# OpenHorse Documentation
+# Orion Code Documentation
 
 ## Directory Structure
 
 ```
 docs/
 ├── readme.md                  # This file
-├── openhorse.example.json     # Example configuration
+├── orion.example.json     # Example configuration
 ├── general-configuration-reference.md  # Configuration reference
 ├── AGENT.md                   # Agent instructions
 │
@@ -23,9 +23,9 @@ docs/
 │   ├── general-agent-loop-final-form-reference.md
 │   └── general-ui-ultimate-experience-reference.md
 │
-├── codex/                     # Architecture & design plans (v0.1.x - v0.2.x)
+├── codex/                     # All version-specific plans, audits, reports (v0.1.23 - v0.2.27)
 │   ├── general-*.md           # Cross-version design docs
-│   └── v0.2.*.md              # Per-version plans & audits
+│   └── v0.2.*.md              # Per-version plans, audits, bug reports, changelogs
 │
 ├── test/                      # Test plans & reports
 │   ├── general-*.md           # General testing strategy
@@ -34,37 +34,21 @@ docs/
 │   ├── logs/                  # Test execution logs
 │   └── runs/                  # Test run artifacts
 │
-├── version/                   # Release changelogs & quality reviews
-│   └── v0.*.md
-│
-├── claude/                    # Claude-specific early design docs (v0.2.4-v0.2.7)
-│   └── v0.2.*.md
-│
-├── agy/                       # AGY-related proposals & supplements
-│   └── *.md
-│
-├── workBuddy/                 # WorkBuddy bug reports & fix plans
-│   └── *.md
-│
-└── old/                       # Archived — pre-v0.2 early docs
-    ├── general-*.md
-    ├── v0.1.*.md
-    └── issues/
+└── old/                       # Archived — pre-v0.2 changelogs & design docs
+    ├── general-*.md           # Early architecture & design docs
+    ├── v0.1.*.md              # v0.1.x changelogs (v0.1.1 - v0.1.27)
+    └── issues/                # Historical issue records
 ```
 
 ## Directory Purpose
 
-| Directory | Purpose | Active? |
-|-----------|---------|---------|
-| `product-plan/` | Product strategy, competitive analysis, roadmap | Yes |
-| `targets/` | Long-term vision and target state references | Yes |
-| `codex/` | Architecture plans, design docs, audits per version | Yes |
-| `test/` | Test plans, reports, prompt suites, logs | Yes |
-| `version/` | Release changelogs and quality review notes | Yes |
-| `claude/` | Early v0.2.4-v0.2.7 design docs (Claude-specific) | Frozen |
-| `agy/` | AGY technical upgrade proposals | Frozen |
-| `workBuddy/` | WorkBuddy bug reports and fix assessments | Frozen |
-| `old/` | Pre-v0.2 changelogs and early implementation plans | Archived |
+| Directory | Purpose | Status |
+|-----------|---------|--------|
+| `product-plan/` | Product strategy, competitive analysis, roadmap | Active |
+| `targets/` | Long-term vision and target state references | Active |
+| `codex/` | All version plans, audits, reports, bug analyses, changelogs | Active |
+| `test/` | Test plans, reports, prompt suites, logs | Active |
+| `old/` | Pre-v0.2 changelogs and early architecture/design docs | Archived |
 
 ## Naming Convention
 
@@ -74,30 +58,31 @@ docs/
 
 - **scope**: `general` (cross-version) or `v0.2.X` (version-specific)
 - **topic**: short kebab-case description
-- **type**: `plan`, `report`, `audit`, `reference`, `changelog`
+- **type**: `plan`, `report`, `audit`, `reference`, `changelog`, `bug-report`, `bug-analysis`, `fix-plan`, `fix-assessment`, `status-report`, `quality-review`
 
 Examples:
 - `v0.2.26-multi-model-configuration-plan.md` — version-specific design plan
-- `general-mcp-integration-design.md` — cross-version reference
+- `general-mcp-integration-design.md` — cross-version design reference
 - `v0.2.24-v0.2.26-integration-audit.md` — multi-version audit
+- `v0.2.21-bug-analysis.md` — version-specific bug analysis
+- `v0.2.20-quality-review.md` — version quality review
 
-## File Migration Plan
+## Migration History
 
-The following files need to be moved to align with this structure:
+On 2026-07-26, four scattered directories were collapsed into `codex/`:
 
-| Current Path | Target Path | Reason |
-|-------------|-------------|--------|
-| `docs/codex/v0.2.4-*` | → `docs/claude/` | Already in claude/, remove from codex |
-| `docs/codex/v0.2.6-*` | → `docs/claude/` | Already in claude/, remove from codex |
-| `docs/codex/v0.2.7-*` | → `docs/claude/` | Already in claude/, remove from codex |
-| `docs/codex/v0.1.23-*` | → `docs/old/` | Pre-v0.2, archive |
-| `docs/claude/v0.2.4-*` | Keep | Correct location |
-| `docs/claude/v0.2.6-*` | Keep | Correct location |
-| `docs/claude/v0.2.7-*` | Keep | Correct location |
+| Source | Files moved |
+|--------|-------------|
+| `docs/claude/` → `codex/` | 5 files (v0.2.4–v0.2.7 early design docs) |
+| `docs/agy/` → `codex/` | 2 files (technical upgrade proposal + supplements) |
+| `docs/workBuddy/` → `codex/` | 7 files (bug reports, fix plans, assessments) |
+| `docs/version/` → `codex/` + `old/` | 2 files to codex, 1 to old |
+
+Pre-v0.2 codex files also moved to `old/` for archival.
 
 ## Adding New Docs
 
 1. Determine if the doc is **version-specific** or **cross-version**
-2. Pick the right directory based on the table above
+2. Pick the right directory: `codex/` for plans/audits/reports, `test/` for test docs
 3. Use the naming convention
-4. For new versions, place plans/audits in `codex/`, test docs in `test/`, changelogs in `version/`
+4. `old/` should not receive new files — it's frozen

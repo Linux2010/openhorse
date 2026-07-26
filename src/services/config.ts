@@ -1,15 +1,13 @@
 /**
- * openhorse - 配置加载
+ * Orion Code - configuration loading.
  *
- * 用户只需配置少量核心项，其他参数由 Agent 内部智能控制。
+ * Config loading priority:
+ *   1. CLI arguments
+ *   2. ~/.orion-code/orion.json (GlobalConfig)
+ *   3. ORION_CODE_* environment variables
+ *   4. Agent internal defaults
  *
- * 配置加载优先级：
- *   1. 命令行参数
- *   2. ~/.openhorse/openhorse.json (GlobalConfig)
- *   3. 环境变量
- *   4. Agent 内部默认值
- *
- * UI renderer is intentionally not read from openhorse.json or env. The stable
+ * UI renderer is intentionally not read from orion.json or env. The stable
  * native terminal UI is the default; --ui tui is the recommended beta renderer;
  * --ui ink is deprecated and will be removed in a future release.
  */
@@ -44,6 +42,7 @@ import {
   type SubagentConfig,
 } from '../runtime/subagents/types';
 import { clampSubagentConfig } from '../runtime/subagents/policy';
+import { ENV, webSearchEnv } from '../product/environment';
 
 export type {
   ToolConfirmationPolicy,
@@ -67,66 +66,39 @@ export const BETA_UI_RENDERERS = [RECOMMENDED_BETA_UI_RENDERER, ...DEPRECATED_BE
 export const SUPPORTED_UI_RENDERERS = [STABLE_UI_RENDERER, ...BETA_UI_RENDERERS] as const satisfies readonly UIRenderer[];
 
 // ============================================================================
-// 类型定义
+// Types
 // ============================================================================
 
-/**
- * OpenHorse 运行时配置
- * 用户可配置核心项：apiKey, apiBaseUrl, model, fallbackModel, toolConfirmation
- * 其余由 Agent 内部控制
- */
-export interface OpenHorseCLIConfig {
-  // ---- 用户配置 ----
-  /** LLM API Key */
+export interface OrionCodeCLIConfig {
   apiKey: string;
-  /** LLM API Base URL */
   apiBaseUrl?: string;
-  /** 模型名称 */
   model: string;
-  /** 备用模型（主模型失败时切换） */
   fallbackModel?: string;
-  /** v0.2.26 — Resolved model registry (providers + models). */
   modelRegistry?: ModelRegistry;
-  /** v0.2.26 — Provider client pool. */
   modelClientPool?: ModelClientPool;
-  /** How to handle tool permission checks that need confirmation. */
   toolConfirmation: ToolConfirmationPolicy;
-  /** Remote MCP service used by web_search. */
   webSearch?: WebSearchMcpConfig;
-  /** Terminal UI configuration. loadConfig() fills defaults when loading app config. */
   ui?: UIConfig;
-  /** Additional user-managed skills roots. */
   skills?: SkillsConfig;
-  /** Agent loop guardrail configuration. */
   agentLoop?: AgentLoopConfig;
-  /** Resolved subagent runtime configuration (v0.2.20 beta). */
   subagents?: SubagentConfig;
-  /** Cost-accounting overrides for custom or routed models. */
   cost?: CostConfig;
-
-  // ---- Agent 内部参数 (不由用户配置) ----
-  /** 实例名称 */
   name: string;
-  /** 运行模式 */
   mode: 'development' | 'production';
-  /** 日志级别 */
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
+/** @deprecated Use OrionCodeCLIConfig instead. */
+export type OpenHorseCLIConfig = OrionCodeCLIConfig;
+
 // ============================================================================
-// Agent 内部默认值（用户无需关心）
+// Agent internal defaults
 // ============================================================================
 
-/** v0.2.26: suppress repeated legacy config warnings. */
 let _legacyConfigWarned = false;
 
 const INTERNAL_DEFAULTS = {
-  // 以下参数由 Agent 根据任务自动选择，不暴露给用户配置
-  // maxTokens:    代码 8192 / 分析 4096 / 简短 512
-  // temperature:  代码 0.1 / 分析 0.3 / 创意 0.7
-  // maxRetries:   指数退避，自动调整
-  // retryDelay:   500ms → 1s → 2s → 4s
-  name: 'openhorse',
+  name: 'orion-code',
   mode: 'development',
   logLevel: 'info',
   toolConfirmation: 'allow' as ToolConfirmationPolicy,
@@ -195,12 +167,12 @@ function normalizeStringList(value: unknown): string[] {
 
 function loadSkillsConfig(
   globalConfig: GlobalConfig,
-  overrides: Partial<OpenHorseCLIConfig>
+  overrides: Partial<OrionCodeCLIConfig>
 ): SkillsConfig | undefined {
   const paths = normalizeStringList([
     ...normalizeStringList(globalConfig.skills?.paths),
-    ...(process.env.OPENHORSE_SKILLS_PATHS
-      ? process.env.OPENHORSE_SKILLS_PATHS.split(delimiter)
+    ...(process.env[ENV.SKILLS_PATHS]
+      ? process.env[ENV.SKILLS_PATHS]!.split(delimiter)
       : []),
     ...normalizeStringList(overrides.skills?.paths),
   ]);
@@ -210,21 +182,21 @@ function loadSkillsConfig(
 
 function loadWebSearchConfig(
   globalConfig: GlobalConfig,
-  overrides: Partial<OpenHorseCLIConfig>
+  overrides: Partial<OrionCodeCLIConfig>
 ): WebSearchMcpConfig | undefined {
   const merged: WebSearchMcpConfig = {
     ...globalConfig.webSearch,
     ...overrides.webSearch,
   };
 
-  const endpoint = process.env.OPENHORSE_WEBSEARCH_MCP_ENDPOINT;
-  const apiKey = process.env.OPENHORSE_WEBSEARCH_API_KEY ?? process.env.DASHSCOPE_API_KEY;
-  const provider = process.env.OPENHORSE_WEBSEARCH_PROVIDER ?? process.env.OPENHORSE_WEBSEARCH_MCP_PROVIDER;
-  const toolName = process.env.OPENHORSE_WEBSEARCH_MCP_TOOL;
-  const timeoutMs = parsePositiveInt(process.env.OPENHORSE_WEBSEARCH_MCP_TIMEOUT_MS);
-  const authType = process.env.OPENHORSE_WEBSEARCH_AUTH_TYPE;
-  const apiKeyHeader = process.env.OPENHORSE_WEBSEARCH_API_KEY_HEADER;
-  const apiKeyQueryParam = process.env.OPENHORSE_WEBSEARCH_API_KEY_QUERY_PARAM;
+  const endpoint = process.env[webSearchEnv('MCP_ENDPOINT')];
+  const apiKey = process.env[webSearchEnv('API_KEY')] ?? process.env.DASHSCOPE_API_KEY;
+  const provider = process.env[webSearchEnv('PROVIDER')] ?? process.env[webSearchEnv('MCP_PROVIDER')];
+  const toolName = process.env[webSearchEnv('MCP_TOOL')];
+  const timeoutMs = parsePositiveInt(process.env[webSearchEnv('MCP_TIMEOUT_MS')]);
+  const authType = process.env[webSearchEnv('AUTH_TYPE')];
+  const apiKeyHeader = process.env[webSearchEnv('API_KEY_HEADER')];
+  const apiKeyQueryParam = process.env[webSearchEnv('API_KEY_QUERY_PARAM')];
 
   if (provider) merged.provider = provider;
   if (endpoint) merged.endpoint = endpoint;
@@ -242,9 +214,9 @@ function loadWebSearchConfig(
 
 function loadUIConfig(
   globalConfig: GlobalConfig,
-  overrides: Partial<OpenHorseCLIConfig>
+  overrides: Partial<OrionCodeCLIConfig>
 ): Required<UIConfig> {
-  const envConfirmations = process.env.OPENHORSE_UI_CONFIRMATIONS;
+  const envConfirmations = process.env[ENV.UI_CONFIRMATIONS];
 
   return {
     renderer:
@@ -260,7 +232,7 @@ function loadUIConfig(
 
 function loadAgentLoopConfig(
   globalConfig: GlobalConfig,
-  overrides: Partial<OpenHorseCLIConfig>
+  overrides: Partial<OrionCodeCLIConfig>
 ): AgentLoopConfig | undefined {
   const budget: AgentLoopBudgetConfig = {
     ...globalConfig.agentLoop?.budget,
@@ -268,10 +240,10 @@ function loadAgentLoopConfig(
   };
 
   const envBudget: Array<[keyof AgentLoopBudgetConfig, string | undefined]> = [
-    ['maxLlmRequestsPerUserTurn', process.env.OPENHORSE_MAX_LLM_REQUESTS_PER_TURN],
-    ['maxToolCallsPerUserTurn', process.env.OPENHORSE_MAX_TOOL_CALLS_PER_TURN],
-    ['maxReadOnlyFragmentation', process.env.OPENHORSE_MAX_READ_ONLY_FRAGMENTATION],
-    ['maxModelVisibleToolBytes', process.env.OPENHORSE_MAX_MODEL_VISIBLE_TOOL_BYTES],
+    ['maxLlmRequestsPerUserTurn', process.env[ENV.MAX_LLM_REQUESTS_PER_TURN]],
+    ['maxToolCallsPerUserTurn', process.env[ENV.MAX_TOOL_CALLS_PER_TURN]],
+    ['maxReadOnlyFragmentation', process.env[ENV.MAX_READ_ONLY_FRAGMENTATION]],
+    ['maxModelVisibleToolBytes', process.env[ENV.MAX_MODEL_VISIBLE_TOOL_BYTES]],
   ];
 
   for (const [key, value] of envBudget) {
@@ -309,7 +281,7 @@ function normalizePricing(value: unknown): CostConfig['defaultPricing'] | undefi
 
 function loadCostConfig(
   globalConfig: GlobalConfig,
-  overrides: Partial<OpenHorseCLIConfig>,
+  overrides: Partial<OrionCodeCLIConfig>,
 ): CostConfig | undefined {
   const sourceModels = {
     ...(globalConfig.cost?.modelPricing ?? {}),
@@ -339,17 +311,17 @@ function parseSubagentMode(value: unknown): SubagentMode | undefined {
 
 function loadSubagentConfig(
   globalConfig: GlobalConfig,
-  overrides: Partial<OpenHorseCLIConfig>,
+  overrides: Partial<OrionCodeCLIConfig>,
 ): SubagentConfig {
   const merged: SubagentUserConfig = {
     ...globalConfig.subagents,
     ...overrides.subagents,
   };
 
-  const envMode = parseSubagentMode(process.env.OPENHORSE_SUBAGENTS);
+  const envMode = parseSubagentMode(process.env[ENV.SUBAGENTS]);
   if (envMode) merged.mode = envMode;
 
-  const envMaxParallel = parsePositiveInt(process.env.OPENHORSE_SUBAGENT_MAX_PARALLEL);
+  const envMaxParallel = parsePositiveInt(process.env[ENV.SUBAGENT_MAX_PARALLEL]);
   if (envMaxParallel) merged.maxParallel = envMaxParallel;
 
   const resolved: SubagentConfig = {
@@ -364,23 +336,16 @@ function loadSubagentConfig(
     roles: merged.roles && merged.roles.length > 0 ? merged.roles : DEFAULT_SUBAGENT_CONFIG.roles,
   };
 
-  // Clamp to enforced bounds so a misconfigured openhorse.json cannot weaken limits.
   return clampSubagentConfig(resolved);
 }
 
 // ============================================================================
-// 加载配置
+// Load config
 // ============================================================================
 
-/**
- * 从多源加载配置
- * 优先级：命令行 > 配置文件 > 环境变量 > Agent 内部默认值
- */
-export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHorseCLIConfig {
+export function loadConfig(overrides: Partial<OrionCodeCLIConfig> = {}): OrionCodeCLIConfig {
   const globalConfig = loadGlobalConfig();
 
-  // v0.2.26 — build ModelRegistry from providers+models if configured.
-  // Falls back to legacy 4-field format with a console warning.
   let modelRegistry: ModelRegistry | undefined;
   let modelClientPool: ModelClientPool | undefined;
   let resolvedModel = 'gpt-4o';
@@ -388,7 +353,6 @@ export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHor
 
   const rawConfig = globalConfig as unknown as Record<string, unknown>;
   if (rawConfig.providers && rawConfig.models) {
-    // New providers+models format
     const result = buildRegistry({
       providers: rawConfig.providers as never,
       models: rawConfig.models as never,
@@ -401,46 +365,43 @@ export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHor
       resolvedModel = modelRegistry.defaultProfile?.id ?? 'gpt-4o';
       resolvedFallback = modelRegistry.fallbackProfile?.id ?? undefined;
     } else {
-      console.error('[openhorse] Invalid providers+models configuration:');
+      console.error('[orion-code] Invalid providers+models configuration:');
       for (const err of result.errors) {
         console.error(`  ${err.path}: ${err.message}`);
       }
-      // Fall through to legacy
     }
   }
 
   if (!modelRegistry) {
-    // Legacy 4-field fallback
     if (isLegacyConfig(rawConfig)) {
       if (!_legacyConfigWarned) {
         _legacyConfigWarned = true;
-        console.warn('[openhorse] Using legacy configuration format. Migrate to providers+models for v0.2.26+.');
+        console.warn('[orion-code] Using legacy configuration format. Migrate to providers+models for v0.2.26+.');
       }
     }
     resolvedModel =
       toNonEmptyString(overrides.model)
       ?? toNonEmptyString(globalConfig.defaultModel)
-      ?? toNonEmptyString(process.env.OPENHORSE_MODEL)
+      ?? toNonEmptyString(process.env[ENV.MODEL])
       ?? 'gpt-4o';
     resolvedFallback =
       toNonEmptyString(overrides.fallbackModel)
       ?? toNonEmptyString(globalConfig.fallbackModel)
-      ?? toNonEmptyString(process.env.OPENHORSE_FALLBACK_MODEL)
+      ?? toNonEmptyString(process.env[ENV.FALLBACK_MODEL])
       ?? undefined;
   }
 
-  const config: OpenHorseCLIConfig = {
-    // 用户核心配置
+  const config: OrionCodeCLIConfig = {
     apiKey:
       toNonEmptyString(overrides.apiKey)
       ?? globalConfig.apiKey
-      ?? toNonEmptyString(process.env.OPENHORSE_API_KEY)
+      ?? toNonEmptyString(process.env[ENV.API_KEY])
       ?? '',
     apiBaseUrl:
       toNonEmptyString(overrides.apiBaseUrl)
       ?? globalConfig.apiBaseUrl
-      ?? toNonEmptyString(process.env.OPENHORSE_API_BASE_URL)
-      ?? toNonEmptyString(process.env.OPENHORSE_BASE_URL)
+      ?? toNonEmptyString(process.env[ENV.API_BASE_URL])
+      ?? toNonEmptyString(process.env[ENV.BASE_URL])
       ?? undefined,
     model: resolvedModel,
     fallbackModel: resolvedFallback,
@@ -449,7 +410,7 @@ export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHor
     toolConfirmation:
       normalizeToolConfirmationPolicy(overrides.toolConfirmation)
       ?? normalizeToolConfirmationPolicy(globalConfig.toolConfirmation)
-      ?? normalizeToolConfirmationPolicy(process.env.OPENHORSE_TOOL_CONFIRMATION)
+      ?? normalizeToolConfirmationPolicy(process.env[ENV.TOOL_CONFIRMATION])
       ?? INTERNAL_DEFAULTS.toolConfirmation,
     webSearch: loadWebSearchConfig(globalConfig, overrides),
     ui: loadUIConfig(globalConfig, overrides),
@@ -458,45 +419,35 @@ export function loadConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHor
     subagents: loadSubagentConfig(globalConfig, overrides),
     cost: loadCostConfig(globalConfig, overrides),
 
-    // Agent 内部参数
     name:
-      overrides.name ?? process.env.OPENHORSE_NAME ?? INTERNAL_DEFAULTS.name,
+      overrides.name ?? process.env[ENV.NAME] ?? INTERNAL_DEFAULTS.name,
     mode:
-      (overrides.mode ?? process.env.OPENHORSE_MODE ?? INTERNAL_DEFAULTS.mode) as 'development' | 'production',
+      (overrides.mode ?? process.env[ENV.MODE] ?? INTERNAL_DEFAULTS.mode) as 'development' | 'production',
     logLevel:
-      (overrides.logLevel ?? process.env.OPENHORSE_LOG_LEVEL ?? INTERNAL_DEFAULTS.logLevel) as OpenHorseCLIConfig['logLevel'],
+      (overrides.logLevel ?? process.env[ENV.LOG_LEVEL] ?? INTERNAL_DEFAULTS.logLevel) as OrionCodeCLIConfig['logLevel'],
   };
 
   return config;
 }
 
-/**
- * 检查 API Key 是否已配置
- */
-export function isConfigured(config: OpenHorseCLIConfig): boolean {
+export function isConfigured(config: OrionCodeCLIConfig): boolean {
   return Boolean(config.apiKey);
 }
 
-/**
- * 获取缺失配置的提示信息
- */
-export function getConfigErrors(config: OpenHorseCLIConfig): string[] {
+export function getConfigErrors(config: OrionCodeCLIConfig): string[] {
   const errors: string[] = [];
   if (!config.apiKey) {
-    errors.push('Missing OPENHORSE_API_KEY. Set it in ~/.openhorse/openhorse.json or environment variable.');
+    errors.push('Missing ORION_CODE_API_KEY. Set it in ~/.orion-code/orion.json or environment variable.');
   }
   return errors;
 }
 
-/**
- * 获取配置摘要（隐藏 Key 值）
- */
-export function getConfigSummary(config: OpenHorseCLIConfig): Record<string, string> {
+export function getConfigSummary(config: OrionCodeCLIConfig): Record<string, string> {
   return {
     name: config.name,
     model: config.model,
     fallback: config.fallbackModel || '(none)',
-    apiBaseUrl: config.apiBaseUrl || '(default OpenAI)',
+    apiBaseUrl: config.apiBaseUrl || '(default)',
     apiKey: config.apiKey ? `${config.apiKey.slice(0, 7)}***` : '(not set)',
     mode: config.mode,
     logLevel: config.logLevel,

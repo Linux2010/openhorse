@@ -49,10 +49,10 @@ import * as atomicWrite from '../src/services/atomic-write';
 describe('session-storage', () => {
   // Use a unique test directory based on timestamp to avoid conflicts
   const testDir = join(homedir(), `.openhorse-test-session-${Date.now()}`);
-  const originalEnv = process.env.OPENHORSE_CONFIG_DIR;
+  const originalEnv = process.env.ORION_CODE_CONFIG_DIR;
 
   beforeAll(() => {
-    process.env.OPENHORSE_CONFIG_DIR = testDir;
+    process.env.ORION_CODE_CONFIG_DIR = testDir;
     // Clean up test directory if it exists
     if (existsSync(testDir)) {
       rmSync(testDir, { recursive: true });
@@ -66,9 +66,9 @@ describe('session-storage', () => {
     }
     // Restore original env var
     if (originalEnv !== undefined) {
-      process.env.OPENHORSE_CONFIG_DIR = originalEnv;
+      process.env.ORION_CODE_CONFIG_DIR = originalEnv;
     } else {
-      delete process.env.OPENHORSE_CONFIG_DIR;
+      delete process.env.ORION_CODE_CONFIG_DIR;
     }
   });
 

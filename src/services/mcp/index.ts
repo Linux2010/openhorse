@@ -1,5 +1,5 @@
 /**
- * openhorse - MCP Transport 入口
+ * orion code - MCP Transport 入口
  */
 
 export {

@@ -1,11 +1,12 @@
 /**
- * openhorse - Semantic Search
+ * orion code - Semantic Search
  *
  * 高级语义搜索接口，整合向量存储和记忆系统
  */
 
 import { getVectorStore, type SearchResult, type VectorStoreConfig } from './vector-store';
 import { loadAllMemories, saveMemory, type MemoryEntry, type MemoryType } from './storage';
+import { ENV } from '../product/environment';
 
 
 // ============================================================================
@@ -112,12 +113,12 @@ export class SemanticSearchService {
 // ============================================================================
 
 /**
- * Whether semantic search is explicitly enabled via OPENHORSE_EMBEDDING_PROVIDER.
+ * Whether semantic search is explicitly enabled via ORION_CODE_EMBEDDING_PROVIDER.
  * We require an explicit opt-in so the vector store + sqlite-vec are only
  * initialised when the user wants embeddings.
  */
 export function isSemanticEnabled(): boolean {
-  const provider = process.env.OPENHORSE_EMBEDDING_PROVIDER;
+  const provider = process.env[ENV.EMBEDDING_PROVIDER];
   return provider === 'ollama' || provider === 'openai';
 }
 

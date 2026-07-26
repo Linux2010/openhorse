@@ -1,5 +1,5 @@
 /**
- * openhorse - YAML Config Loader
+ * orion code - YAML Config Loader
  *
  * 支持 YAML 和 JSON 配置文件加载
  */
@@ -14,7 +14,7 @@ import { getConfigHome } from './config-dir';
 // ============================================================================
 
 export interface YAMLConfig {
-  openhorse?: {
+  orion?: {
     version?: string;
     model?: {
       provider?: string;
@@ -55,15 +55,15 @@ export interface MCPServerConfig {
 // ============================================================================
 
 const CONFIG_FILES = [
-  '.openhorse.yaml',
-  '.openhorse.yml',
-  '.openhorse.json',
-  'openhorse.yaml',
-  'openhorse.yml',
-  'openhorse.json',
+  '.orion-code.yaml',
+  '.orion-code.yml',
+  '.orion-code.json',
+  'orion-code.yaml',
+  'orion-code.yml',
+  'orion.json',
 ];
 
-const GLOBAL_CONFIG_FILE = 'openhorse.yaml';
+const GLOBAL_CONFIG_FILE = 'orion-code.yaml';
 
 // ============================================================================
 // YAML Config Loader
@@ -95,7 +95,7 @@ export class YAMLConfigLoader {
     }
 
     // Try JSON as fallback
-    const jsonPath = join(configHome, 'openhorse.json');
+    const jsonPath = join(configHome, 'orion.json');
     if (existsSync(jsonPath)) {
       return this.loadFile(jsonPath);
     }
@@ -123,46 +123,46 @@ export class YAMLConfigLoader {
   /** Merge configs with priority */
   mergeConfigs(project: YAMLConfig | null, global: YAMLConfig | null): YAMLConfig {
     const merged: YAMLConfig = {
-      openhorse: {},
+      orion: {},
     };
 
     // Global config (lower priority)
-    if (global?.openhorse) {
-      merged.openhorse = { ...global.openhorse };
+    if (global?.orion) {
+      merged.orion = { ...global.orion };
     }
 
     // Project config (higher priority, overrides global)
-    if (project?.openhorse) {
-      merged.openhorse = {
-        ...merged.openhorse,
-        ...project.openhorse,
+    if (project?.orion) {
+      merged.orion = {
+        ...merged.orion,
+        ...project.orion,
         // Deep merge nested objects
         model: {
-          ...merged.openhorse?.model,
-          ...project.openhorse?.model,
+          ...merged.orion?.model,
+          ...project.orion?.model,
         },
         memory: {
-          ...merged.openhorse?.memory,
-          ...project.openhorse?.memory,
+          ...merged.orion?.memory,
+          ...project.orion?.memory,
         },
         mcp: {
-          ...merged.openhorse?.mcp,
+          ...merged.orion?.mcp,
           servers: {
-            ...merged.openhorse?.mcp?.servers,
-            ...project.openhorse?.mcp?.servers,
+            ...merged.orion?.mcp?.servers,
+            ...project.orion?.mcp?.servers,
           },
         },
         skills: {
-          ...merged.openhorse?.skills,
-          ...project.openhorse?.skills,
+          ...merged.orion?.skills,
+          ...project.orion?.skills,
         },
         agents: {
-          ...merged.openhorse?.agents,
-          ...project.openhorse?.agents,
+          ...merged.orion?.agents,
+          ...project.orion?.agents,
         },
         cli: {
-          ...merged.openhorse?.cli,
-          ...project.openhorse?.cli,
+          ...merged.orion?.cli,
+          ...project.orion?.cli,
         },
       };
     }
@@ -179,8 +179,8 @@ export class YAMLConfigLoader {
 
   /** Generate config template */
   generateTemplate(): string {
-    const template = `# OpenHorse Configuration
-openhorse:
+    const template = `# Orion Code Configuration
+orion:
   version: "0.1.5"
 
   model:

@@ -37,7 +37,7 @@ describe('doctor report', () => {
     configDir = mkdtempSync(join(tmpdir(), 'openhorse-doctor-config-'));
     projectDir = mkdtempSync(join(tmpdir(), 'openhorse-doctor-project-'));
     mkdirSync(join(projectDir, '.git'));
-    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
     mcpManager.disconnectAll();
     resetSkillsRegistry();
   });
@@ -70,7 +70,7 @@ describe('doctor report', () => {
     expect(hasDoctorFailures(report)).toBe(true);
     expect(report.checks.find(check => check.id === 'config')?.status).toBe('fail');
     expect(rendered).toContain('Missing API key');
-    expect(rendered).toContain('OpenHorse Doctor');
+    expect(rendered).toContain('Orion Code Doctor');
   });
 
   it('loads project rules and reports a healthy configured runtime', () => {
@@ -275,7 +275,7 @@ Legacy content`);
     const externalRoot = join(configDir, 'configured-skills');
     const skillDir = join(externalRoot, 'code-review');
     mkdirSync(skillDir, { recursive: true });
-    writeFileSync(join(configDir, 'openhorse.json'), JSON.stringify({
+    writeFileSync(join(configDir, 'orion.json'), JSON.stringify({
       defaultModel: 'mock-doctor',
       skills: { paths: [externalRoot] },
     }), 'utf-8');
@@ -331,7 +331,7 @@ priority: 100
       };
       const result = await findCommand('doctor')!.execute(ctx, '');
       expect(result.success).toBe(true);
-      expect(logs.join('\n')).toContain('OpenHorse Doctor');
+      expect(logs.join('\n')).toContain('Orion Code Doctor');
       expect(logs.join('\n')).toContain('Tools:');
     } finally {
       logSpy.mockRestore();
@@ -358,9 +358,9 @@ describe('openhorse doctor CLI', () => {
         cwd: join(__dirname, '..'),
         env: {
           ...process.env,
-          OPENHORSE_CONFIG_DIR: configDir,
-          OPENHORSE_API_KEY: 'sk-doctor',
-          OPENHORSE_MODEL: 'mock-doctor',
+          ORION_CODE_CONFIG_DIR: configDir,
+          ORION_CODE_API_KEY: 'sk-doctor',
+          ORION_CODE_MODEL: 'mock-doctor',
           NO_COLOR: '1',
           FORCE_COLOR: '0',
         },

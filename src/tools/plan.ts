@@ -1,5 +1,5 @@
 /**
- * openhorse - Plan Mode Tools
+ * orion code - Plan Mode Tools
  *
  * enter_plan_mode: Enter planning mode for complex tasks
  * exit_plan_mode: Exit planning mode with a plan

@@ -1,5 +1,5 @@
 /**
- * openhorse - Tool System v2
+ * Orion Code - Tool System v2
  *
  * buildTool() factory pattern for general-purpose agent harness tools.
  */
@@ -61,8 +61,8 @@ export interface PermissionResult {
   reason?: string;
 }
 
-/** OpenHorse tool definition */
-export interface OpenHorseTool {
+/** Orion Code tool definition */
+export interface OrionCodeTool {
   /** Unique tool name */
   name: string;
   /** Alternative names */
@@ -90,6 +90,9 @@ export interface OpenHorseTool {
   getSummary?(args: Record<string, unknown>, result: ToolResult): string;
 }
 
+/** @deprecated Use OrionCodeTool instead. */
+export type OpenHorseTool = OrionCodeTool;
+
 /** OpenAI function calling tool format */
 export interface OpenAITool {
   type: 'function';
@@ -113,7 +116,7 @@ const TOOL_DEFAULTS = {
 };
 
 /**
- * Build an OpenHorseTool with default values filled in.
+ * Build an OrionCodeTool with default values filled in.
  *
  * @example
  * const myTool = buildTool({
@@ -124,7 +127,7 @@ const TOOL_DEFAULTS = {
  *   isReadOnly: () => true,
  * });
  */
-export function buildTool(def: OpenHorseTool): OpenHorseTool {
+export function buildTool(def: OrionCodeTool): OrionCodeTool {
   return {
     isConcurrencySafe: TOOL_DEFAULTS.isConcurrencySafe,
     isReadOnly: TOOL_DEFAULTS.isReadOnly,
@@ -138,8 +141,8 @@ export function buildTool(def: OpenHorseTool): OpenHorseTool {
 // toOpenAITool 转换器
 // ============================================================================
 
-/** Convert an OpenHorseTool to OpenAI function calling format */
-export function toOpenAITool(tool: OpenHorseTool): OpenAITool {
+/** Convert an OrionCodeTool to OpenAI function calling format */
+export function toOpenAITool(tool: OrionCodeTool): OpenAITool {
   return {
     type: 'function',
     function: {
@@ -150,7 +153,7 @@ export function toOpenAITool(tool: OpenHorseTool): OpenAITool {
   };
 }
 
-/** Convert an array of OpenHorseTools to OpenAI format */
-export function toOpenAITools(tools: OpenHorseTool[]): OpenAITool[] {
+/** Convert an array of OrionCodeTools to OpenAI format */
+export function toOpenAITools(tools: OrionCodeTool[]): OpenAITool[] {
   return tools.map(toOpenAITool);
 }

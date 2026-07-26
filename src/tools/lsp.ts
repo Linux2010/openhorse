@@ -1,5 +1,5 @@
 /**
- * openhorse - LSP 工具
+ * orion code - LSP 工具
  *
  * 提供代码智能功能：
  *   - lsp_get_definition: go-to-definition

@@ -1,7 +1,7 @@
 /**
- * openhorse - Auth 服务
+ * Orion Code - Auth service
  *
- * 支持 OAuth + API Key + AWS STS 认证。
+ * Supports OAuth + API Key + AWS STS.
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'fs';
@@ -114,7 +114,7 @@ export class AuthService {
    */
   getApiKey(): string | null {
     // 1. 从环境变量获取
-    const envKey = process.env.OPENHORSE_API_KEY || process.env.ANTHROPIC_API_KEY;
+    const envKey = process.env.ORION_CODE_API_KEY || process.env.ANTHROPIC_API_KEY;
     if (envKey) {
       return envKey;
     }

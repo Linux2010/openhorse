@@ -802,8 +802,8 @@ describe('Ink UI helpers', () => {
 
   it('rebuilds resumed transcript and hides messages before compact boundary', () => {
     const configDir = mkdtempSync(join(tmpdir(), 'openhorse-ink-session-'));
-    const originalConfigDir = process.env.OPENHORSE_CONFIG_DIR;
-    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
 
     try {
       const session = createSession('/tmp/openhorse-ink-resume', 'glm-5');
@@ -818,9 +818,9 @@ describe('Ink UI helpers', () => {
       expect(entries.map(entry => entry.content)).toEqual(['after compact', 'new answer']);
     } finally {
       if (originalConfigDir === undefined) {
-        delete process.env.OPENHORSE_CONFIG_DIR;
+        delete process.env.ORION_CODE_CONFIG_DIR;
       } else {
-        process.env.OPENHORSE_CONFIG_DIR = originalConfigDir;
+        process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
       }
       rmSync(configDir, { recursive: true, force: true });
     }
@@ -828,8 +828,8 @@ describe('Ink UI helpers', () => {
 
   it('rebuilds full resumed transcript when there is no compact boundary', () => {
     const configDir = mkdtempSync(join(tmpdir(), 'openhorse-ink-session-'));
-    const originalConfigDir = process.env.OPENHORSE_CONFIG_DIR;
-    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
 
     try {
       const session = createSession('/tmp/openhorse-ink-full-resume', 'glm-5');
@@ -848,9 +848,9 @@ describe('Ink UI helpers', () => {
       ]);
     } finally {
       if (originalConfigDir === undefined) {
-        delete process.env.OPENHORSE_CONFIG_DIR;
+        delete process.env.ORION_CODE_CONFIG_DIR;
       } else {
-        process.env.OPENHORSE_CONFIG_DIR = originalConfigDir;
+        process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
       }
       rmSync(configDir, { recursive: true, force: true });
     }
@@ -858,8 +858,8 @@ describe('Ink UI helpers', () => {
 
   it('rebuilds completed tool calls in resumed transcript as tool activity rows', () => {
     const configDir = mkdtempSync(join(tmpdir(), 'openhorse-ink-session-tools-'));
-    const originalConfigDir = process.env.OPENHORSE_CONFIG_DIR;
-    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
 
     try {
       const session = createSession('/tmp/openhorse-ink-tool-resume', 'glm-5');
@@ -906,9 +906,9 @@ describe('Ink UI helpers', () => {
       expect(entries[2].toolActivity?.outputView?.preview).toBe('package.json');
     } finally {
       if (originalConfigDir === undefined) {
-        delete process.env.OPENHORSE_CONFIG_DIR;
+        delete process.env.ORION_CODE_CONFIG_DIR;
       } else {
-        process.env.OPENHORSE_CONFIG_DIR = originalConfigDir;
+        process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
       }
       rmSync(configDir, { recursive: true, force: true });
     }

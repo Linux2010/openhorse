@@ -73,7 +73,7 @@ const DEFAULT_SHORTCUTS: V2ShortcutItem[] = [
 export function renderV2ShellHeader(config: V2ShellHeaderConfig): string {
   const width = Math.max(44, config.width || process.stdout.columns || 80);
   const innerWidth = Math.max(24, width - 4);
-  const title = `OpenHorse v${config.version}`;
+  const title = `Orion Code v${config.version}`;
   const topFill = Math.max(1, innerWidth - visualWidth(title) - 3);
   const projectName = basename(config.projectPath) || config.projectPath;
   const status = renderStatus(config.status, config.statusText);

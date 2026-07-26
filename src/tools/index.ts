@@ -1,5 +1,5 @@
 /**
- * openhorse - 工具集
+ * orion code - 工具集
  *
  * 定义 Agent 可用的工具（Tool System v2）：
  *   - read_file: 读取文件内容
@@ -30,6 +30,7 @@ import {
 } from '../framework/tool';
 import { setToolState } from '../framework/tool-state';
 import { ARTIFACT_THRESHOLD, storeArtifact, truncateForContext } from '../core/tool-artifacts';
+import { ENV } from '../product/environment';
 import {
   saveMemory,
   loadMemory,
@@ -877,12 +878,12 @@ export const TOOLS: OpenHorseTool[] = [
 /**
  * Runtime tool pool.
  *
- * Static OpenHorse tools are always present. Connected MCP server tools are
+ * Static Orion Code tools are always present. Connected MCP server tools are
  * exposed as first-class tools named mcp__<server>__<tool>, matching the
  * convention used by Claude Code, Codex, and OpenClaude.
  */
 export function getRuntimeTools(): OpenHorseTool[] {
-  return [...TOOLS, ...mcpManager.getOpenHorseTools()];
+  return [...TOOLS, ...mcpManager.getOrionCodeTools()];
 }
 
 // ============================================================================
@@ -2093,8 +2094,8 @@ export async function executeTool(
   const context: ToolContext = {
     cwd: toolContext?.cwd || process.cwd(),
     config: toolContext?.config || {
-      name: process.env.OPENHORSE_NAME || 'openhorse',
-      mode: process.env.OPENHORSE_MODE || 'development',
+      name: process.env[ENV.NAME] || 'orion-code',
+      mode: process.env[ENV.MODE] || 'development',
     },
     abortSignal, // Issue #32 #3.2: 透传 abortSignal
     sessionId: toolContext?.sessionId,

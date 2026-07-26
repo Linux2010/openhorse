@@ -1,5 +1,5 @@
 /**
- * openhorse - AutoFix 配置
+ * orion code - AutoFix 配置
  *
  * 定义 lint、test 命令和修复策略。
  */

@@ -1,5 +1,5 @@
 /**
- * openhorse - Query Loop (async generator)
+ * orion code - Query Loop (async generator)
  *
  * Generator-based query loop replacing the callback-based chatWithTools.
  * Yields typed events: request_start, tool_call, tool_result, message, complete.
@@ -402,7 +402,7 @@ function budgetExceededEvent(
       `Agent loop budget reached: ${reason}.`,
       'I stopped this turn to avoid unnecessary model requests and preserved the current session state.',
       'To continue the same objective, reply `继续` or provide the next concrete step.',
-      'Use /loop-stats to inspect request/tool counts. For intentional long work, raise agentLoop.budget in openhorse.json.',
+      'Use /loop-stats to inspect request/tool counts. For intentional long work, raise agentLoop.budget in orion.json.',
     ].join('\n'),
     model: llm.getModel(),
     stats: cloneLoopStats(
@@ -1235,7 +1235,7 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
         messages.push({
           role: 'system',
           content: [
-            '[OpenHorse loop hint]',
+            '[Orion Code loop hint]',
             `You have made ${stats.singleReadOnlyStreak} consecutive turns with a single read-only local tool call.`,
             'For independent local exploration, prefer batch_read with up to 8 steps using git_status, list_files, glob, grep, and read_file.',
           ].join(' '),

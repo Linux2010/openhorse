@@ -18,7 +18,7 @@ try {
 
 if (VectorStore) {
   // Create temp directory
-  const tempDir = path.join(os.tmpdir(), 'openhorse-vector-test-' + Date.now());
+  const tempDir = path.join(os.tmpdir(), 'orion-code-vector-test-' + Date.now());
   fs.mkdirSync(tempDir, { recursive: true });
 
   try {

@@ -1,5 +1,5 @@
 /**
- * openhorse - Diagnostic Tracking 服务
+ * orion code - Diagnostic Tracking 服务
  *
  * 追踪 IDE/LSP 诊断，检测新引入错误。
  */

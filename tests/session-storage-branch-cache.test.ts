@@ -21,11 +21,11 @@ function git(cwd: string, args: string[]): string {
 
 describe('session-storage gitBranch cache staleness', () => {
   let root: string;
-  const originalConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+  const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'openhorse-branch-cache-'));
-    process.env.OPENHORSE_CONFIG_DIR = join(root, '.openhorse-config');
+    process.env.ORION_CODE_CONFIG_DIR = join(root, '.openhorse-config');
     git(root, ['init', '--quiet']);
     git(root, ['config', 'user.email', 'test@example.com']);
     git(root, ['config', 'user.name', 'Test']);
@@ -37,9 +37,9 @@ describe('session-storage gitBranch cache staleness', () => {
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
     if (originalConfigDir !== undefined) {
-      process.env.OPENHORSE_CONFIG_DIR = originalConfigDir;
+      process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
     } else {
-      delete process.env.OPENHORSE_CONFIG_DIR;
+      delete process.env.ORION_CODE_CONFIG_DIR;
     }
   });
 

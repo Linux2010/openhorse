@@ -85,7 +85,7 @@ describe('Context Harness', () => {
     expect(assembled).not.toBe(original);
     expect(assembled[0]).toEqual({ role: 'system', content: 'base system' });
     expect(assembled[1].role).toBe('system');
-    expect(assembled[1].content).toContain('OpenHorse Context Harness');
+    expect(assembled[1].content).toContain('Orion Code Context Harness');
     expect(assembled[1].content).toContain('修复 CLI 输入背景');
     expect(assembled[2]).toEqual({ role: 'user', content: 'hello' });
     expect(original[0].content).toBe('base system');
@@ -124,7 +124,7 @@ describe('Context Harness', () => {
 
     expect(seenRequests[0][0].content).toBe('base');
     expect(seenRequests[0][1].role).toBe('system');
-    expect(seenRequests[0][1].content).toContain('OpenHorse Context Harness');
+    expect(seenRequests[0][1].content).toContain('Orion Code Context Harness');
     expect(harness.getCapsule()?.verification.passed.length).toBe(1);
   });
 

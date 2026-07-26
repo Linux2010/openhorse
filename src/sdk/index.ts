@@ -1,5 +1,5 @@
 /**
- * openhorse - SDK Entry Points
+ * orion code - SDK Entry Points
  *
  * v0.1.11: 核心 API 导出 (init, query, listSessions)
  */

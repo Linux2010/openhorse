@@ -1,5 +1,5 @@
 /**
- * openhorse - SDK Types
+ * orion code - SDK Types
  *
  * v0.1.11: SDK 类型定义
  */

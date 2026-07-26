@@ -240,7 +240,7 @@ export class WebSearchMcpClient {
     ) {
       throw new WebSearchMcpError(
         'WEBSEARCH_MCP_NOT_CONFIGURED',
-        'WebSearch MCP API key is not configured. Set webSearch.apiKey, OPENHORSE_WEBSEARCH_API_KEY, a provider API key env var, or the OpenHorse apiKey.',
+        'WebSearch MCP API key is not configured. Set webSearch.apiKey, ORION_CODE_WEBSEARCH_API_KEY, a provider API key env var, or the Orion Code apiKey.',
         this.config.endpoint
       );
     }
@@ -248,7 +248,7 @@ export class WebSearchMcpClient {
     await this.request('initialize', {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: { name: 'openhorse', version: CLIENT_VERSION },
+      clientInfo: { name: 'orion-code', version: CLIENT_VERSION },
     });
 
     await this.notification('notifications/initialized', {});

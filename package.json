@@ -1,11 +1,11 @@
 {
-  "name": "openhorse",
+  "name": "orion-code",
   "version": "0.2.27",
-  "description": "OpenHorse - Universal Agent Harness Framework. A complete coding CLI agent with tools, MCP, memory system.",
+  "description": "Orion Code - goal-driven coding agent for the terminal.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "openhorse": "bin/openhorse"
+    "orion": "bin/orion"
   },
   "files": [
     "dist/",
@@ -41,11 +41,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Linux2010/openhorse.git"
+    "url": "git+https://github.com/Linux2010/orion-code.git"
   },
-  "homepage": "https://github.com/Linux2010/openhorse#readme",
+  "homepage": "https://github.com/Linux2010/orion-code#readme",
   "bugs": {
-    "url": "https://github.com/Linux2010/openhorse/issues"
+    "url": "https://github.com/Linux2010/orion-code/issues"
   },
   "dependencies": {
     "@clack/prompts": "^0.7.0",

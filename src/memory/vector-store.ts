@@ -1,5 +1,5 @@
 /**
- * openhorse - Vector Store
+ * orion code - Vector Store
  *
  * 基于 sqlite-vec 的向量存储层
  */

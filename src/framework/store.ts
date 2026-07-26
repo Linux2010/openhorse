@@ -1,5 +1,5 @@
 /**
- * openhorse - Centralized State Store
+ * orion code - Centralized State Store
  *
  * Simple publish-subscribe state management.
  * No React dependency — just state + listeners.

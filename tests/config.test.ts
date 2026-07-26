@@ -16,32 +16,32 @@ import { delimiter } from 'path';
 const originalEnv = { ...process.env };
 
 function cleanEnv() {
-  delete process.env.OPENHORSE_API_KEY;
-  delete process.env.OPENHORSE_API_BASE_URL;
-  delete process.env.OPENHORSE_BASE_URL;
-  delete process.env.OPENHORSE_MODEL;
-  delete process.env.OPENHORSE_FALLBACK_MODEL;
-  delete process.env.OPENHORSE_NAME;
-  delete process.env.OPENHORSE_MODE;
-  delete process.env.OPENHORSE_LOG_LEVEL;
-  delete process.env.OPENHORSE_TOOL_CONFIRMATION;
+  delete process.env.ORION_CODE_API_KEY;
+  delete process.env.ORION_CODE_API_BASE_URL;
+  delete process.env.ORION_CODE_BASE_URL;
+  delete process.env.ORION_CODE_MODEL;
+  delete process.env.ORION_CODE_FALLBACK_MODEL;
+  delete process.env.ORION_CODE_NAME;
+  delete process.env.ORION_CODE_MODE;
+  delete process.env.ORION_CODE_LOG_LEVEL;
+  delete process.env.ORION_CODE_TOOL_CONFIRMATION;
   delete process.env.OPENHORSE_UI;
-  delete process.env.OPENHORSE_UI_RENDERER;
-  delete process.env.OPENHORSE_UI_CONFIRMATIONS;
-  delete process.env.OPENHORSE_WEBSEARCH_API_KEY;
-  delete process.env.OPENHORSE_WEBSEARCH_PROVIDER;
-  delete process.env.OPENHORSE_WEBSEARCH_MCP_PROVIDER;
-  delete process.env.OPENHORSE_WEBSEARCH_MCP_ENDPOINT;
-  delete process.env.OPENHORSE_WEBSEARCH_MCP_TOOL;
-  delete process.env.OPENHORSE_WEBSEARCH_MCP_TIMEOUT_MS;
-  delete process.env.OPENHORSE_WEBSEARCH_AUTH_TYPE;
-  delete process.env.OPENHORSE_WEBSEARCH_API_KEY_HEADER;
-  delete process.env.OPENHORSE_WEBSEARCH_API_KEY_QUERY_PARAM;
-  delete process.env.OPENHORSE_SKILLS_PATHS;
-  delete process.env.OPENHORSE_MAX_LLM_REQUESTS_PER_TURN;
-  delete process.env.OPENHORSE_MAX_TOOL_CALLS_PER_TURN;
-  delete process.env.OPENHORSE_MAX_READ_ONLY_FRAGMENTATION;
-  delete process.env.OPENHORSE_MAX_MODEL_VISIBLE_TOOL_BYTES;
+  delete process.env.ORION_CODE_UI_RENDERER;
+  delete process.env.ORION_CODE_UI_CONFIRMATIONS;
+  delete process.env.ORION_CODE_WEBSEARCH_API_KEY;
+  delete process.env.ORION_CODE_WEBSEARCH_PROVIDER;
+  delete process.env.ORION_CODE_WEBSEARCH_MCP_PROVIDER;
+  delete process.env.ORION_CODE_WEBSEARCH_MCP_ENDPOINT;
+  delete process.env.ORION_CODE_WEBSEARCH_MCP_TOOL;
+  delete process.env.ORION_CODE_WEBSEARCH_MCP_TIMEOUT_MS;
+  delete process.env.ORION_CODE_WEBSEARCH_AUTH_TYPE;
+  delete process.env.ORION_CODE_WEBSEARCH_API_KEY_HEADER;
+  delete process.env.ORION_CODE_WEBSEARCH_API_KEY_QUERY_PARAM;
+  delete process.env.ORION_CODE_SKILLS_PATHS;
+  delete process.env.ORION_CODE_MAX_LLM_REQUESTS_PER_TURN;
+  delete process.env.ORION_CODE_MAX_TOOL_CALLS_PER_TURN;
+  delete process.env.ORION_CODE_MAX_READ_ONLY_FRAGMENTATION;
+  delete process.env.ORION_CODE_MAX_MODEL_VISIBLE_TOOL_BYTES;
   delete process.env.DASHSCOPE_API_KEY;
 }
 
@@ -62,7 +62,7 @@ describe('loadConfig', () => {
 
     const config = loadConfig();
     expect(config.model).toBe('gpt-4o');
-    expect(config.name).toBe('openhorse');
+    expect(config.name).toBe('orion-code');
     expect(config.mode).toBe('development');
     expect(config.logLevel).toBe('info');
     expect(config.apiKey).toBe('');
@@ -117,23 +117,23 @@ describe('loadConfig', () => {
       defaultModel: undefined as any,
     });
 
-    process.env.OPENHORSE_API_KEY = 'env-key';
-    process.env.OPENHORSE_MODEL = 'env-model';
-    process.env.OPENHORSE_FALLBACK_MODEL = 'env-fallback';
-    process.env.OPENHORSE_TOOL_CONFIRMATION = 'ask';
-    process.env.OPENHORSE_UI_RENDERER = 'ink';
-    process.env.OPENHORSE_UI_CONFIRMATIONS = 'interactive';
-    process.env.OPENHORSE_WEBSEARCH_API_KEY = 'sk-websearch-env';
-    process.env.OPENHORSE_WEBSEARCH_PROVIDER = 'tavily';
-    process.env.OPENHORSE_WEBSEARCH_MCP_ENDPOINT = 'https://example.com/mcp';
-    process.env.OPENHORSE_WEBSEARCH_MCP_TOOL = 'search';
-    process.env.OPENHORSE_WEBSEARCH_MCP_TIMEOUT_MS = '12345';
-    process.env.OPENHORSE_WEBSEARCH_AUTH_TYPE = 'query';
-    process.env.OPENHORSE_WEBSEARCH_API_KEY_QUERY_PARAM = 'tavilyApiKey';
-    process.env.OPENHORSE_MAX_LLM_REQUESTS_PER_TURN = '72';
-    process.env.OPENHORSE_MAX_TOOL_CALLS_PER_TURN = '240';
-    process.env.OPENHORSE_MAX_READ_ONLY_FRAGMENTATION = '4';
-    process.env.OPENHORSE_MAX_MODEL_VISIBLE_TOOL_BYTES = '131072';
+    process.env.ORION_CODE_API_KEY = 'env-key';
+    process.env.ORION_CODE_MODEL = 'env-model';
+    process.env.ORION_CODE_FALLBACK_MODEL = 'env-fallback';
+    process.env.ORION_CODE_TOOL_CONFIRMATION = 'ask';
+    process.env.ORION_CODE_UI_RENDERER = 'ink';
+    process.env.ORION_CODE_UI_CONFIRMATIONS = 'interactive';
+    process.env.ORION_CODE_WEBSEARCH_API_KEY = 'sk-websearch-env';
+    process.env.ORION_CODE_WEBSEARCH_PROVIDER = 'tavily';
+    process.env.ORION_CODE_WEBSEARCH_MCP_ENDPOINT = 'https://example.com/mcp';
+    process.env.ORION_CODE_WEBSEARCH_MCP_TOOL = 'search';
+    process.env.ORION_CODE_WEBSEARCH_MCP_TIMEOUT_MS = '12345';
+    process.env.ORION_CODE_WEBSEARCH_AUTH_TYPE = 'query';
+    process.env.ORION_CODE_WEBSEARCH_API_KEY_QUERY_PARAM = 'tavilyApiKey';
+    process.env.ORION_CODE_MAX_LLM_REQUESTS_PER_TURN = '72';
+    process.env.ORION_CODE_MAX_TOOL_CALLS_PER_TURN = '240';
+    process.env.ORION_CODE_MAX_READ_ONLY_FRAGMENTATION = '4';
+    process.env.ORION_CODE_MAX_MODEL_VISIBLE_TOOL_BYTES = '131072';
 
     const config = loadConfig();
     expect(config.apiKey).toBe('env-key');
@@ -213,7 +213,7 @@ describe('loadConfig', () => {
       },
     });
 
-    process.env.OPENHORSE_SKILLS_PATHS = ['/env/skills-a', '/env/skills-b'].join(delimiter);
+    process.env.ORION_CODE_SKILLS_PATHS = ['/env/skills-a', '/env/skills-b'].join(delimiter);
 
     const config = loadConfig({
       skills: {
@@ -253,8 +253,8 @@ describe('loadConfig', () => {
       defaultModel: 'gpt-4o',
     });
 
-    process.env.OPENHORSE_UI = 'ink';
-    process.env.OPENHORSE_UI_RENDERER = 'ink';
+    process.env.ORION_CODE_UI = 'ink';
+    process.env.ORION_CODE_UI_RENDERER = 'ink';
 
     const config = loadConfig();
     expect(config.ui).toEqual({ renderer: 'terminal', confirmations: 'config' });
@@ -266,9 +266,9 @@ describe('loadConfig', () => {
       toolConfirmation: 'invalid',
     });
 
-    process.env.OPENHORSE_TOOL_CONFIRMATION = 'also-invalid';
-    process.env.OPENHORSE_UI = 'invalid';
-    process.env.OPENHORSE_UI_CONFIRMATIONS = 'also-invalid';
+    process.env.ORION_CODE_TOOL_CONFIRMATION = 'also-invalid';
+    process.env.ORION_CODE_UI = 'invalid';
+    process.env.ORION_CODE_UI_CONFIRMATIONS = 'also-invalid';
 
     const config = loadConfig();
     expect(config.toolConfirmation).toBe('allow');
@@ -326,7 +326,7 @@ describe('getConfigErrors', () => {
     const config = loadConfig();
     const errors = getConfigErrors(config);
     expect(errors.length).toBeGreaterThan(0);
-    expect(errors[0]).toContain('OPENHORSE_API_KEY');
+    expect(errors[0]).toContain('ORION_CODE_API_KEY');
   });
 
   test('returns empty when API key is set', () => {

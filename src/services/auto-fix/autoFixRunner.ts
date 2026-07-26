@@ -1,5 +1,5 @@
 /**
- * openhorse - AutoFix Runner
+ * orion code - AutoFix Runner
  *
  * 代码修改后自动运行 lint + test，检测并尝试修复错误。
  */

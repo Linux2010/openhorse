@@ -1,5 +1,5 @@
 /**
- * openhorse - Coordinator
+ * orion code - Coordinator
  *
  * 多 Agent 协调器，负责任务分配和结果聚合。
  * 与 Fork/Worker Pool 模式配合使用。

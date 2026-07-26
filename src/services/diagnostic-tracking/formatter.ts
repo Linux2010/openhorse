@@ -1,5 +1,5 @@
 /**
- * openhorse - Diagnostic 格式化
+ * orion code - Diagnostic 格式化
  */
 
 import type { Diagnostic } from './types';

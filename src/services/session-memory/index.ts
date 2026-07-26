@@ -1,5 +1,5 @@
 /**
- * openhorse - Session Memory 服务入口
+ * orion code - Session Memory 服务入口
  */
 
 export {

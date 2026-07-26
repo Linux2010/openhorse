@@ -1,5 +1,5 @@
 /**
- * openhorse - Web Tools
+ * orion code - Web Tools
  *
  * WebFetch: Fetch URL content and process with prompt
  * WebSearch: delegate search to provider MCP service
@@ -314,7 +314,7 @@ async function fetchUrl(url: string, _maxRedirects: number = 5): Promise<FetchRe
     // Issue #20 修复：启用 redirect: 'follow' 自动跟随重定向
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'OpenHorse/0.1.14',
+        'User-Agent': 'Orion-Code/0.2.27',
         'Accept': 'text/html,application/xhtml+xml,text/markdown,text/plain,*/*',
       },
       redirect: 'follow',  // 自动跟随重定向（最多 20 次，由 fetch 内置限制）
@@ -560,7 +560,7 @@ export function resetWebSearchMcpClientForTests(): void {
 export const webSearchTool: OpenHorseTool = buildTool({
   name: 'web_search',
   description: `Search the web through the built-in WebSearch provider chain.
-OpenHorse tries provider-native MCP first in auto mode, then falls back to configured search adapters such as Tavily, Brave, custom search, or DuckDuckGo.
+Orion Code tries provider-native MCP first in auto mode, then falls back to configured search adapters such as Tavily, Brave, custom search, or DuckDuckGo.
 You MUST include the Sources section with markdown hyperlinks in your response.`,
   parameters: {
     type: 'object',
@@ -652,7 +652,7 @@ You MUST include the Sources section with markdown hyperlinks in your response.`
           adapter: adapterErr?.message || String(adapterErr),
           suggestion: [
             getWebSearchMcpErrorSuggestion(resolvedConfig),
-            'Or set OPENHORSE_WEBSEARCH_PROVIDER=ddg/tavily/brave/custom with the matching adapter configuration.',
+            'Or set ORION_CODE_WEBSEARCH_PROVIDER=ddg/tavily/brave/custom with the matching adapter configuration.',
           ].join(' '),
         }),
         metadata: { source: 'websearch', provider: resolvedConfig.provider, endpoint: resolvedConfig.endpoint },

@@ -159,7 +159,7 @@ export function renderHarnessStateForCompact(
   state: HarnessState,
   mode: 'manual' | 'auto_pre_turn' | 'mid_turn' = 'manual'
 ): string {
-  const lines: string[] = ['[OpenHorse Context State v2]'];
+  const lines: string[] = ['[Orion Code Context State v2]'];
   lines.push(`mode: ${mode}`);
   lines.push(`taskEpoch: ${state.taskEpoch ?? 1}`);
   if (state.rootObjective || state.contract?.objective) {
@@ -244,6 +244,6 @@ export function renderHarnessStateForCompact(
     lines.push(...state.diagnostics.slice(-5).map(item => `- ${compactLine(item)}`));
   }
 
-  lines.push('[/OpenHorse Context State v2]');
+  lines.push('[/Orion Code Context State v2]');
   return lines.join('\n');
 }

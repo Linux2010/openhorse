@@ -292,7 +292,7 @@ def wait_for_shell_prompt_after(fd: int, output: list[bytes], start: int, timeou
             return
         time.sleep(0.05)
     chunk = strip_ansi(decode_output(b"".join(output)[start:]))
-    raise AssertionError(f"Timed out waiting for shell prompt after OpenHorse exit. Tail:\n{chunk[-2000:]}")
+    raise AssertionError(f"Timed out waiting for shell prompt after Orion Code exit. Tail:\n{chunk[-2000:]}")
 
 
 def assert_ordered(haystack: str, needles: list[str]) -> None:
@@ -455,7 +455,7 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
 
     def write_chunk(self, delta: dict, finish_reason: str | None = None, usage: dict | None = None) -> None:
         payload = {
-            "id": "chatcmpl-openhorse-pty",
+            "id": "chatcmpl-orion-code-pty",
             "object": "chat.completion.chunk",
             "created": int(time.time()),
             "model": "mock-stream",
@@ -503,7 +503,7 @@ def start_mock_openai_server() -> tuple[ThreadingHTTPServer, str]:
     return server, f"http://{host}:{port}/v1"
 
 
-def spawn_openhorse(repo: Path, env: dict[str, str], rows: int = 24, cols: int = 100) -> tuple[subprocess.Popen[bytes], int]:
+def spawn_orion(repo: Path, env: dict[str, str], rows: int = 24, cols: int = 100) -> tuple[subprocess.Popen[bytes], int]:
     master, slave = pty.openpty()
     set_window_size(slave, rows=rows, cols=cols)
     process = subprocess.Popen(
@@ -554,7 +554,7 @@ def stop_process(process: subprocess.Popen[bytes], master: int | None) -> None:
 
 
 def run_resume_check(repo: Path, env: dict[str, str]) -> None:
-    process, master = spawn_openhorse(repo, env, rows=24, cols=100)
+    process, master = spawn_orion(repo, env, rows=24, cols=100)
     output: list[bytes] = []
     try:
         wait_for(master, output, "ready", timeout=10)
@@ -579,7 +579,7 @@ def run_resume_check(repo: Path, env: dict[str, str]) -> None:
             output.append(read_available(master))
             time.sleep(0.05)
         if process.poll() is None:
-            raise AssertionError("Resumed OpenHorse did not exit after double Ctrl+C")
+            raise AssertionError("Resumed Orion Code did not exit after double Ctrl+C")
 
         output.append(read_available(master))
         assert_no_live_prompt_frame(
@@ -624,23 +624,23 @@ def run_shell_cleanup_check(repo: Path, env: dict[str, str]) -> None:
 
 def main() -> int:
     repo = Path(__file__).resolve().parents[1]
-    config_dir = tempfile.mkdtemp(prefix="openhorse-pty-smoke-")
+    config_dir = tempfile.mkdtemp(prefix="orion-code-pty-smoke-")
     mock_server, mock_base_url = start_mock_openai_server()
 
     env = os.environ.copy()
     env.update(
         {
-            "OPENHORSE_CONFIG_DIR": config_dir,
+            "ORION_CODE_CONFIG_DIR": config_dir,
             "TERM": "xterm-256color",
             "NO_COLOR": "1",
             "FORCE_COLOR": "0",
-            "OPENHORSE_API_KEY": "sk-openhorse-pty",
-            "OPENHORSE_API_BASE_URL": mock_base_url,
-            "OPENHORSE_MODEL": "mock-stream",
+            "ORION_CODE_API_KEY": "sk-orion-code-pty",
+            "ORION_CODE_API_BASE_URL": mock_base_url,
+            "ORION_CODE_MODEL": "mock-stream",
         }
     )
 
-    process, master = spawn_openhorse(repo, env, rows=24, cols=80)
+    process, master = spawn_orion(repo, env, rows=24, cols=80)
 
     output: list[bytes] = []
     screen = TerminalModel(rows=24, cols=80)
@@ -828,7 +828,7 @@ def main() -> int:
             output.append(read_available(master))
             time.sleep(0.05)
         if process.poll() is None:
-            raise AssertionError("OpenHorse did not exit after double Ctrl+C")
+            raise AssertionError("Orion Code did not exit after double Ctrl+C")
 
         output.append(read_available(master))
         sync_screen("main exit", expect_prompt=False)
@@ -844,7 +844,7 @@ def main() -> int:
         last_prompt = exit_chunk.rfind("│ ›".encode("utf-8"))
         last_clear = max(exit_chunk.rfind(b"\x1b[2K"), exit_chunk.rfind(b"\x1b[0K"))
         if last_prompt >= 0 and last_clear < last_prompt:
-            raise AssertionError("OpenHorse exited without clearing the live prompt frame")
+            raise AssertionError("Orion Code exited without clearing the live prompt frame")
 
         if re.search(r"\n开源小？事收到\r?\n", plain_output):
             raise AssertionError("Terminal local echo leaked typed CJK text outside the prompt frame")

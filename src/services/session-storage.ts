@@ -1,5 +1,5 @@
 /**
- * openhorse - 会话存储
+ * orion code - 会话存储
  *
  * 使用 JSONL 格式存储会话历史和对话记录。
  * 参考 OpenClaude 的 history.jsonl 和 sessions/ 目录。
@@ -67,7 +67,7 @@ export interface SessionMeta {
   id: string;
   /** Canonical project root path */
   projectPath: string;
-  /** Encoded project key used under ~/.openhorse/projects/ */
+  /** Encoded project key used under ~/.orion-code/projects/ */
   projectKey?: string;
   /** Original working directory used when the session started */
   cwd?: string;
@@ -921,7 +921,7 @@ export function loadSessionTranscriptMessages(sessionId: string): SessionMessage
 function hasPersistedCompactContext(messages: SessionMessage[]): boolean {
   return messages.some(
     message =>
-      message.content.includes('[OpenHorse Context State v2]') ||
+      message.content.includes('[Orion Code Context State v2]') ||
       message.content.includes('[Context Summary]') ||
       message.content.includes('## Context Capsule')
   );

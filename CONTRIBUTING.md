@@ -1,6 +1,6 @@
-# Contributing to OpenHorse
+# Contributing to Orion Code
 
-Thank you for your interest in contributing to OpenHorse! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to Orion Code! This document provides guidelines and instructions for contributing.
 
 ## Development Setup
 
@@ -13,8 +13,8 @@ Thank you for your interest in contributing to OpenHorse! This document provides
 
 ```bash
 # Clone the repository
-git clone https://github.com/Linux2010/openhorse.git
-cd openhorse
+git clone https://github.com/Linux2010/orion-code.git
+cd orion-code
 
 # Install dependencies
 npm install
@@ -29,7 +29,7 @@ npm test
 ## Project Structure
 
 ```
-openhorse/
+orion-code/
 ├── src/
 │   ├── cli.ts           # CLI entry point
 │   ├── commands/        # Slash commands

@@ -29,7 +29,7 @@ const {
 } = storage;
 
 // 1. Create temp directory for memory
-const tempProjectPath = path.join(os.tmpdir(), 'openhorse-memory-test-' + Date.now());
+const tempProjectPath = path.join(os.tmpdir(), 'orion-code-memory-test-' + Date.now());
 fs.mkdirSync(tempProjectPath, { recursive: true });
 console.log('Temp project path:', tempProjectPath);
 

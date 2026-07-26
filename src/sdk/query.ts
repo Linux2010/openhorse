@@ -1,5 +1,5 @@
 /**
- * openhorse - SDK Query
+ * orion code - SDK Query
  *
  * v0.1.11: SDK 查询函数
  */

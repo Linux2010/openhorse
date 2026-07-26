@@ -84,7 +84,7 @@ function resumeSessionInput(sessionId: string, allProjects?: boolean): string {
 }
 
 /**
- * UI-independent turn runner for interactive OpenHorse surfaces.
+ * UI-independent turn runner for interactive Orion Code surfaces.
  *
  * Renderers own local editing, overlays, cursor, and transcript layout. This
  * controller owns the shared coding-agent semantics: one active turn at a time,

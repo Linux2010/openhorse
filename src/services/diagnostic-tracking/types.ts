@@ -1,5 +1,5 @@
 /**
- * openhorse - Diagnostic 类型定义
+ * orion code - Diagnostic 类型定义
  *
  * IDE/LSP 诊断信息的标准格式。
  */

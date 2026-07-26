@@ -1,5 +1,5 @@
 /**
- * openhorse — Model Client Pool v0.2.26
+ * orion code — Model Client Pool v0.2.26
  *
  * Manages per-provider OpenAI client instances so that /model switching
  * can atomically change endpoint, API key, and model ID without leaking

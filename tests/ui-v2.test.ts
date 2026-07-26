@@ -213,7 +213,7 @@ describe('UI v2 shell', () => {
       width: 80,
     }));
 
-    expect(header).toContain('OpenHorse v0.1.20');
+    expect(header).toContain('Orion Code v0.1.20');
     expect(header).toContain('model=glm-5');
     expect(header).toContain('provider=Qwen');
     expect(header).toContain('project=openhorse');

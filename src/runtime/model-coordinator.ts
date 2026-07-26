@@ -1,5 +1,5 @@
 /**
- * openhorse — ModelCoordinator v0.2.26
+ * orion code — ModelCoordinator v0.2.26
  *
  * Orchestrates /model switching as a transactional prepare/commit/rollback.
  * Handles preflight compact when switching to a smaller context window,

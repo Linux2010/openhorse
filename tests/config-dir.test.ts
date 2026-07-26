@@ -31,10 +31,10 @@ import { homedir } from 'os';
 describe('config-dir', () => {
   // Use a unique test directory based on timestamp to avoid conflicts
   const testDir = join(homedir(), `.openhorse-test-${Date.now()}`);
-  const originalEnv = process.env.OPENHORSE_CONFIG_DIR;
+  const originalEnv = process.env.ORION_CODE_CONFIG_DIR;
 
   beforeAll(() => {
-    process.env.OPENHORSE_CONFIG_DIR = testDir;
+    process.env.ORION_CODE_CONFIG_DIR = testDir;
     // Clean up test directory if it exists
     if (existsSync(testDir)) {
       rmSync(testDir, { recursive: true });
@@ -48,9 +48,9 @@ describe('config-dir', () => {
     }
     // Restore original env var
     if (originalEnv !== undefined) {
-      process.env.OPENHORSE_CONFIG_DIR = originalEnv;
+      process.env.ORION_CODE_CONFIG_DIR = originalEnv;
     } else {
-      delete process.env.OPENHORSE_CONFIG_DIR;
+      delete process.env.ORION_CODE_CONFIG_DIR;
     }
   });
 
@@ -81,7 +81,7 @@ describe('config-dir', () => {
 
   describe('path getters', () => {
     test('getGlobalConfigPath returns correct path', () => {
-      expect(getGlobalConfigPath()).toBe(join(testDir, 'openhorse.json'));
+      expect(getGlobalConfigPath()).toBe(join(testDir, 'orion.json'));
     });
 
     test('getSettingsPath returns correct path', () => {
@@ -89,7 +89,7 @@ describe('config-dir', () => {
     });
 
     test('getUserMemoryPath returns correct path', () => {
-      expect(getUserMemoryPath()).toBe(join(testDir, 'OPENHORSE.md'));
+      expect(getUserMemoryPath()).toBe(join(testDir, 'ORION.md'));
     });
 
     test('getHistoryPath returns correct path', () => {
@@ -143,20 +143,20 @@ describe('config-dir', () => {
     const testCwd = '/tmp/test-project';
 
     test('User memory path', () => {
-      expect(getMemoryPath('User')).toBe(join(testDir, 'OPENHORSE.md'));
+      expect(getMemoryPath('User')).toBe(join(testDir, 'ORION.md'));
     });
 
     test('Project memory path', () => {
-      expect(getMemoryPath('Project', testCwd)).toBe(join(testCwd, 'OPENHORSE.md'));
+      expect(getMemoryPath('Project', testCwd)).toBe(join(testCwd, 'ORION.md'));
     });
 
     test('Local memory path', () => {
-      expect(getMemoryPath('Local', testCwd)).toBe(join(testCwd, 'OPENHORSE.local.md'));
+      expect(getMemoryPath('Local', testCwd)).toBe(join(testCwd, 'ORION.local.md'));
     });
 
     test('Project memory uses process.cwd() when not specified', () => {
       const path = getMemoryPath('Project');
-      expect(path).toBe(join(process.cwd(), 'OPENHORSE.md'));
+      expect(path).toBe(join(process.cwd(), 'ORION.md'));
     });
   });
 

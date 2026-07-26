@@ -156,16 +156,16 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     host, port = server.server_address
     base = f"http://{host}:{port}/v1"
-    cfg = tempfile.mkdtemp(prefix="openhorse-cap-")
+    cfg = tempfile.mkdtemp(prefix="orion-code-cap-")
     master, slave = pty.openpty()
     set_window_size(slave, rows=24, cols=100)
     env = os.environ.copy()
     env.update({
-        "OPENHORSE_CONFIG_DIR": cfg, "TERM": "xterm-256color",
+        "ORION_CODE_CONFIG_DIR": cfg, "TERM": "xterm-256color",
         "NO_COLOR": "1", "FORCE_COLOR": "0",
-        "OPENHORSE_API_KEY": "sk-test", "OPENHORSE_API_BASE_URL": base,
-        "OPENHORSE_MODEL": "mock-stream",
-        "OPENHORSE_UI": "terminal", "OPENHORSE_UI_RENDERER": "terminal",
+        "ORION_CODE_API_KEY": "sk-test", "ORION_CODE_API_BASE_URL": base,
+        "ORION_CODE_MODEL": "mock-stream",
+        "ORION_CODE_UI": "terminal", "ORION_CODE_UI_RENDERER": "terminal",
     })
     proc = subprocess.Popen(["npm", "run", "start", "--", "--ui", "tui"], cwd=repo,
                             stdin=slave, stdout=slave, stderr=slave, env=env,
@@ -190,7 +190,7 @@ def main():
         deadline = time.time() + 20
         while time.time() < deadline:
             out.append(read_available(master, 0.2))
-            if b"OPENHORSE v" in b"".join(out):
+            if b"ORION CODE v" in b"".join(out):
                 break
         time.sleep(0.3)
         raw = sync()

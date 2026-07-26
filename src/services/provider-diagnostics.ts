@@ -1,4 +1,5 @@
 import { resolveModelContext } from './model-context';
+import { ENV } from '../product/environment';
 
 export type ProviderErrorType =
   | 'model_not_found'
@@ -137,17 +138,17 @@ function matchesAny(text: string, patterns: RegExp[]): boolean {
 function hintFor(type: ProviderErrorType): string {
   switch (type) {
     case 'model_not_found':
-      return 'Model was not found by the provider. Check OPENHORSE_MODEL and the provider model ID.';
+      return `Model was not found by the provider. Check ${ENV.MODEL} and the provider model ID.`;
     case 'invalid_endpoint':
-      return 'Endpoint appears invalid or unreachable. Check OPENHORSE_API_BASE_URL and use the provider OpenAI-compatible base URL.';
+      return `Endpoint appears invalid or unreachable. Check ${ENV.API_BASE_URL} and use the provider OpenAI-compatible base URL.`;
     case 'auth_failed':
-      return 'Provider authentication failed. Check OPENHORSE_API_KEY and make sure it matches the configured endpoint.';
+      return `Provider authentication failed. Check ${ENV.API_KEY} and make sure it matches the configured endpoint.`;
     case 'quota_or_credit_exhausted':
       return 'Provider quota or credit appears insufficient. Recharge the provider account or switch model/provider.';
     case 'rate_limit':
       return 'Provider rate limit was reached. Wait before retrying, reduce request rate, or switch model/provider.';
     case 'provider_busy':
-      return 'Provider is busy or overloaded. Retry later or configure OPENHORSE_FALLBACK_MODEL.';
+      return `Provider is busy or overloaded. Retry later or configure ${ENV.FALLBACK_MODEL}.`;
     case 'unknown_provider_error':
       return 'Provider request failed. Check provider status and model/endpoint configuration.';
   }

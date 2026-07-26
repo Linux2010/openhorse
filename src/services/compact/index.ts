@@ -1,5 +1,5 @@
 /**
- * openhorse - Compact 服务入口
+ * orion code - Compact 服务入口
  *
  * 导出所有压缩相关功能。
  */

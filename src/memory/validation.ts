@@ -1,5 +1,5 @@
 /**
- * openhorse - Memory Drift Validation
+ * orion code - Memory Drift Validation
  *
  * Validates that memory content references (files, symbols) still exist.
  * Prevents stale memories from causing confusion.

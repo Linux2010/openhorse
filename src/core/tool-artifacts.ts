@@ -1,5 +1,5 @@
 /**
- * openhorse - Tool Artifacts
+ * orion code - Tool Artifacts
  *
  * Store large tool outputs as disk artifacts instead of embedding them in
  * session transcripts or harness evidence. Returns a reference ID that can

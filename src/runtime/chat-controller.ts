@@ -139,7 +139,7 @@ function formatChatError(error: unknown): string {
     return [
       message,
       '',
-      'Provider quota or credit appears insufficient. The OpenHorse session is still active; switch model/provider or recharge the provider account, then continue.',
+      'Provider quota or credit appears insufficient. The Orion Code session is still active; switch model/provider or recharge the provider account, then continue.',
     ].join('\n');
   }
   return message;
@@ -702,9 +702,9 @@ function structuredToolFinishActivity(
 
 function isSyntheticCompactContext(content: string): boolean {
   return (
-    content.startsWith('[OpenHorse Context State v2]') ||
+    content.startsWith('[Orion Code Context State v2]') ||
     content.startsWith('[Context Summary]') ||
-    content.startsWith('I will continue from this OpenHorse Context State') ||
+    content.startsWith('I will continue from this Orion Code Context State') ||
     content.startsWith(
       'I understand the context. I will continue the conversation with this background information.'
     )
@@ -1724,7 +1724,7 @@ export class AgentChatController {
       this.events.append({
         role: 'error',
         content:
-          'LLM is not configured. Set OPENHORSE_API_KEY in ~/.openhorse/openhorse.json or environment.',
+          'LLM is not configured. Set ORION_CODE_API_KEY in ~/.orion-code/orion.json or environment.',
         errorLayer: 'provider',
       });
       return;

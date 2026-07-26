@@ -1,5 +1,5 @@
 /**
- * openhorse - Compact 服务
+ * orion code - Compact 服务
  *
  * 长对话压缩服务，减少上下文长度同时保留关键信息。
  * 参考 OpenClaude 的 compact/ 目录实现。
@@ -155,7 +155,7 @@ export async function compactMessages(
     });
     compactedMessages.push({
       role: 'assistant',
-      content: 'I will continue from this OpenHorse Context State and preserve its root objective, active instruction, constraints, and verification state.',
+      content: 'I will continue from this Orion Code Context State and preserve its root objective, active instruction, constraints, and verification state.',
     });
   } else if (opts.contextCapsule) {
     compactedMessages.push({

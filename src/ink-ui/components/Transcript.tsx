@@ -89,7 +89,7 @@ export function TranscriptEntryBlock({ entry, width = 80 }: { entry: TranscriptE
   );
 }
 
-export function Transcript({ entries, maxItems, width = 80, emptyMessage = 'OpenHorse is ready.' }: TranscriptProps): JSX.Element {
+export function Transcript({ entries, maxItems, width = 80, emptyMessage = 'Orion Code is ready.' }: TranscriptProps): JSX.Element {
   const visible = typeof maxItems === 'number'
     ? entries.slice(Math.max(0, entries.length - maxItems))
     : entries;

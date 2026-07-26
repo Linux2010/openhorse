@@ -1,5 +1,5 @@
 /**
- * openhorse - SDK Sessions
+ * orion code - SDK Sessions
  *
  * v0.1.11: SDK 会话管理函数
  */

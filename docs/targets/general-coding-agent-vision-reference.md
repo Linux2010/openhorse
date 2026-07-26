@@ -1,15 +1,15 @@
-# OpenHorse 一流 Coding-Agent 终极目标企划书
+# Orion Code 一流 Coding-Agent 终极目标企划书
 
 ## 文档状态
 
 - 状态：Target / North Star
 - 日期：2026-06-19
 - 目标版本区间：v0.2.x 之后持续演进
-- 核心目标：将 OpenHorse 打造成与 Codex、Claude Code 比肩的一流 coding-agent。
+- 核心目标：将 Orion Code 打造成与 Codex、Claude Code 比肩的一流 coding-agent。
 
 ## 北极星
 
-OpenHorse 的终极形态不是“会聊天的 CLI”，而是一个能持续理解用户目标、读懂真实工程、规划并执行代码变更、验证结果、沉淀上下文、可被安全扩展的专业 coding-agent。
+Orion Code 的终极形态不是“会聊天的 CLI”，而是一个能持续理解用户目标、读懂真实工程、规划并执行代码变更、验证结果、沉淀上下文、可被安全扩展的专业 coding-agent。
 
 它应当做到：
 
@@ -25,13 +25,13 @@ Codex 官方最佳实践强调：强 coding-agent 需要清晰任务上下文、
 
 Claude Code 官方将核心抽象为 agentic loop：收集上下文、采取行动、验证结果，并可被用户随时打断和修正。其工具能力覆盖文件、搜索、命令执行、web、代码智能；其会话能力覆盖本地 JSONL、resume/fork、context compact、CLAUDE.md、memory、skills、subagents、permissions 和 checkpoints。
 
-对 OpenHorse 的启发是：一流 coding-agent 的竞争力不只在模型，而在 harness、工具、上下文、验证、安全、UI 和可扩展生态的系统工程。
+对 Orion Code 的启发是：一流 coding-agent 的竞争力不只在模型，而在 harness、工具、上下文、验证、安全、UI 和可扩展生态的系统工程。
 
 ## 能力目标
 
 ### 1. 专业编码能力
 
-OpenHorse 必须能完成完整工程闭环，而不仅是生成片段。
+Orion Code 必须能完成完整工程闭环，而不仅是生成片段。
 
 - 代码库探索：快速识别架构、模块边界、关键路径、测试入口和运行方式。
 - 代码修改：可靠读写、精确编辑、跨文件重构、迁移 API、补齐类型、更新文档。
@@ -44,7 +44,7 @@ OpenHorse 必须能完成完整工程闭环，而不仅是生成片段。
 
 ### 2. 用户意图理解与 Harness
 
-OpenHorse 要有稳定的任务 contract，而不是把最新一句话粗暴当作全部目标。
+Orion Code 要有稳定的任务 contract，而不是把最新一句话粗暴当作全部目标。
 
 - 维护 `rootObjective`、`activeInstruction`、constraints、non-goals、open questions、verification state。
 - 区分新任务、补充、纠错、验证、配置、闲聊反馈。
@@ -94,19 +94,19 @@ CLI UI 是 coding-agent 的工作台，不应污染 runtime。
 
 ### 6. Session、Memory 与 Project Guidance
 
-OpenHorse 必须记住该记住的东西，也必须知道什么不该塞进上下文。
+Orion Code 必须记住该记住的东西，也必须知道什么不该塞进上下文。
 
-- Session 存储在 `~/.openhorse/`，按 projectKey 隔离，支持多 session picker、rename、冲突提示、恢复指定 session。
+- Session 存储在 `~/.orion-code/`，按 projectKey 隔离，支持多 session picker、rename、冲突提示、恢复指定 session。
 - Transcript 与 harness sidecar 分离：聊天历史、任务状态、证据索引、turn summaries 独立持久化。
 - 支持 compact：自动/手动 compact 输出结构化 state，再输出自然语言 summary。
-- 支持 project guidance：`AGENTS.md`、OpenHorse 自有指导文件、skills 说明按层级加载。
+- 支持 project guidance：`AGENTS.md`、Orion Code 自有指导文件、skills 说明按层级加载。
 - Memory：保存稳定偏好、项目事实和反复出现的决策，避免保存秘密和短期噪声。
 
 验收标准：resume 后能看到应显示的历史，并能继续正确任务；compact 前的旧细节可不展示但语义要保留。
 
 ### 7. Skills、MCP、Hooks 与插件生态
 
-OpenHorse 要从“单体 CLI”进化为可扩展 agent platform。
+Orion Code 要从“单体 CLI”进化为可扩展 agent platform。
 
 - Skills：支持 repo/user/system scope，metadata 轻量入模，按需加载 `SKILL.md`、references、scripts。
 - MCP：支持 stdio/http MCP server，工具发现、资源读取、prompts、auth、tool approval policy。
@@ -133,7 +133,7 @@ OpenHorse 要从“单体 CLI”进化为可扩展 agent platform。
 
 一流 coding-agent 不只服务交互式本地会话。
 
-- Non-interactive：长期目标是提供 `openhorse exec` / print renderer，输出机器可读 JSON，适合 CI 和脚本；当前 v0.2.x 只把它作为后续 renderer 目标和协议验证方向。
+- Non-interactive：长期目标是提供 `orion exec` / print renderer，输出机器可读 JSON，适合 CI 和脚本；当前 v0.2.x 只把它作为后续 renderer 目标和协议验证方向。
 - Remote control：UI 和 runtime 通过事件协议分离，为后续远程 TUI/web/Telegram 等入口留接口；远程入口不得复制 agent/harness/tool/session 逻辑。
 - GitHub 工作流：PR review、CI failure fix、commit plan、release notes 自动化。
 - Scheduled tasks：支持定时检查、回归测试、依赖升级提醒。
@@ -214,11 +214,11 @@ Capabilities
 
 ## 一流标准
 
-OpenHorse 达到目标时，应满足：
+Orion Code 达到目标时，应满足：
 
-- 用户给模糊目标，OpenHorse 能主动探索、澄清、计划并执行。
-- 用户多次中断修正，OpenHorse 不跑偏，且 session 不被污染。
-- 用户退出、compact、resume 后，OpenHorse 仍知道核心目标和下一步。
+- 用户给模糊目标，Orion Code 能主动探索、澄清、计划并执行。
+- 用户多次中断修正，Orion Code 不跑偏，且 session 不被污染。
+- 用户退出、compact、resume 后，Orion Code 仍知道核心目标和下一步。
 - 工具调用有序、可取消、可审计、可复现。
 - UI 长时间使用不串屏、不丢历史、不影响 agent 行为。
 - 项目约定、skills、MCP、memory 能自然参与任务，不挤爆上下文。

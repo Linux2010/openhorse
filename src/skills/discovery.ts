@@ -1,5 +1,5 @@
 /**
- * openhorse - Skills Discovery
+ * orion code - Skills Discovery
  *
  * 自动发现和热重载机制
  */

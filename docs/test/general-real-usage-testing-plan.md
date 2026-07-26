@@ -1,8 +1,8 @@
-# OpenHorse 真实使用测试技术方案
+# Orion Code 真实使用测试技术方案
 
 ## 目标
 
-真实使用测试用于验证 OpenHorse 在开发者日常工作流中的稳定性，而不是只验证单个函数或 mock 场景。重点覆盖：
+真实使用测试用于验证 Orion Code 在开发者日常工作流中的稳定性，而不是只验证单个函数或 mock 场景。重点覆盖：
 
 - CLI UI 是否可连续使用，不清屏、不串屏、不污染对话历史。
 - agent loop 是否能完成真实编码任务，并控制不必要的模型交互。
@@ -62,7 +62,7 @@ npm run start -- --ui ink
 如需保存证据，可用：
 
 ```bash
-script -q /tmp/openhorse-real-test.log npm run start
+script -q /tmp/orion-real-test.log npm run start
 ```
 
 注意不要把 API key、完整私有路径、未脱敏 tool output 提交到仓库。
@@ -116,7 +116,7 @@ Ink 当前是 beta renderer。若 terminal UI 正常但 Ink 异常，应归类�
 每次真实测试保存一份记录，建议放在 `docs/exp/runs/` 或 issue/PR 描述中：
 
 ```markdown
-## OpenHorse Real Usage Test
+## Orion Code Real Usage Test
 
 - Version:
 - Branch:
@@ -158,7 +158,7 @@ Ink 当前是 beta renderer。若 terminal UI 正常但 Ink 异常，应归类�
 - `tool`：命令退出码、路径错误、权限策略、tool result 截断。
 - `session`：resume 后历史缺失、session id 不一致、meta/messages 不一致。
 - `harness`：root objective 丢失、短反馈覆盖主目标、compact 后不能继续。
-- `storage`：`~/.openhorse/projects/<project>/` 下 memory/session/artifacts/checkpoints 不一致。
+- `storage`：`~/.orion-code/projects/<project>/` 下 memory/session/artifacts/checkpoints 不一致。
 
 ## 发布前验收线
 

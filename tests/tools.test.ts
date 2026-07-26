@@ -133,11 +133,11 @@ describe('read_file tool', () => {
   test('reads existing file successfully', async () => {
     const result = await tool.execute({ path: 'package.json' }, ctx);
     expect(result.success).toBe(true);
-    expect(result.output).toContain('openhorse');
+    expect(result.output).toContain('orion-code');
   });
 
   test('reads markdown link paths outside the project', async () => {
-    const dir = fs.mkdtempSync(path.join(tmpdir(), 'openhorse-tool-path-'));
+    const dir = fs.mkdtempSync(path.join(tmpdir(), 'orion-code-tool-path-'));
     const file = path.join(dir, 'SKILL.md');
     fs.writeFileSync(file, 'skill body', 'utf-8');
 
@@ -152,7 +152,7 @@ describe('read_file tool', () => {
   });
 
   test('reads file URL paths with encoded characters', async () => {
-    const dir = fs.mkdtempSync(path.join(tmpdir(), 'openhorse-tool-url-'));
+    const dir = fs.mkdtempSync(path.join(tmpdir(), 'orion-code-tool-url-'));
     const file = path.join(dir, 'space file.md');
     fs.writeFileSync(file, 'url body', 'utf-8');
 
@@ -253,7 +253,7 @@ describe('list_files tool', () => {
   });
 
   test('lists markdown link paths outside the project', async () => {
-    const dir = fs.mkdtempSync(path.join(tmpdir(), 'openhorse-tool-list-'));
+    const dir = fs.mkdtempSync(path.join(tmpdir(), 'orion-code-tool-list-'));
     fs.writeFileSync(path.join(dir, 'item.txt'), 'listed', 'utf-8');
 
     try {
@@ -352,7 +352,7 @@ describe('exec_command tool', () => {
   });
 
   test('resolves relative cwd from ToolContext.cwd', async () => {
-    const dir = fs.mkdtempSync(path.join(tmpdir(), 'openhorse-tool-exec-'));
+    const dir = fs.mkdtempSync(path.join(tmpdir(), 'orion-code-tool-exec-'));
     fs.mkdirSync(path.join(dir, 'child'));
 
     try {
@@ -374,7 +374,7 @@ describe('executeTool', () => {
     const result = await executeTool('read_file', { path: 'package.json' });
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(true);
-    expect(parsed.output).toContain('openhorse');
+    expect(parsed.output).toContain('orion-code');
     expect(parsed.summary).toContain('read package.json');
     expect(parsed.outputBytes).toBeGreaterThan(0);
   });
@@ -692,7 +692,7 @@ describe('edit_file tool', () => {
   });
 
   test('edits markdown link paths outside the project', async () => {
-    const dir = fs.mkdtempSync(path.join(tmpdir(), 'openhorse-tool-edit-'));
+    const dir = fs.mkdtempSync(path.join(tmpdir(), 'orion-code-tool-edit-'));
     const file = path.join(dir, 'SKILL.md');
     fs.writeFileSync(file, 'old skill body', 'utf-8');
 
@@ -729,7 +729,7 @@ describe('glob tool', () => {
   });
 
   test('resolves search path from ToolContext.cwd', async () => {
-    const dir = fs.mkdtempSync(path.join(tmpdir(), 'openhorse-tool-glob-'));
+    const dir = fs.mkdtempSync(path.join(tmpdir(), 'orion-code-tool-glob-'));
     fs.mkdirSync(path.join(dir, 'src'));
     fs.writeFileSync(path.join(dir, 'src', 'local.ts'), 'export {}', 'utf-8');
 
@@ -773,13 +773,13 @@ describe('grep tool', () => {
   });
 
   test('finds pattern in files', async () => {
-    const result = await tool.execute({ pattern: 'openhorse', path: 'package.json' }, ctx);
+    const result = await tool.execute({ pattern: 'orion-code', path: 'package.json' }, ctx);
     expect(result.success).toBe(true);
-    expect(result.output).toContain('openhorse');
+    expect(result.output).toContain('orion-code');
   });
 
   test('resolves search path from ToolContext.cwd', async () => {
-    const dir = fs.mkdtempSync(path.join(tmpdir(), 'openhorse-tool-grep-'));
+    const dir = fs.mkdtempSync(path.join(tmpdir(), 'orion-code-tool-grep-'));
     fs.mkdirSync(path.join(dir, 'docs'));
     fs.writeFileSync(path.join(dir, 'docs', 'note.txt'), 'needle from cwd', 'utf-8');
 

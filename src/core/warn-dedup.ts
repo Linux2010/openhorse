@@ -1,5 +1,5 @@
 /**
- * openhorse - Warning Deduplication
+ * orion code - Warning Deduplication
  *
  * Suppresses repeated console warnings in CI and interactive sessions.
  * Each unique warning key is emitted once, with a counter for subsequent

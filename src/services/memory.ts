@@ -1,5 +1,5 @@
 /**
- * openhorse - Memory 文件加载
+ * orion code - Memory 文件加载
  *
  * Memory 层级：Local > Project > User
  * 后加载覆盖前加载。

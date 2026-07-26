@@ -24,7 +24,7 @@ export function openExternalEditor(options: EditorOptions = {}): EditorResult {
   const editor = selectEditor(options.env);
   const spawn = options.spawnSync ?? nodeSpawnSync;
   // v0.2.23: unique temp dir with random component to avoid collisions.
-  const dir = mkdtempSync(join(tmpdir(), `openhorse-edit-${randomUUID().slice(0, 8)}-`));
+  const dir = mkdtempSync(join(tmpdir(), `orion-code-edit-${randomUUID().slice(0, 8)}-`));
   const file = join(dir, 'prompt.md');
 
   try {

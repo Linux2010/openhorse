@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-OpenHorse is a TypeScript CLI and agent harness. Source lives in `src/`, with the CLI entry point at `src/cli.ts` and public exports in `src/index.ts`. Key areas include `src/core/` for agent state, `src/framework/` for query/tool abstractions, `src/services/` for configuration, LLM, storage, and MCP services, `src/tools/` for tool implementations, `src/ui/` for terminal UI helpers, and `src/skills/` for built-in skills. Jest tests are in `tests/*.test.ts`; runtime smoke scripts are in `test-runtime/`. Docs and release notes are under `docs/`. Treat `dist/` as generated build output.
+Orion Code is a TypeScript CLI and agent harness. Source lives in `src/`, with the CLI entry point at `src/cli.ts` and public exports in `src/index.ts`. Key areas include `src/core/` for agent state, `src/framework/` for query/tool abstractions, `src/services/` for configuration, LLM, storage, and MCP services, `src/tools/` for tool implementations, `src/ui/` for terminal UI helpers, and `src/skills/` for built-in skills. Jest tests are in `tests/*.test.ts`; runtime smoke scripts are in `test-runtime/`. Docs and release notes are under `docs/`. Treat `dist/` as generated build output.
 
 ## Build, Test, and Development Commands
 
@@ -29,7 +29,10 @@ Use Conventional Commits, matching history: `feat:`, `fix:`, `docs:`, `test:`, `
 
 ## Security & Configuration Tips
 
-Do not commit `.env`, local config, generated databases, or secrets. Use `.env.example` and `docs/openhorse.example.json` as references for configuration. Review changes to `src/tools/bash_security.ts`, auth services, MCP transports, and file-writing utilities carefully because they affect command execution and local system access.
+Do not commit `.env`, local config, generated databases, or secrets. Use `.env.example` and `docs/orion.example.json` as references for configuration. Review changes to `src/tools/bash_security.ts`, auth services, MCP transports, and file-writing utilities carefully because they affect command execution and local system access.
+
+
+OH_TERMINAL_AGENT_RULE_MARKER_20260619
 
 
 OH_TERMINAL_AGENT_RULE_MARKER_20260619

@@ -115,7 +115,7 @@ describe('Context Harness v2 intent and assembly', () => {
     }
 
     const built = buildHarnessContext(harness.toJSON(), 'gpt-4o', { evidenceBudgetRatio: 0.01 }, { input: '继续验证 harness' });
-    expect(built.text).toContain('OpenHorse Context Harness v2');
+    expect(built.text).toContain('Orion Code Context Harness v2');
     expect(built.text).toContain('实现长会话 harness');
     expect(built.stats.budgetTokens).toBeGreaterThan(0);
     expect(built.stats.includedEvidence.length).toBeGreaterThan(0);

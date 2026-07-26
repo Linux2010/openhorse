@@ -1,5 +1,5 @@
 /**
- * openhorse - Token estimation utilities
+ * orion code - Token estimation utilities
  *
  * Accurate token estimation that accounts for CJK characters,
  * which have significantly different token ratios than ASCII text.

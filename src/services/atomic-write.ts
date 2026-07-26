@@ -1,5 +1,5 @@
 /**
- * openhorse - Atomic File Write
+ * orion code - Atomic File Write
  *
  * Writes to a temp file then renames to the target path. POSIX rename is
  * atomic, so readers either see the old content or the full new content,

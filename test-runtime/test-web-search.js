@@ -14,7 +14,7 @@ if (!searchTool) {
 console.log('✓ web_search tool found');
 
 // Test: search query (may fail due to network)
-const result = searchTool.execute({ query: 'openhorse npm package' });
+const result = searchTool.execute({ query: 'orion-code npm package' });
 result.then(r => {
   console.log('\nTest: web_search query');
   console.log('  success:', r.success);

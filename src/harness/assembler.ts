@@ -90,7 +90,7 @@ export function buildHarnessContext(
   const rootObjective = state.rootObjective ?? contract?.objective;
   const activeInstruction = state.activeInstruction ?? contract?.userIntent;
   const latestIntent = state.intentHistory?.[state.intentHistory.length - 1];
-  const coreLines: string[] = ['[OpenHorse Context Harness v2]'];
+  const coreLines: string[] = ['[Orion Code Context Harness v2]'];
   coreLines.push(`Task epoch: ${state.taskEpoch ?? 1}`);
   if (rootObjective) coreLines.push(`Root objective: ${compact(rootObjective, 260)}`);
   if (activeInstruction) coreLines.push(`Active instruction: ${compact(activeInstruction, 320)}`);

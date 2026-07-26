@@ -17,13 +17,13 @@ const testHome = mkdtempSync(join(tmpdir(), 'openhorse-session-consistency-'));
 const projectsDir = join(testHome, 'projects');
 mkdirSync(projectsDir, { recursive: true });
 
-const originalEnv = process.env.OPENHORSE_CONFIG_DIR;
+const originalEnv = process.env.ORION_CODE_CONFIG_DIR;
 beforeAll(() => {
-  process.env.OPENHORSE_CONFIG_DIR = testHome;
+  process.env.ORION_CODE_CONFIG_DIR = testHome;
 });
 afterAll(() => {
-  if (originalEnv) process.env.OPENHORSE_CONFIG_DIR = originalEnv;
-  else delete process.env.OPENHORSE_CONFIG_DIR;
+  if (originalEnv) process.env.ORION_CODE_CONFIG_DIR = originalEnv;
+  else delete process.env.ORION_CODE_CONFIG_DIR;
   rmSync(testHome, { recursive: true, force: true });
 });
 

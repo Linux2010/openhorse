@@ -1,9 +1,8 @@
 /**
- * openhorse - 全局配置管理
+ * Orion Code - global configuration management.
  *
- * 用户只需配置少量核心项，其他参数由 Agent 内部智能控制。
- * 配置存储在 ~/.openhorse/openhorse.json
- * 支持环境变量覆盖配置值。
+ * Config stored in ~/.orion-code/orion.json
+ * Environment variable overrides use ORION_CODE_ prefix.
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'fs';
@@ -39,7 +38,7 @@ export type UIConfirmationMode = 'config' | 'interactive';
 
 /** UI configuration that is safe to persist globally. */
 export interface UIConfig {
-  /** Runtime-only renderer override. This is ignored in openhorse.json. */
+  /** Runtime-only renderer override. This is ignored in orion.json. */
   renderer?: UIRenderer;
   /** Whether confirmations are handled by config fallback or interactive UI. */
   confirmations?: UIConfirmationMode;
@@ -86,7 +85,7 @@ export interface AgentLoopBudgetConfig {
 }
 
 export interface AgentLoopConfig {
-  /** Optional budget overrides. OpenHorse may still raise defaults for complex tasks. */
+  /** Optional budget overrides. Orion Code may still raise defaults for complex tasks. */
   budget?: AgentLoopBudgetConfig;
 }
 
@@ -117,7 +116,7 @@ export interface SubagentUserConfig {
 export interface CostConfig {
   /** Per-model overrides for providers that do not return billed cost. */
   modelPricing?: Record<string, ModelPricing>;
-  /** Fallback for unknown models. Omit to use OpenHorse's conservative estimate. */
+  /** Fallback for unknown models. Omit to use Orion Code's conservative estimate. */
   defaultPricing?: ModelPricing;
 }
 

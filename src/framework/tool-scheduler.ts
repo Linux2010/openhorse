@@ -1,5 +1,5 @@
 /**
- * openhorse - Tool Scheduler
+ * orion code - Tool Scheduler
  *
  * Extracts tool grouping, permission checks, concurrent execution, and
  * ordered result emission from query.ts into a testable module.

@@ -110,10 +110,10 @@ describe('print mode event sink', () => {
   });
 
   it('uses non-interactive renderer capabilities for resume fallback', async () => {
-    const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
-    const root = mkdtempSync(join(tmpdir(), 'openhorse-print-mode-'));
+    const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    const root = mkdtempSync(join(tmpdir(), 'orion-code-print-mode-'));
     const projectDir = join(root, 'project');
-    process.env.OPENHORSE_CONFIG_DIR = join(root, 'config');
+    process.env.ORION_CODE_CONFIG_DIR = join(root, 'config');
 
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -154,9 +154,9 @@ describe('print mode event sink', () => {
       stdoutSpy.mockRestore();
       stderrSpy.mockRestore();
       if (previousConfigDir === undefined) {
-        delete process.env.OPENHORSE_CONFIG_DIR;
+        delete process.env.ORION_CODE_CONFIG_DIR;
       } else {
-        process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+        process.env.ORION_CODE_CONFIG_DIR = previousConfigDir;
       }
       rmSync(root, { recursive: true, force: true });
     }

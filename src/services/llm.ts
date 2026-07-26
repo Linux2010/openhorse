@@ -1,5 +1,5 @@
 /**
- * openhorse - LLM 服务层
+ * orion code - LLM 服务层
  *
  * 封装 OpenAI 兼容 API，支持流式和非流式调用。
  * 兼容 OpenAI、Claude (via proxy)、本地 Ollama 等。
@@ -366,7 +366,7 @@ export class LLMService {
   resilience?: import('./provider-resilience').ProviderResilienceCoordinator;
 
   constructor(config: LLMConfig) {
-    // v0.2.25: disable SDK built-in retry (maxRetries=0). OpenHorse owns retry policy.
+    // v0.2.25: disable SDK built-in retry (maxRetries=0). Orion Code owns retry policy.
     this.client = new OpenAI({
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
@@ -574,7 +574,7 @@ export class LLMService {
               throwIfAborted(signal);
 
               // Debug: log raw chunk when tool_calls present
-              if (process.env.OPENHORSE_DEBUG_TOOLS === 'true') {
+              if (process.env.ORION_CODE_DEBUG_TOOLS === 'true') {
                 const delta = chunk.choices?.[0]?.delta;
                 if (delta?.tool_calls || chunk.choices?.[0]?.message?.tool_calls) {
                   console.log('[DEBUG] Raw chunk:', JSON.stringify(chunk, null, 2));
@@ -721,7 +721,7 @@ export class LLMService {
             throwIfAborted(options?.abortSignal);
 
             // Debug: log raw chunk when tool_calls present (for diagnosing API compatibility)
-            if (process.env.OPENHORSE_DEBUG_TOOLS === 'true') {
+            if (process.env.ORION_CODE_DEBUG_TOOLS === 'true') {
               const delta = chunk.choices?.[0]?.delta;
               if (delta?.tool_calls || chunk.choices?.[0]?.message?.tool_calls) {
                 console.log('[DEBUG] Raw chunk:', JSON.stringify(chunk, null, 2));

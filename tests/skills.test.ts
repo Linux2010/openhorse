@@ -16,7 +16,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 
 const originalCwd = process.cwd();
-const originalConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
 
 function makeTool(name: string): OpenHorseTool {
   return buildTool({
@@ -36,9 +36,9 @@ function writeSkill(root: string, name: string, body: string): void {
 afterEach(() => {
   process.chdir(originalCwd);
   if (originalConfigDir !== undefined) {
-    process.env.OPENHORSE_CONFIG_DIR = originalConfigDir;
+    process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
   } else {
-    delete process.env.OPENHORSE_CONFIG_DIR;
+    delete process.env.ORION_CODE_CONFIG_DIR;
   }
   resetSkillsRegistry();
 });
@@ -110,7 +110,7 @@ Automated GitHub contribution workflow.
 ## Usage
 Run the workflow.`;
 
-    const skill = parseSkillFile(content, '/Users/hope/.openhorse/skills/github-contribution/SKILL.md');
+    const skill = parseSkillFile(content, '/Users/hope/.orion-code/skills/github-contribution/SKILL.md');
 
     expect(skill?.name).toBe('github-contribution');
     expect(skill?.description).toBe('Automated GitHub contribution workflow.');
@@ -253,10 +253,10 @@ describe('Skills runtime', () => {
     mkdirSync(configDir, { recursive: true });
     mkdirSync(projectDir, { recursive: true });
 
-    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.chdir(projectDir);
 
-    writeFileSync(join(configDir, 'openhorse.json'), JSON.stringify({
+    writeFileSync(join(configDir, 'orion.json'), JSON.stringify({
       defaultModel: 'gpt-4o',
       skills: { paths: [externalRoot] },
     }), 'utf-8');
@@ -306,9 +306,9 @@ No trigger prompt`);
     mkdirSync(configDir, { recursive: true });
     mkdirSync(projectDir, { recursive: true });
 
-    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.chdir(projectDir);
-    writeFileSync(join(configDir, 'openhorse.json'), JSON.stringify({
+    writeFileSync(join(configDir, 'orion.json'), JSON.stringify({
       defaultModel: 'gpt-4o',
     }), 'utf-8');
     writeSkill(externalRoot, 'chronicle', `---
@@ -399,10 +399,10 @@ ${'x'.repeat(MAX_EXPLICIT_SKILL_BYTES)}`);
     mkdirSync(configDir, { recursive: true });
     mkdirSync(projectDir, { recursive: true });
 
-    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.chdir(projectDir);
 
-    writeFileSync(join(configDir, 'openhorse.json'), JSON.stringify({
+    writeFileSync(join(configDir, 'orion.json'), JSON.stringify({
       defaultModel: 'gpt-4o',
       skills: { paths: [externalRoot] },
     }), 'utf-8');
@@ -461,10 +461,10 @@ Squad prompt`);
     mkdirSync(configDir, { recursive: true });
     mkdirSync(projectDir, { recursive: true });
 
-    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.chdir(projectDir);
 
-    writeFileSync(join(configDir, 'openhorse.json'), JSON.stringify({
+    writeFileSync(join(configDir, 'orion.json'), JSON.stringify({
       defaultModel: 'gpt-4o',
       skills: { paths: [externalRoot] },
     }), 'utf-8');
@@ -498,7 +498,7 @@ Squad prompt`);
     mkdirSync(configDir, { recursive: true });
     mkdirSync(projectDir, { recursive: true });
 
-    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.chdir(projectDir);
 
     writeSkill(join(configDir, 'skills'), 'code-review', `---
@@ -509,7 +509,7 @@ priority: 100
 ---
 User skill prompt`);
 
-    writeSkill(join(projectDir, '.openhorse', 'skills'), 'code-review', `---
+    writeSkill(join(projectDir, '.orion-code', 'skills'), 'code-review', `---
 name: code-review
 description: Project review
 trigger: /review
@@ -537,10 +537,10 @@ Project skill prompt`);
     mkdirSync(configDir, { recursive: true });
     mkdirSync(projectDir, { recursive: true });
 
-    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.chdir(projectDir);
 
-    writeFileSync(join(configDir, 'openhorse.json'), JSON.stringify({
+    writeFileSync(join(configDir, 'orion.json'), JSON.stringify({
       defaultModel: 'gpt-4o',
       skills: {
         paths: [externalRoot, directSkillDir],
@@ -582,10 +582,10 @@ Direct prompt`, 'utf-8');
     mkdirSync(configDir, { recursive: true });
     mkdirSync(projectDir, { recursive: true });
 
-    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.chdir(projectDir);
 
-    writeFileSync(join(configDir, 'openhorse.json'), JSON.stringify({
+    writeFileSync(join(configDir, 'orion.json'), JSON.stringify({
       defaultModel: 'gpt-4o',
       skills: {
         paths: [externalRoot],
@@ -600,7 +600,7 @@ priority: 100
 ---
 Configured skill prompt`);
 
-    writeSkill(join(projectDir, '.openhorse', 'skills'), 'code-review', `---
+    writeSkill(join(projectDir, '.orion-code', 'skills'), 'code-review', `---
 name: code-review
 description: Project review
 trigger: /review
@@ -626,10 +626,10 @@ Project skill prompt`);
     mkdirSync(configDir, { recursive: true });
     mkdirSync(projectDir, { recursive: true });
 
-    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.chdir(projectDir);
 
-    writeFileSync(join(configDir, 'openhorse.json'), JSON.stringify({
+    writeFileSync(join(configDir, 'orion.json'), JSON.stringify({
       defaultModel: 'gpt-4o',
       skills: {
         paths: [externalRoot],
@@ -644,7 +644,7 @@ priority: 100
 ---
 Configured skill prompt`);
 
-    writeSkill(join(projectDir, '.openhorse', 'skills'), 'code-review', `---
+    writeSkill(join(projectDir, '.orion-code', 'skills'), 'code-review', `---
 name: code-review
 description: Project review
 trigger: /review

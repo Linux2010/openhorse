@@ -1,5 +1,5 @@
 /**
- * openhorse - Git 工具
+ * orion code - Git 工具
  *
  * Issue #18/#23 修复：安全执行 git push，自动验证 git status
  * v0.1.11: Git 操作验证 - push 后自动验证工作区状态，未追踪文件警告

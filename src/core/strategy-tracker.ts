@@ -1,5 +1,5 @@
 /**
- * openhorse - Strategy Tracker
+ * orion code - Strategy Tracker
  *
  * Tracks attempted strategies during agent loop to support
  * alternative approaches when failures occur.

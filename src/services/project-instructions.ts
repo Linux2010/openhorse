@@ -20,7 +20,7 @@ const DEFAULT_MAX_TOTAL_CHARS = 96_000;
 const DIRECT_FILES = [
   'AGENTS.md',
   'CLAUDE.md',
-  '.openhorse/instructions.md',
+  '.orion-code/instructions.md',
   '.cursorrules',
 ];
 

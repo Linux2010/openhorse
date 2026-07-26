@@ -16,7 +16,7 @@ function latestRealUserMessage(messages?: TranscriptMessage[]): string | undefin
   const users = (messages ?? [])
     .filter(message => message.role === 'user' && message.content.trim())
     .filter(message => !message.content.startsWith('[Context Summary]'))
-    .filter(message => !message.content.startsWith('[OpenHorse Context State v2]'))
+    .filter(message => !message.content.startsWith('[Orion Code Context State v2]'))
     .filter(message => !message.content.startsWith('## Context Capsule'));
   return users[users.length - 1]?.content;
 }
@@ -25,7 +25,7 @@ function firstRealUserMessage(messages?: TranscriptMessage[]): string | undefine
   return (messages ?? [])
     .filter(message => message.role === 'user' && message.content.trim())
     .filter(message => !message.content.startsWith('[Context Summary]'))
-    .filter(message => !message.content.startsWith('[OpenHorse Context State v2]'))
+    .filter(message => !message.content.startsWith('[Orion Code Context State v2]'))
     .filter(message => !message.content.startsWith('## Context Capsule'))[0]?.content;
 }
 

@@ -178,12 +178,12 @@ describe('VectorStore', () => {
     expect(store.getAll(orphanProject)).toHaveLength(0);
   });
 
-  test('default database path follows OPENHORSE_CONFIG_DIR', () => {
-    const originalConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+  test('default database path follows ORION_CODE_CONFIG_DIR', () => {
+    const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
     const originalConfigHome = process.env.OPENHORSE_CONFIG_HOME;
-    const configDir = mkdtempSync(join(tmpdir(), 'openhorse-vector-config-'));
+    const configDir = mkdtempSync(join(tmpdir(), 'orion-code-vector-config-'));
     delete process.env.OPENHORSE_CONFIG_HOME;
-    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
 
     const defaultStore = new VectorStore();
     try {
@@ -192,9 +192,9 @@ describe('VectorStore', () => {
       defaultStore.close();
       rmSync(configDir, { recursive: true, force: true });
       if (originalConfigDir === undefined) {
-        delete process.env.OPENHORSE_CONFIG_DIR;
+        delete process.env.ORION_CODE_CONFIG_DIR;
       } else {
-        process.env.OPENHORSE_CONFIG_DIR = originalConfigDir;
+        process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
       }
       if (originalConfigHome === undefined) {
         delete process.env.OPENHORSE_CONFIG_HOME;

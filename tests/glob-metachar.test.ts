@@ -21,7 +21,7 @@ import { tmpdir } from 'os';
 const TOOLS = require('../src/tools').TOOLS;
 const globTool = TOOLS.find((t: any) => t.name === 'glob');
 
-const ctx = { cwd: process.cwd(), config: { name: 'openhorse', mode: 'development' } };
+const ctx = { cwd: process.cwd(), config: { name: 'orion-code', mode: 'development' } };
 
 describe('glob tool metacharacters & depth (bug-hunt round 11)', () => {
   let dir: string;

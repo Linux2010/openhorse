@@ -16,14 +16,14 @@ function baseConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHorseCLICo
 }
 
 function cleanEnv() {
-  delete process.env.OPENHORSE_WEBSEARCH_API_KEY;
-  delete process.env.OPENHORSE_WEBSEARCH_PROVIDER;
-  delete process.env.OPENHORSE_WEBSEARCH_MCP_PROVIDER;
-  delete process.env.OPENHORSE_WEBSEARCH_MCP_ENDPOINT;
-  delete process.env.OPENHORSE_WEBSEARCH_MCP_TOOL;
-  delete process.env.OPENHORSE_WEBSEARCH_AUTH_TYPE;
-  delete process.env.OPENHORSE_WEBSEARCH_API_KEY_HEADER;
-  delete process.env.OPENHORSE_WEBSEARCH_API_KEY_QUERY_PARAM;
+  delete process.env.ORION_CODE_WEBSEARCH_API_KEY;
+  delete process.env.ORION_CODE_WEBSEARCH_PROVIDER;
+  delete process.env.ORION_CODE_WEBSEARCH_MCP_PROVIDER;
+  delete process.env.ORION_CODE_WEBSEARCH_MCP_ENDPOINT;
+  delete process.env.ORION_CODE_WEBSEARCH_MCP_TOOL;
+  delete process.env.ORION_CODE_WEBSEARCH_AUTH_TYPE;
+  delete process.env.ORION_CODE_WEBSEARCH_API_KEY_HEADER;
+  delete process.env.ORION_CODE_WEBSEARCH_API_KEY_QUERY_PARAM;
   delete process.env.DASHSCOPE_API_KEY;
   delete process.env.GLM_API_KEY;
   delete process.env.ZHIPU_API_KEY;

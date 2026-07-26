@@ -394,8 +394,8 @@ describe('/status context diagnostics', () => {
   });
 
   it('shows a structured turn timeline from /trace', async () => {
-    const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
-    process.env.OPENHORSE_CONFIG_DIR = join(root, 'config');
+    const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    process.env.ORION_CODE_CONFIG_DIR = join(root, 'config');
     try {
       const cwd = join(root, 'packages', 'cli');
       const config = loadConfig({ apiKey: 'test-key' });
@@ -602,16 +602,16 @@ describe('/status context diagnostics', () => {
       expect(rendered).toContain('complete finish=budget_exceeded llm=1 tools=1 budgetProfile=config/release(1/96llm,1/360tools,128 KBvisible,frag=4,override=yes) budget=LLM request budget 24 reached next=reply_continue,narrow_instruction,inspect_loop_stats,raise_budget hint=Reply `继续` to continue the same objective.');
     } finally {
       if (previousConfigDir === undefined) {
-        delete process.env.OPENHORSE_CONFIG_DIR;
+        delete process.env.ORION_CODE_CONFIG_DIR;
       } else {
-        process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+        process.env.ORION_CODE_CONFIG_DIR = previousConfigDir;
       }
     }
   });
 
   it('shows the latest tool details and inspection hints from /last-tool', async () => {
-    const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
-    process.env.OPENHORSE_CONFIG_DIR = join(root, 'config-last-tool');
+    const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    process.env.ORION_CODE_CONFIG_DIR = join(root, 'config-last-tool');
     try {
       const cwd = join(root, 'packages', 'cli');
       const config = loadConfig({ apiKey: 'test-key' });
@@ -704,16 +704,16 @@ describe('/status context diagnostics', () => {
       expect(rendered).not.toContain('secret-token-123456');
     } finally {
       if (previousConfigDir === undefined) {
-        delete process.env.OPENHORSE_CONFIG_DIR;
+        delete process.env.ORION_CODE_CONFIG_DIR;
       } else {
-        process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+        process.env.ORION_CODE_CONFIG_DIR = previousConfigDir;
       }
     }
   });
 
   it('supports /last-tool preview controls for full and metadata-only output', async () => {
-    const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
-    process.env.OPENHORSE_CONFIG_DIR = join(root, 'config-last-tool-preview-controls');
+    const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    process.env.ORION_CODE_CONFIG_DIR = join(root, 'config-last-tool-preview-controls');
     try {
       const cwd = join(root, 'packages', 'cli');
       const config = loadConfig({ apiKey: 'test-key' });
@@ -763,16 +763,16 @@ describe('/status context diagnostics', () => {
       expect(rendered).not.toContain('secret-token-123456');
     } finally {
       if (previousConfigDir === undefined) {
-        delete process.env.OPENHORSE_CONFIG_DIR;
+        delete process.env.ORION_CODE_CONFIG_DIR;
       } else {
-        process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+        process.env.ORION_CODE_CONFIG_DIR = previousConfigDir;
       }
     }
   });
 
   it('keeps /last-tool argument labels for non-command tools', async () => {
-    const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
-    process.env.OPENHORSE_CONFIG_DIR = join(root, 'config-last-tool-non-command');
+    const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    process.env.ORION_CODE_CONFIG_DIR = join(root, 'config-last-tool-non-command');
     try {
       const cwd = join(root, 'packages', 'cli');
       const config = loadConfig({ apiKey: 'test-key' });
@@ -818,16 +818,16 @@ describe('/status context diagnostics', () => {
       expect(rendered).not.toContain('Command      src/index.ts');
     } finally {
       if (previousConfigDir === undefined) {
-        delete process.env.OPENHORSE_CONFIG_DIR;
+        delete process.env.ORION_CODE_CONFIG_DIR;
       } else {
-        process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+        process.env.ORION_CODE_CONFIG_DIR = previousConfigDir;
       }
     }
   });
 
   it('handles /last-tool before any tool trace exists', async () => {
-    const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
-    process.env.OPENHORSE_CONFIG_DIR = join(root, 'config-last-tool-empty');
+    const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    process.env.ORION_CODE_CONFIG_DIR = join(root, 'config-last-tool-empty');
     try {
       const cwd = join(root, 'packages', 'cli');
       const config = loadConfig({ apiKey: 'test-key' });
@@ -859,16 +859,16 @@ describe('/status context diagnostics', () => {
       expect(rendered).toContain(`No tool trace events recorded for session ${session.id.slice(0, 8)} yet.`);
     } finally {
       if (previousConfigDir === undefined) {
-        delete process.env.OPENHORSE_CONFIG_DIR;
+        delete process.env.ORION_CODE_CONFIG_DIR;
       } else {
-        process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+        process.env.ORION_CODE_CONFIG_DIR = previousConfigDir;
       }
     }
   });
 
   it('uses result-carried args details when /last-tool cannot find a matching tool call', async () => {
-    const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
-    process.env.OPENHORSE_CONFIG_DIR = join(root, 'config-last-tool-result-only');
+    const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    process.env.ORION_CODE_CONFIG_DIR = join(root, 'config-last-tool-result-only');
     try {
       const cwd = join(root, 'packages', 'cli');
       const config = loadConfig({ apiKey: 'test-key' });
@@ -911,16 +911,16 @@ describe('/status context diagnostics', () => {
       expect(rendered).toContain('Command full /artifacts show exec_command-args-result-only --full (2.0 KB)');
     } finally {
       if (previousConfigDir === undefined) {
-        delete process.env.OPENHORSE_CONFIG_DIR;
+        delete process.env.ORION_CODE_CONFIG_DIR;
       } else {
-        process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+        process.env.ORION_CODE_CONFIG_DIR = previousConfigDir;
       }
     }
   });
 
   it('redacts legacy raw trace strings and marks missing complete counters unknown', async () => {
-    const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
-    process.env.OPENHORSE_CONFIG_DIR = join(root, 'config-legacy-trace');
+    const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    process.env.ORION_CODE_CONFIG_DIR = join(root, 'config-legacy-trace');
     try {
       const cwd = join(root, 'packages', 'cli');
       const config = loadConfig({ apiKey: 'test-key' });
@@ -982,16 +982,16 @@ describe('/status context diagnostics', () => {
       expect(rendered).toContain('complete finish=completed llm=unknown tools=unknown');
     } finally {
       if (previousConfigDir === undefined) {
-        delete process.env.OPENHORSE_CONFIG_DIR;
+        delete process.env.ORION_CODE_CONFIG_DIR;
       } else {
-        process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+        process.env.ORION_CODE_CONFIG_DIR = previousConfigDir;
       }
     }
   });
 
   it('lists and previews saved tool artifacts', async () => {
-    const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
-    process.env.OPENHORSE_CONFIG_DIR = join(root, 'config');
+    const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    process.env.ORION_CODE_CONFIG_DIR = join(root, 'config');
     try {
       const cwd = join(root, 'packages', 'cli');
       const config = loadConfig({ apiKey: 'test-key' });
@@ -1024,16 +1024,16 @@ describe('/status context diagnostics', () => {
       expect(rendered).toContain('full command output');
     } finally {
       if (previousConfigDir === undefined) {
-        delete process.env.OPENHORSE_CONFIG_DIR;
+        delete process.env.ORION_CODE_CONFIG_DIR;
       } else {
-        process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+        process.env.ORION_CODE_CONFIG_DIR = previousConfigDir;
       }
     }
   });
 
   it('redacts secret-like values from artifact indexes and headers', async () => {
-    const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
-    process.env.OPENHORSE_CONFIG_DIR = join(root, 'config-sk-secretvalue123456');
+    const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    process.env.ORION_CODE_CONFIG_DIR = join(root, 'config-sk-secretvalue123456');
     try {
       const cwd = join(root, 'packages', 'cli');
       const config = loadConfig({ apiKey: 'test-key' });
@@ -1076,16 +1076,16 @@ describe('/status context diagnostics', () => {
       expect(rendered).not.toContain('Bearer-sk-secretvalue123456');
     } finally {
       if (previousConfigDir === undefined) {
-        delete process.env.OPENHORSE_CONFIG_DIR;
+        delete process.env.ORION_CODE_CONFIG_DIR;
       } else {
-        process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+        process.env.ORION_CODE_CONFIG_DIR = previousConfigDir;
       }
     }
   });
 
   it('lists and restores file checkpoints with explicit confirmation', async () => {
-    const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
-    process.env.OPENHORSE_CONFIG_DIR = join(root, 'config-checkpoints');
+    const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
+    process.env.ORION_CODE_CONFIG_DIR = join(root, 'config-checkpoints');
     try {
       const cwd = join(root, 'packages', 'cli');
       const target = join(cwd, 'restore-me.txt');
@@ -1128,9 +1128,9 @@ describe('/status context diagnostics', () => {
       expect(readFileSync(target, 'utf-8')).toBe('before\n');
     } finally {
       if (previousConfigDir === undefined) {
-        delete process.env.OPENHORSE_CONFIG_DIR;
+        delete process.env.ORION_CODE_CONFIG_DIR;
       } else {
-        process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+        process.env.ORION_CODE_CONFIG_DIR = previousConfigDir;
       }
     }
   });

@@ -1,5 +1,5 @@
 /**
- * OpenHorse - Minimal Terminal UI Utilities
+ * Orion Code - Minimal Terminal UI Utilities
  *
  * 简化的终端 UI 工具，不依赖 React hooks
  */

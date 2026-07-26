@@ -12,7 +12,7 @@ import { TOOLS } from '../src/tools';
 const readFileTool = TOOLS.find(tool => tool.name === 'read_file');
 const toolContext = {
   cwd: process.cwd(),
-  config: { name: 'openhorse', mode: 'development' },
+  config: { name: 'orion-code', mode: 'development' },
 };
 
 describe('session loop regressions', () => {

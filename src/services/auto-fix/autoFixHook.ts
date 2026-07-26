@@ -1,5 +1,5 @@
 /**
- * openhorse - AutoFix Hook
+ * orion code - AutoFix Hook
  *
  * Post-sampling hook，在工具执行后触发 AutoFix。
  */

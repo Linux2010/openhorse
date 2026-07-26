@@ -304,9 +304,9 @@ describe('AutoCompact', () => {
     });
 
     const joined = result.messages.map(message => message.content).join('\n');
-    expect(joined).toContain('[OpenHorse Context State v2]');
+    expect(joined).toContain('[Orion Code Context State v2]');
     expect(joined).toContain('rootObjective');
-    expect(joined.indexOf('[OpenHorse Context State v2]')).toBeLessThan(
+    expect(joined.indexOf('[Orion Code Context State v2]')).toBeLessThan(
       joined.indexOf('[Context Summary]')
     );
   });

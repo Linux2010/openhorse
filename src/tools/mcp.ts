@@ -1,5 +1,5 @@
 /**
- * openhorse - MCP (Model Context Protocol) Support
+ * orion code - MCP (Model Context Protocol) Support
  *
  * MCP client with auto-startup, heartbeat, and reconnection.
  */
@@ -7,7 +7,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { readFileSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
-import { buildTool, type OpenHorseTool, type ToolInputJSONSchema, type ToolResult } from '../framework/tool';
+import { buildTool, type OpenHorseTool, type OrionCodeTool, type ToolInputJSONSchema, type ToolResult } from '../framework/tool';
 import { getConfigHome } from '../services/config-dir';
 
 // ============================================================================
@@ -222,7 +222,7 @@ class SimpleMCPClient {
     await this.sendRequest('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
-      clientInfo: { name: 'openhorse', version: MCP_CLIENT_VERSION },
+      clientInfo: { name: 'orion-code', version: MCP_CLIENT_VERSION },
     });
 
     this.sendNotification('notifications/initialized', {});
@@ -467,20 +467,20 @@ class MCPServerManager {
     return allTools;
   }
 
-  getOpenHorseTools(): OpenHorseTool[] {
+  getOrionCodeTools(): OrionCodeTool[] {
     const seen = new Set<string>();
 
     return this.getAllTools().map(({ server, tool }) => {
       const baseName = buildMcpToolName(server, tool.name);
-      let openHorseName = baseName;
+      let orionCodeName = baseName;
       let suffix = 2;
-      while (seen.has(openHorseName)) {
-        openHorseName = `${baseName}_${suffix++}`;
+      while (seen.has(orionCodeName)) {
+        orionCodeName = `${baseName}_${suffix++}`;
       }
-      seen.add(openHorseName);
+      seen.add(orionCodeName);
 
       return buildTool({
-        name: openHorseName,
+        name: orionCodeName,
         description: `[MCP:${server}/${tool.name}] ${tool.description || 'External MCP tool'}`,
         parameters: normalizeMcpInputSchema(tool.inputSchema),
         execute: async (args) => {
@@ -534,7 +534,7 @@ class MCPServerManager {
 export const mcpManager = new MCPServerManager();
 
 // ============================================================================
-// MCP Tools for OpenHorse
+// MCP Tools for Orion Code
 // ============================================================================
 
 export const mcpListTool: OpenHorseTool = buildTool({
@@ -557,7 +557,7 @@ export const mcpListTool: OpenHorseTool = buildTool({
     if (allTools.length === 0) {
       return {
         success: true,
-        output: 'No MCP servers connected. Configure servers in ~/.openhorse/mcp.json',
+        output: 'No MCP servers connected. Configure servers in ~/.orion-code/mcp.json',
       };
     }
 

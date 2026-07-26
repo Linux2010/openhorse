@@ -13,7 +13,7 @@ const TOOLS = require('../src/tools').TOOLS;
 const exitPlan = TOOLS.find((t: any) => t.name === 'exit_plan_mode');
 const enterPlan = TOOLS.find((t: any) => t.name === 'enter_plan_mode');
 
-const ctx = { cwd: process.cwd(), config: { name: 'openhorse', mode: 'development' } };
+const ctx = { cwd: process.cwd(), config: { name: 'orion-code', mode: 'development' } };
 
 describe('exit_plan_mode validation (bug-hunt round 13)', () => {
   beforeEach(() => {

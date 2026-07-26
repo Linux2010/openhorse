@@ -140,7 +140,7 @@ async function main(): Promise<void> {
   // Simulate the npm/ts-node/deprecation banner that prints BEFORE the TUI
   // mounts in the real `npm run start` process (leaves the real cursor at row 5,
   // while the surface still assumes it starts at 0 — reproducing the desync).
-  model.feed('> openhorse@0.2.21 start\n> ts-node src/cli.ts --ui tui\n\n(node) deprecation warning\n(Use node)\n');
+  model.feed('> orion-code@0.2.27 start\n> ts-node src/cli.ts --ui tui\n\n(node) deprecation warning\n(Use node)\n');
   chunks.length = 0;
   await surface.mount(COLS, ROWS);
 
@@ -156,7 +156,7 @@ async function main(): Promise<void> {
   // Append system message (live, like launch.ts)
   runner.events.append({
     role: 'system',
-    content: 'OPENHORSE v0.2.21\nProject /tmp\n/ commands   @ files   ? shortcuts   Ctrl+C twice exits',
+    content: 'ORION CODE v0.2.27\nProject /tmp\n/ commands   @ files   ? shortcuts   Ctrl+C twice exits',
     live: true,
   });
   await flushRunner(runner);

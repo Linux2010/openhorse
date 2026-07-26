@@ -173,7 +173,7 @@ describe('terminal UI renderer adapter', () => {
     const runtime = makeRuntime();
     const banner = stripAnsi(renderTerminalBanner(runtime));
 
-    expect(banner).toContain('OPENHORSE');
+    expect(banner).toContain('ORION CODE');
     expect(banner).toContain('vtest');
     expect(banner).toContain('stable terminal UI');
     expect(banner).toContain('Model test-model');
@@ -1503,7 +1503,7 @@ describe('terminal UI readline completion', () => {
   let tempDir: string;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'openhorse-terminal-completion-'));
+    tempDir = mkdtempSync(join(tmpdir(), 'orion-code-terminal-completion-'));
     mkdirSync(join(tempDir, 'src'));
     mkdirSync(join(tempDir, 'docs'));
     writeFileSync(join(tempDir, 'src', 'terminal.ts'), '');

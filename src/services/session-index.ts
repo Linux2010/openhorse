@@ -1,5 +1,5 @@
 /**
- * openhorse - Session Index
+ * orion code - Session Index
  *
  * Per-session index for fast lookup of files, tools, and topics.
  * Enables quick session search without parsing full JSONL files.

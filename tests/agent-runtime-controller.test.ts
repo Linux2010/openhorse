@@ -104,19 +104,19 @@ function createDeferredRunner(): AgentRuntimeRunner & {
 }
 
 async function withTempConfig<T>(fn: (paths: { configDir: string; projectDir: string }) => Promise<T> | T): Promise<T> {
-  const previousConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+  const previousConfigDir = process.env.ORION_CODE_CONFIG_DIR;
   const root = mkdtempSync(join(tmpdir(), 'openhorse-runtime-test-'));
   const configDir = join(root, 'config');
   const projectDir = join(root, 'project');
 
-  process.env.OPENHORSE_CONFIG_DIR = configDir;
+  process.env.ORION_CODE_CONFIG_DIR = configDir;
   try {
     return await fn({ configDir, projectDir });
   } finally {
     if (previousConfigDir === undefined) {
-      delete process.env.OPENHORSE_CONFIG_DIR;
+      delete process.env.ORION_CODE_CONFIG_DIR;
     } else {
-      process.env.OPENHORSE_CONFIG_DIR = previousConfigDir;
+      process.env.ORION_CODE_CONFIG_DIR = previousConfigDir;
     }
     rmSync(root, { recursive: true, force: true });
   }
@@ -299,7 +299,7 @@ describe('AgentRuntimeController', () => {
       const modelContext = modelMessages.map(message => message.content).join('\n');
       expect(modelContext).toContain(rootObjective);
       expect(modelContext).toContain(activeInstruction);
-      expect(modelContext).toContain('[OpenHorse Context State v2]');
+      expect(modelContext).toContain('[Orion Code Context State v2]');
       expect(modelContext).not.toContain(oldHiddenAssistant);
       expect(store.getSnapshot().harnessState).toMatchObject({
         rootObjective,
@@ -2936,10 +2936,10 @@ describe('AgentRuntimeController', () => {
         expect.objectContaining({
           role: 'status',
           title: 'verification',
-          content: expect.stringContaining('[OpenHorse Verification Gate]'),
+          content: expect.stringContaining('[Orion Code Verification Gate]'),
         }),
       ]));
-      expect(readSessionMessages(session!.id).at(-1)?.content).toContain('[OpenHorse Verification Gate]');
+      expect(readSessionMessages(session!.id).at(-1)?.content).toContain('[Orion Code Verification Gate]');
     });
   });
 
@@ -3692,7 +3692,7 @@ describe('AgentRuntimeController', () => {
       const modelMessages = (llm.chatStream as jest.Mock).mock.calls[0][0] as Array<{ role: string; content: string }>;
       const modelContext = modelMessages.map(message => message.content).join('\n');
       expect(modelContext).toContain(rootObjective);
-      expect(modelContext).toContain('[OpenHorse Context State v2]');
+      expect(modelContext).toContain('[Orion Code Context State v2]');
       // Raw assistant transcripts from compacted turns (not marker messages)
       // should not appear in the model context
       expect(modelContext).not.toContain('Turn 5 assistant response');

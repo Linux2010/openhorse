@@ -112,7 +112,7 @@ export function shouldGateCompletion(summary: VerificationSummary): boolean {
 
 export function formatVerificationGateNotice(summary: VerificationSummary): string {
   const lines = [
-    '[OpenHorse Verification Gate]',
+    '[Orion Code Verification Gate]',
     'This turn changed files, but required verification is incomplete. Do not claim verified completion yet.',
   ];
 

@@ -1,5 +1,5 @@
 /**
- * openhorse - Slash Command System
+ * orion code - Slash Command System
  *
  * 使用 `/` 前缀的命令系统，支持 Tab 补全、命令建议、参数定义。
  * 非 `/` 前缀的输入直接作为 chat 消息处理。

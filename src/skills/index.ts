@@ -1,5 +1,5 @@
 /**
- * openhorse - Skills System
+ * orion code - Skills System
  *
  * 可扩展技能插件系统
  */

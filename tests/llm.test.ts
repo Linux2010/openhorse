@@ -17,7 +17,7 @@ import {
 import { diagnoseProviderError } from '../src/services/provider-diagnostics';
 
 // Skip real API tests if no API key is available
-const hasApiKey = Boolean(process.env.OPENHORSE_API_KEY);
+const hasApiKey = Boolean(process.env.ORION_CODE_API_KEY);
 
 describe('LLMService', () => {
   describe('toOpenAIMessages (internal)', () => {
@@ -489,17 +489,17 @@ describe('LLMService', () => {
   });
 
   // Real API tests (only run if API key is available)
-  describe('Real API (requires OPENHORSE_API_KEY)', () => {
+  describe('Real API (requires ORION_CODE_API_KEY)', () => {
     if (!hasApiKey) {
-      test.skip('Skipping real API tests - no OPENHORSE_API_KEY', () => {});
+      test.skip('Skipping real API tests - no ORION_CODE_API_KEY', () => {});
       return;
     }
 
     test('chatStream returns usage with stream_options', async () => {
       const config = {
-        apiKey: process.env.OPENHORSE_API_KEY!,
-        baseUrl: process.env.OPENHORSE_API_BASE_URL,
-        model: process.env.OPENHORSE_MODEL || 'gpt-4o',
+        apiKey: process.env.ORION_CODE_API_KEY!,
+        baseUrl: process.env.ORION_CODE_API_BASE_URL,
+        model: process.env.ORION_CODE_MODEL || 'gpt-4o',
       };
 
       const llm = new LLMService(config);

@@ -1,5 +1,5 @@
 /**
- * openhorse - Framework module
+ * Orion Code - Framework module
  *
  * Core framework components:
  *   - Tool System v2 (buildTool factory)
@@ -11,6 +11,7 @@
 export { buildTool, toOpenAITool, toOpenAITools } from './tool';
 export { serializeToolResult, parseToolResultEnvelope, TOOL_RESULT_SCHEMA_VERSION } from './tool-serializer';
 export type {
+  OrionCodeTool,
   OpenHorseTool,
   ToolResult,
   ToolContext,

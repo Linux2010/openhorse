@@ -1,5 +1,5 @@
 /**
- * openhorse - 命令面板组件
+ * orion code - 命令面板组件
  *
  * 交互式 slash 命令选择面板，支持 ↑↓ 导航、实时过滤、Enter 选择。
  *

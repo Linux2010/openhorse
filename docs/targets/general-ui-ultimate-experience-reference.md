@@ -1,8 +1,8 @@
-# OpenHorse UI 终极体验目标
+# Orion Code UI 终极体验目标
 
 状态：面向 v0.2.14 及后续版本的目标文档
 
-这份文档的目标不是做一轮简单的界面美化，而是定义 OpenHorse CLI UI 的长期验收标准。OpenHorse 的 UI 应该成为一个专业、稳定、可审计的 coding-agent 工作台：长会话不丢上下文，中文输入稳定，工具执行过程清楚，终端历史完整保留，并且 UI 表现层不能影响 agent 内核行为。
+这份文档的目标不是做一轮简单的界面美化，而是定义 Orion Code CLI UI 的长期验收标准。Orion Code 的 UI 应该成为一个专业、稳定、可审计的 coding-agent 工作台：长会话不丢上下文，中文输入稳定，工具执行过程清楚，终端历史完整保留，并且 UI 表现层不能影响 agent 内核行为。
 
 当前主力产品界面是稳定的 `terminal` 渲染器。`tui` 和 `ink` 继续作为 beta 实验界面，用来验证全屏布局、组件化渲染、精确光标、复杂 overlay 等方向。`print` 和远程 UI 是后续扩展入口，也必须复用同一套 runtime 协议。
 
@@ -15,7 +15,7 @@
 
 ## 核心目标
 
-OpenHorse 的稳定终端 UI 最终要达到这几个目标：
+Orion Code 的稳定终端 UI 最终要达到这几个目标：
 
 - 用户可以粘贴、编辑、中断、恢复、继续任务，而且不会丢状态。
 - 长输出仍然能在终端滚动历史中完整查看和搜索。
@@ -23,7 +23,7 @@ OpenHorse 的稳定终端 UI 最终要达到这几个目标：
 - 状态信息默认克制，但需要诊断时可以展开。
 - UI 出问题不能改变模型、工具、harness、memory、session、permission、MCP 或 skills 的行为。
 
-一句话总结：UI 是 agent 的工作台，不是 agent 的大脑。OpenHorse 要先把稳定终端体验做到专业，再让 `tui`、`ink`、`print`、远程 UI 通过同一套协议逐步追平。
+一句话总结：UI 是 agent 的工作台，不是 agent 的大脑。Orion Code 要先把稳定终端体验做到专业，再让 `tui`、`ink`、`print`、远程 UI 通过同一套协议逐步追平。
 
 ## 产品原则
 

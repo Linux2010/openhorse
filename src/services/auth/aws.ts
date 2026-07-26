@@ -1,5 +1,5 @@
 /**
- * openhorse - AWS STS 验证
+ * orion code - AWS STS 验证
  *
  * 验证 AWS 凭证并获取临时 Token。
  */

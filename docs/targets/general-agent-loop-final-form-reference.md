@@ -1,4 +1,4 @@
-# OpenHorse Agent Loop Final Form Target
+# Orion Code Agent Loop Final Form Target
 
 ## Document Status
 
@@ -17,18 +17,18 @@ Modern coding agents are no longer a single chat prompt plus file edits. The str
 - Aider shows a useful context pattern: a compact repository map containing important files, symbols, signatures, and relationships is sent with change requests, while lint/test commands close the edit-validation loop. See Aider repo map and lint/test docs: <https://aider.chat/docs/repomap.html> and <https://aider.chat/docs/usage/lint-test.html>.
 - MCP-centered designs converge on discovery, schema validation, namespacing, execution, confirmation, resource access, rich responses, and connection health. See Gemini MCP docs: <https://geminicli.com/docs/tools/mcp-server/>.
 
-These are observed design patterns, not a parity checklist. OpenHorse should adopt the runtime principles that improve correctness, durability, safety, and cost control without chasing every product surface at once.
+These are observed design patterns, not a parity checklist. Orion Code should adopt the runtime principles that improve correctness, durability, safety, and cost control without chasing every product surface at once.
 
-Conclusion: the final OpenHorse agent-loop should be a deterministic, inspectable runtime state machine that lets the model reason and choose tools, while the harness controls context, budgets, permissions, verification, persistence, and recovery.
+Conclusion: the final Orion Code agent-loop should be a deterministic, inspectable runtime state machine that lets the model reason and choose tools, while the harness controls context, budgets, permissions, verification, persistence, and recovery.
 
 Implementation note: external projects are used as references for architecture
 principles, not as a product parity checklist. A capability should enter
-OpenHorse only when it strengthens the local runtime, harness, tools, session,
+Orion Code only when it strengthens the local runtime, harness, tools, session,
 or terminal-first workflow.
 
 ## North Star
 
-OpenHorse should have one professional agent-loop core that can run interactively, non-interactively, locally, remotely, or through future UI renderers without changing semantics.
+Orion Code should have one professional agent-loop core that can run interactively, non-interactively, locally, remotely, or through future UI renderers without changing semantics.
 
 Core invariants:
 
@@ -153,7 +153,7 @@ The harness is the durable task brain. It must maintain:
 - `contextCapsule`: compact state used after resume/compact.
 - `loopStats`: LLM requests, tool calls, bytes, compaction, fast paths, retries, fallback, budget exits.
 
-Acceptance rule: after 20+ turns, compact, resume, and user input `继续`, OpenHorse must continue the correct objective without relying on raw transcript proximity.
+Acceptance rule: after 20+ turns, compact, resume, and user input `继续`, Orion Code must continue the correct objective without relying on raw transcript proximity.
 
 ## Prompt Assembly Target
 
@@ -239,7 +239,7 @@ For changed-file tasks, the completion gate should record:
 
 ## Budget And Rate-Limit Target
 
-OpenHorse should optimize for successful task completion per provider quota, not maximum model chatter.
+Orion Code should optimize for successful task completion per provider quota, not maximum model chatter.
 
 Required controls:
 
@@ -297,7 +297,7 @@ Persist separately:
 - verification state;
 - memory candidates.
 
-Resume must reconcile transcript, harness state, project path, model/provider, skills, MCP config, and artifacts. If reconciliation is uncertain, OpenHorse should report the risk rather than pretending state is exact.
+Resume must reconcile transcript, harness state, project path, model/provider, skills, MCP config, and artifacts. If reconciliation is uncertain, Orion Code should report the risk rather than pretending state is exact.
 
 ## Multi-Agent Target
 
@@ -317,7 +317,7 @@ Subagents must not write conflicting state into the main session. The supervisor
 
 ## Near-Term Implementation Boundary
 
-For v0.2.13 and the next stabilization iterations, OpenHorse should not pull
+For v0.2.13 and the next stabilization iterations, Orion Code should not pull
 Phase 5 features forward. The near-term implementation boundary is:
 
 - continue with the stable `terminal` renderer as the product path;
@@ -349,7 +349,7 @@ The target commands are:
 - `/artifacts`: large outputs and generated files.
 - `/doctor`: configuration and runtime health.
 
-## OpenHorse Roadmap
+## Orion Code Roadmap
 
 ### Phase 1: Stabilize Current Loop
 
@@ -428,7 +428,7 @@ Minimum v0.2.13 acceptance:
 
 ## Final Acceptance Criteria
 
-OpenHorse reaches this target when:
+Orion Code reaches this target when:
 
 - A complex coding task completes with fewer model turns because read-only exploration is batched and mechanical commands use fast paths.
 - Long sessions survive compact/resume without losing root objective.

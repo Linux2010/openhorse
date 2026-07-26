@@ -1,5 +1,5 @@
 /**
- * openhorse - Skills Loader
+ * orion code - Skills Loader
  *
  * 扫描并加载 Skills 目录中的技能定义
  */
@@ -282,7 +282,7 @@ export class SkillsLoader {
       // Builtin directory may not exist in some environments
     }
 
-    // 2. Load user skills (~/.openhorse/skills/)
+    // 2. Load user skills (~/.orion-code/skills/)
     const userSkillsDir = join(getConfigHome(), SKILLS_DIR_NAMES.USER);
     const userSkills = scanSkillsDirectory(userSkillsDir, 'user');
     for (const skill of userSkills) {
@@ -299,7 +299,7 @@ export class SkillsLoader {
       }
     }
 
-    // 4. Load project skills (.openhorse/skills/)
+    // 4. Load project skills (.orion-code/skills/)
     const projectSkillsDir = join(process.cwd(), SKILLS_DIR_NAMES.PROJECT);
     const projectSkills = scanSkillsDirectory(projectSkillsDir, 'project');
     for (const skill of projectSkills) {

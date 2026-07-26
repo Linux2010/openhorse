@@ -1,12 +1,12 @@
-# OpenHorse
+# Orion Code
 
-> **OpenHorse — Universal Agent Harness Framework**
+> **Orion Code — Universal Agent Harness Framework**
 > A CLI-driven coding agent with safety boundaries, tool orchestration, memory, and context management.
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0-green.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/typescript-5.0-blue.svg)](https://www.typescriptlang.org)
-[![npm](https://img.shields.io/npm/v/openhorse.svg)](https://www.npmjs.com/package/openhorse)
+[![npm](https://img.shields.io/npm/v/orion-code.svg)](https://www.npmjs.com/package/orion-code)
 
 ---
 
@@ -16,12 +16,12 @@
 
 ## Overview
 
-**OpenHorse** is a terminal-based coding agent that wraps LLM APIs in a harness of safety checks, tool orchestration, session management, and context awareness.
+**Orion Code** is a terminal-based coding agent that wraps LLM APIs in a harness of safety checks, tool orchestration, session management, and context awareness.
 
 | Dimension | Description |
 |-----------|-------------|
 | **AI as Horse** | Powerful models need guidance and constraints |
-| **OpenHorse as Reins** | Precise control to prevent runaway behavior |
+| **Orion Code as Reins** | Precise control to prevent runaway behavior |
 | **Harness System** | Safety boundaries, task constraints, result validation |
 | **Tool Calling** | LLM autonomously invokes tools to complete tasks |
 | **Memory System** | Layered memory with semantic search |
@@ -38,37 +38,37 @@
 
 ```bash
 # Install globally
-npm install -g openhorse
+npm install -g orion-code
 
 # Or from source
-git clone https://github.com/Linux2010/openhorse.git
-cd openhorse && npm install && npm run build
+git clone https://github.com/Linux2010/orion-code.git
+cd orion-code && npm install && npm run build
 
 # Configure API key
-export OPENHORSE_API_KEY=your-api-key
-# or create ~/.openhorse/openhorse.json on first run
+export ORION_CODE_API_KEY=your-api-key
+# or create ~/.orion-code/orion-code.json on first run
 
 # Start
-openhorse
+orion-code
 
 # Explicit renderer-owned TUI preview
-openhorse --ui tui
+orion-code --ui tui
 
 # Explicit stable terminal editor
-openhorse --ui terminal
+orion-code --ui terminal
 
 # Diagnose local config, tools, MCP, skills, and context
-openhorse doctor
+orion-code doctor
 
 # Inspect current workspace changes deterministically
-openhorse diff
+orion-code diff
 
 # Generate a read-only commit plan and suggested message
-openhorse commit
+orion-code commit
 
 # Try the early experimental non-interactive path
-openhorse -p "review the current git diff"
-echo "summarize this project" | openhorse --print
+orion-code -p "review the current git diff"
+echo "summarize this project" | orion-code --print
 ```
 
 ## Key Features
@@ -85,9 +85,9 @@ echo "summarize this project" | openhorse --print
 | **Streaming Output** | Real-time LLM responses with Markdown rendering |
 | **Skills System** | Builtin, user, and project-level skill extensions |
 | **Print Mode** | Experimental `-p/--print` one-shot path for future automation/remote UI work |
-| **Doctor Diagnostics** | `openhorse doctor` / `/doctor` checks config, tools, MCP, skills, sessions, and harness |
-| **Workspace Diff** | `openhorse diff` / `/diff` summarizes staged, unstaged, and untracked changes |
-| **Commit Planning** | `openhorse commit` / `/commit` suggests a commit message without creating a commit |
+| **Doctor Diagnostics** | `orion-code doctor` / `/doctor` checks config, tools, MCP, skills, sessions, and harness |
+| **Workspace Diff** | `orion-code diff` / `/diff` summarizes staged, unstaged, and untracked changes |
+| **Commit Planning** | `orion-code commit` / `/commit` suggests a commit message without creating a commit |
 
 ## Configuration
 
@@ -118,13 +118,13 @@ Minimal user config — the agent controls internal parameters.
 | `webSearch` | WebSearch mode/provider: `auto`, `tavily`, `brave`, `ddg` |
 | `skills.paths` | Extra skill roots or direct skill directories loaded at startup |
 
-Configuration priority: `CLI flags > ~/.openhorse/openhorse.json > env vars > defaults`
+Configuration priority: `CLI flags > ~/.orion-code/orion-code.json > env vars > defaults`
 
 See [docs/config.md](docs/config.md) for full details.
 
 ## Models
 
-OpenHorse supports OpenAI-compatible providers and auto-discovers model context windows at startup via the `/models` endpoint.
+Orion Code supports OpenAI-compatible providers and auto-discovers model context windows at startup via the `/models` endpoint.
 
 | Provider | Example Models |
 |----------|---------------|
@@ -158,10 +158,10 @@ Context usage is tracked in real tokens. When usage reaches **95%**, auto-compac
 
 ## MCP Protocol
 
-OpenHorse connects stdio MCP servers and exposes their tools to the agent.
+Orion Code connects stdio MCP servers and exposes their tools to the agent.
 
 ```json
-// ~/.openhorse/mcp.json
+// ~/.orion-code/mcp.json
 {
   "mcpServers": {
     "telegram": {
@@ -215,6 +215,6 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
-**OpenHorse — Universal Agent Harness Framework.**
+**Orion Code — Universal Agent Harness Framework.**
 
-*"AI as a horse, OpenHorse as the reins."*
+*"AI as a horse, Orion Code as the reins."*

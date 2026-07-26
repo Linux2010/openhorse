@@ -1,8 +1,8 @@
 /**
- * openhorse - UI 组件
+ * Orion Code - UI components
  *
- * 输出流设计：
- *   openhorse v0.1.14  │  glm-5  │  Qwen  │  ●
+ * Output stream design:
+ *   orion v0.1.14  │  glm-5  │  Qwen  │  ●
  *   ─────────────────────────────────────────────────────────
  *   ❯
  *   ─────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ export function renderHeaderBox(config: HeaderBoxConfig): string {
     : DIM('○');
   parts.push(statusIcon);
 
-  return `  ${BRAND('openhorse')} ${DIM('v' + config.version)}  ${DIM('│')} ${parts.join(` ${DIM('│')} `)}`;
+  return `  ${BRAND('orion')} ${DIM('v' + config.version)}  ${DIM('│')} ${parts.join(` ${DIM('│')} `)}`;
 }
 
 /**

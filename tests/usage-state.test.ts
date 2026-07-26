@@ -13,15 +13,15 @@ describe('durable usage ledger', () => {
   let originalConfigDir: string | undefined;
 
   beforeEach(() => {
-    originalConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+    originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
     configDir = mkdtempSync(join(tmpdir(), 'openhorse-usage-'));
-    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
   });
 
   afterEach(() => {
     if (existsSync(configDir)) rmSync(configDir, { recursive: true, force: true });
-    if (originalConfigDir === undefined) delete process.env.OPENHORSE_CONFIG_DIR;
-    else process.env.OPENHORSE_CONFIG_DIR = originalConfigDir;
+    if (originalConfigDir === undefined) delete process.env.ORION_CODE_CONFIG_DIR;
+    else process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
   });
 
   test('persists provider and estimated cost across tracker instances', () => {

@@ -170,7 +170,7 @@ describe('verification-profile', () => {
     };
 
     expect(shouldGateCompletion(summary)).toBe(true);
-    expect(formatVerificationGateNotice(summary)).toContain('[OpenHorse Verification Gate]');
+    expect(formatVerificationGateNotice(summary)).toContain('[Orion Code Verification Gate]');
     expect(formatVerificationGateNotice(summary)).toContain('Missing checks:');
     expect(formatVerificationGateNotice(summary)).toContain('- npm test -- --runInBand');
   });

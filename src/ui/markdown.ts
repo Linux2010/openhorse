@@ -1,5 +1,5 @@
 /**
- * openhorse - 终端 Markdown 渲染器
+ * orion code - 终端 Markdown 渲染器
  *
  * Issue #25 修复：使用 marked-terminal 渲染 Markdown
  * 支持：标题、粗体、斜体、行内代码、代码块、列表、引用、表格、链接。

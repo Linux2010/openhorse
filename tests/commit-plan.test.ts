@@ -128,7 +128,7 @@ describe('openhorse commit CLI', () => {
         cwd: repo,
         env: {
           ...process.env,
-          OPENHORSE_CONFIG_DIR: configDir,
+          ORION_CODE_CONFIG_DIR: configDir,
           TS_NODE_PROJECT: join(projectRoot, 'tsconfig.json'),
           NO_COLOR: '1',
           FORCE_COLOR: '0',

@@ -1,9 +1,9 @@
 /**
- * openhorse - Harness 引擎（兼容 API）
+ * orion code - Harness 引擎（兼容 API）
  *
  * This module is kept for the public package API. The CLI runtime now uses the
  * ContextHarness, but external users may still import HarnessEngine from
- * `openhorse`.
+ * `orion`.
  */
 
 import { EventEmitter } from 'eventemitter3';

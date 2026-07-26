@@ -74,12 +74,12 @@ export function PixelHorseBanner({ runtime, width = 80 }: PixelHorseBannerProps)
           </Box>
           <Box flexDirection="column" flexGrow={1}>
             <Text>
-              <Text bold color="cyan">OpenHorse</Text>
+              <Text bold color="cyan">Orion Code</Text>
               <Text color="gray"> v{runtime.version}</Text>
             </Text>
             <Text color="gray">{truncateVisual(`model ${model}  project ${projectName}`, cardWidth - 16)}</Text>
             <Text color={runtime.isConfigured ? 'gray' : 'yellow'}>
-              {runtime.isConfigured ? 'context harness coding agent' : 'LLM not configured: set OPENHORSE_API_KEY'}
+              {runtime.isConfigured ? 'context harness coding agent' : 'LLM not configured: set ORION_CODE_API_KEY'}
             </Text>
           </Box>
         </Box>
@@ -92,8 +92,8 @@ export function PixelHorseBanner({ runtime, width = 80 }: PixelHorseBannerProps)
       <Box flexDirection="row">
         <Box flexDirection="column" marginRight={3}>
           <Text>
-            <Text color="cyan" bold>OPEN</Text>
-            <Text color="white" bold>HORSE</Text>
+            <Text color="cyan" bold>ORION</Text>
+            <Text color="white" bold> CODE</Text>
             <Text color="gray"> v{runtime.version}</Text>
           </Text>
           <Text color="gray">context harness coding agent</Text>
@@ -117,7 +117,7 @@ export function PixelHorseBanner({ runtime, width = 80 }: PixelHorseBannerProps)
           <InfoRow label="MCP" value={mcpText} width={infoWidth} />
           {!runtime.isConfigured ? (
             <Box marginTop={1}>
-              <Text color="yellow">LLM not configured: set OPENHORSE_API_KEY</Text>
+              <Text color="yellow">LLM not configured: set ORION_CODE_API_KEY</Text>
             </Box>
           ) : null}
         </Box>

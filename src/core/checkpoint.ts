@@ -1,10 +1,10 @@
 /**
- * openhorse - File Checkpoints
+ * orion code - File Checkpoints
  *
  * Before editing files, create recoverable snapshots so the user can
  * undo agent changes back to a specific turn.
  *
- * Storage: ~/.openhorse/projects/<project-key>/checkpoints/<turnId>/<file>
+ * Storage: ~/.orion-code/projects/<project-key>/checkpoints/<turnId>/<file>
  * TTL: 7 days
  */
 

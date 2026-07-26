@@ -19,10 +19,10 @@ import { homedir } from 'os';
 describe('global-config', () => {
   // Use a unique test directory based on timestamp to avoid conflicts
   const testDir = join(homedir(), `.openhorse-test-global-${Date.now()}`);
-  const originalEnv = process.env.OPENHORSE_CONFIG_DIR;
+  const originalEnv = process.env.ORION_CODE_CONFIG_DIR;
 
   beforeAll(() => {
-    process.env.OPENHORSE_CONFIG_DIR = testDir;
+    process.env.ORION_CODE_CONFIG_DIR = testDir;
     // Clean up test directory if it exists
     if (existsSync(testDir)) {
       rmSync(testDir, { recursive: true });
@@ -36,9 +36,9 @@ describe('global-config', () => {
     }
     // Restore original env var
     if (originalEnv !== undefined) {
-      process.env.OPENHORSE_CONFIG_DIR = originalEnv;
+      process.env.ORION_CODE_CONFIG_DIR = originalEnv;
     } else {
-      delete process.env.OPENHORSE_CONFIG_DIR;
+      delete process.env.ORION_CODE_CONFIG_DIR;
     }
   });
 
@@ -71,7 +71,7 @@ describe('global-config', () => {
 
     test('returns default config when file is corrupted', () => {
       // Write invalid JSON
-      const path = join(testDir, 'openhorse.json');
+      const path = join(testDir, 'orion.json');
       writeFileSync(path, 'invalid json{');
 
       const config = loadGlobalConfig();
@@ -88,7 +88,7 @@ describe('global-config', () => {
 
       saveGlobalConfig(config);
 
-      const path = join(testDir, 'openhorse.json');
+      const path = join(testDir, 'orion.json');
       expect(existsSync(path)).toBe(true);
 
       const content = readFileSync(path, 'utf-8');
@@ -108,7 +108,7 @@ describe('global-config', () => {
         },
       });
 
-      const path = join(testDir, 'openhorse.json');
+      const path = join(testDir, 'orion.json');
       const parsed = JSON.parse(readFileSync(path, 'utf-8'));
 
       expect(parsed.ui).toEqual({ confirmations: 'interactive' });
@@ -124,7 +124,7 @@ describe('global-config', () => {
         totalCost: 0.25,
       });
 
-      const path = join(testDir, 'openhorse.json');
+      const path = join(testDir, 'orion.json');
       const parsed = JSON.parse(readFileSync(path, 'utf-8'));
 
       expect(parsed.totalSessions).toBeUndefined();
@@ -205,7 +205,7 @@ describe('global-config', () => {
 
   describe('stats updates', () => {
     test('migrates legacy config counters to usage state', () => {
-      const configPath = join(testDir, 'openhorse.json');
+      const configPath = join(testDir, 'orion.json');
       const usagePath = join(testDir, 'usage.json');
       if (existsSync(usagePath)) {
         rmSync(usagePath);

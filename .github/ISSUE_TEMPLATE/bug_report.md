@@ -25,7 +25,7 @@ A clear and concise description of what you expected to happen.
 
 - OS: [e.g. macOS, Linux, Windows]
 - Node version: [e.g. 18.17.0]
-- openhorse version: [e.g. 0.1.12]
+- orion-code version: [e.g. 0.2.27]
 
 ## Logs
 

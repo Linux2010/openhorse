@@ -478,7 +478,7 @@ export async function launchTuiUI(
     // It's finalized when the user submits their first input.
     systemId = runner.events.append({
       role: 'system',
-      content: `OPENHORSE v${runtime.version}\nProject ${runtime.cwd}\n/ commands   @ files   ? shortcuts   Ctrl+O tools   Ctrl+C twice exits`,
+      content: `ORION CODE v${runtime.version}\nProject ${runtime.cwd}\n/ commands   @ files   ? shortcuts   Ctrl+O tools   Ctrl+C twice exits`,
       live: true,
     });
     runner.events.setStatus(statusSnapshotString(runtime));

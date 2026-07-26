@@ -16,9 +16,9 @@ describe('ToolDetailRepository', () => {
   let origConfigDir: string | undefined;
 
   beforeEach(() => {
-    origConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+    origConfigDir = process.env.ORION_CODE_CONFIG_DIR;
     const base = join(tmpdir(), `openhorse-detail-${randomUUID().slice(0, 8)}`);
-    process.env.OPENHORSE_CONFIG_DIR = base;
+    process.env.ORION_CODE_CONFIG_DIR = base;
     mkdirSync(base, { recursive: true });
     projectDir = join(base, 'test-project');
     mkdirSync(projectDir, { recursive: true });
@@ -27,11 +27,11 @@ describe('ToolDetailRepository', () => {
 
   afterEach(() => {
     if (origConfigDir !== undefined) {
-      process.env.OPENHORSE_CONFIG_DIR = origConfigDir;
+      process.env.ORION_CODE_CONFIG_DIR = origConfigDir;
     } else {
-      delete process.env.OPENHORSE_CONFIG_DIR;
+      delete process.env.ORION_CODE_CONFIG_DIR;
     }
-    try { rmSync(process.env.OPENHORSE_CONFIG_DIR ?? '', { recursive: true, force: true }); } catch {}
+    try { rmSync(process.env.ORION_CODE_CONFIG_DIR ?? '', { recursive: true, force: true }); } catch {}
   });
 
   describe('read()', () => {
@@ -46,7 +46,7 @@ describe('ToolDetailRepository', () => {
 
     it('returns content from file on disk when available', async () => {
       // Create a mock artifact directory matching what getProjectArtifactsDir resolves to.
-      const encodedDir = join(process.env.OPENHORSE_CONFIG_DIR!, 'projects');
+      const encodedDir = join(process.env.ORION_CODE_CONFIG_DIR!, 'projects');
       // Use getProjectArtifactsDir from config-dir to find the correct path.
       const { getProjectArtifactsDir } = require('../src/services/config-dir');
       const artifactDir = getProjectArtifactsDir(projectDir);

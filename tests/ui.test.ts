@@ -127,7 +127,7 @@ describe('Status Bar', () => {
     };
 
     const bar = renderStatusBar(stats);
-    expect(bar).toContain('OpenHorse');
+    expect(bar).toContain('Orion Code');
     expect(bar).toContain('gpt-4o');
     expect(bar).toContain('K tok'); // Uses format like "5.0K tok"
     expect(bar).toContain('MCP');
@@ -164,7 +164,7 @@ describe('Status Bar', () => {
     };
 
     const bar = renderStatusBar(stats);
-    expect(bar).toContain('OpenHorse');
+    expect(bar).toContain('Orion Code');
   });
 });
 

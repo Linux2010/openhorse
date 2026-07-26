@@ -1,5 +1,5 @@
 /**
- * openhorse - 状态栏组件
+ * orion code - 状态栏组件
  *
  * 实时显示 token 数和上下文百分比。成本只通过 /cost 按需查询。
  */
@@ -35,7 +35,7 @@ export interface StatusBarStats {
  */
 export function renderStatusBar(stats: StatusBarStats): string {
   const parts: string[] = [
-    `OpenHorse`,
+    `Orion Code`,
     `${ACCENT(stats.model)}`,
     `${formatTokens(stats.tokens)}`,
     `${formatCtx(stats.ctxPercent)}`,  // 添加 ctxPercent 显示

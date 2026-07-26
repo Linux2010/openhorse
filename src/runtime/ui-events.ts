@@ -204,7 +204,7 @@ export interface RuntimeSessionAccessors {
   getSession: () => SessionMeta | null;
 }
 
-export interface OpenHorseUiRuntime extends RuntimeSessionAccessors {
+export interface OrionCodeUiRuntime extends RuntimeSessionAccessors {
   cwd: string;
   version: string;
   config: OpenHorseCLIConfig;
@@ -217,8 +217,11 @@ export interface OpenHorseUiRuntime extends RuntimeSessionAccessors {
   shutdown: () => Promise<void>;
 }
 
-/** @deprecated Use OpenHorseUiRuntime. Runtime context is shared by every renderer. */
-export type OpenHorseInkRuntime = OpenHorseUiRuntime;
+/** @deprecated Use OrionCodeUiRuntime. */
+export type OpenHorseUiRuntime = OrionCodeUiRuntime;
+
+/** @deprecated Use OrionCodeUiRuntime. Runtime context is shared by every renderer. */
+export type OpenHorseInkRuntime = OrionCodeUiRuntime;
 
 export interface UiEventSink {
   append: (entry: TranscriptAppendEntry) => string;

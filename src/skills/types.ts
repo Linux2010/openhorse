@@ -1,5 +1,5 @@
 /**
- * openhorse - Skills Types
+ * orion code - Skills Types
  *
  * Skills 系统类型定义
  */
@@ -120,7 +120,7 @@ export const SKILL_FILE_NAME = 'SKILL.md';
 /** Skills directory names */
 export const SKILLS_DIR_NAMES = {
   USER: 'skills',
-  PROJECT: '.openhorse/skills',
+  PROJECT: '.orion-code/skills',
   BUILTIN: 'builtin',
 };
 

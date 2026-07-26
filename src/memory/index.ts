@@ -1,5 +1,5 @@
 /**
- * openhorse - Memory System
+ * orion code - Memory System
  *
  * Typed memory system for user preferences, feedback, project context,
  * and external references. Includes semantic search with embeddings.

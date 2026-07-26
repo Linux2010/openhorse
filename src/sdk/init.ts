@@ -1,5 +1,5 @@
 /**
- * openhorse - SDK Init
+ * orion code - SDK Init
  *
  * v0.1.11: SDK 初始化函数
  */
@@ -9,7 +9,7 @@ import type { SDKConfig } from './types';
 let globalConfig: SDKConfig | null = null;
 
 /**
- * 初始化 OpenHorse SDK
+ * 初始化 Orion Code SDK
  * @param config - SDK 配置
  */
 export function init(config?: SDKConfig): void {

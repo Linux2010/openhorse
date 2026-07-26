@@ -1,5 +1,5 @@
 /**
- * openhorse - Tool Result Serializer
+ * orion code - Tool Result Serializer
  *
  * Unified envelope for tool results. All tool outputs go through this
  * serializer so that the LLM-facing format is consistent and forward-compatible.

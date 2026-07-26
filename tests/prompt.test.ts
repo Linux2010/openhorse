@@ -26,7 +26,7 @@ describe('buildSystemPrompt', () => {
 
   test('static part contains intro and capabilities', () => {
     const result = buildSystemPrompt(baseContext);
-    expect(result.static).toContain('You are OpenHorse');
+    expect(result.static).toContain('You are Orion Code');
     expect(result.static).toContain('action-oriented');
   });
 
@@ -139,7 +139,7 @@ describe('getSystemPrompt', () => {
 
   test('contains both static and dynamic content', () => {
     const prompt = getSystemPrompt(baseContext);
-    expect(prompt).toContain('You are OpenHorse');
+    expect(prompt).toContain('You are Orion Code');
     expect(prompt).toContain('/test/dir');
   });
 

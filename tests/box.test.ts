@@ -59,7 +59,7 @@ describe('renderHeaderBox', () => {
       status: 'ready',
       version: '0.1.0',
     });
-    expect(box).toContain('openhorse');
+    expect(box).toContain('orion');
     expect(box).toContain('v0.1.0');
     expect(box).toContain('claude-3');
   });

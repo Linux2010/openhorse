@@ -1,12 +1,12 @@
 /**
- * openhorse - CLI entry
+ * Orion Code - CLI entry point
  */
 
 import 'dotenv/config';
 import chalk from 'chalk';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { init, type OpenHorseRuntime } from './init';
+import { init, type OrionCodeRuntime } from './init';
 import { LLMService } from './services/llm';
 import { ProviderResilienceCoordinator } from './services/provider-resilience';
 import { ModelCoordinator } from './runtime/model-coordinator';
@@ -29,7 +29,7 @@ import { launchPrintMode, readPromptFromStdinIfAvailable, type PrintOutputFormat
 import { collectDoctorReport, formatDoctorReport, hasDoctorFailures } from './services/doctor';
 import { collectWorkspaceDiff, formatWorkspaceDiff } from './services/workspace-diff';
 import { createCommitPlan, formatCommitPlan } from './services/commit-plan';
-import type { OpenHorseUiRuntime } from './runtime/ui-events';
+import type { OrionCodeUiRuntime } from './runtime/ui-events';
 import { CompactCoordinator } from './services/compact';
 
 const BRAND = chalk.hex('#FF6B35');
@@ -50,20 +50,20 @@ const VERSION = (() => {
 
 function showCliHelp(): void {
   console.log();
-  console.log(BRAND('openhorse') + DIM(` v${VERSION}`));
-  console.log(DIM('  Universal Agent Harness Framework'));
+  console.log(BRAND('orion') + DIM(` v${VERSION}`));
+  console.log(DIM('  Orion Code - goal-driven coding agent for the terminal.'));
   console.log();
   console.log(ACCENT('Usage:'));
-  console.log('  openhorse             Start the stable native terminal UI');
-  console.log('  openhorse doctor      Run local diagnostics and exit');
-  console.log('  openhorse diff        Summarize current git workspace changes');
-  console.log('  openhorse commit      Create a read-only commit plan and suggested message');
-  console.log('  openhorse -p "task"   Run an experimental non-interactive task');
-  console.log('  openhorse --help      Show this help message');
-  console.log('  openhorse --version   Show version');
-  console.log('  openhorse --ui terminal  Start the stable native terminal UI explicitly');
-  console.log('  openhorse --ui tui    Start the recommended beta TUI renderer');
-  console.log('  openhorse --ui ink    Start the deprecated Ink/React UI');
+  console.log('  orion             Start the stable native terminal UI');
+  console.log('  orion doctor      Run local diagnostics and exit');
+  console.log('  orion diff        Summarize current git workspace changes');
+  console.log('  orion commit      Create a read-only commit plan and suggested message');
+  console.log('  orion -p "task"   Run an experimental non-interactive task');
+  console.log('  orion --help      Show this help message');
+  console.log('  orion --version   Show version');
+  console.log('  orion --ui terminal  Start the stable native terminal UI explicitly');
+  console.log('  orion --ui tui    Start the recommended beta TUI renderer');
+  console.log('  orion --ui ink    Start the deprecated Ink/React UI');
   console.log();
   console.log(ACCENT('Options:'));
   console.log('  -h, --help     Show help');
@@ -150,7 +150,7 @@ function parseCliOptions(args: string[]): CliOptions {
   return { uiRenderer, printMode, outputFormat, promptArgs };
 }
 
-async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OpenHorseUiRuntime> {
+async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OrionCodeUiRuntime> {
   ensureConfigDir();
   recordFirstStartTime();
 
@@ -212,7 +212,7 @@ async function bootstrapRuntime(uiRenderer: UIRenderer): Promise<OpenHorseUiRunt
     }
   }
 
-  const runtime: OpenHorseRuntime = await init({
+  const runtime: OrionCodeRuntime = await init({
     name: config.name,
     mode: config.mode as any,
     logLevel: config.logLevel,
@@ -317,7 +317,7 @@ async function main(): Promise<void> {
     process.exit(0);
   }
   if (args.includes('--version') || args.includes('-v')) {
-    console.log(`openhorse v${VERSION}`);
+    console.log(`orion v${VERSION}`);
     process.exit(0);
   }
 
@@ -409,7 +409,7 @@ async function main(): Promise<void> {
 }
 
 main().catch(async error => {
-  console.error(ERROR('[OpenHorse] Fatal error:'), error);
+  console.error(ERROR('[Orion Code] Fatal error:'), error);
   try {
     await mcpManager.disconnectAll();
   } catch {

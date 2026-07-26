@@ -1,9 +1,9 @@
-# OpenHorse 配置说明
+# Orion Code 配置说明
 
 ## 配置文件位置
 
 ```
-~/.openhorse/openhorse.json
+~/.orion-code/orion.json
 ```
 
 ## 配置原则
@@ -14,20 +14,20 @@
 
 | 字段 | 类型 | 环境变量 | 默认值 | 说明 |
 |------|------|----------|--------|------|
-| `apiKey` | string | `OPENHORSE_API_KEY` | `""` | LLM API Key |
-| `apiBaseUrl` | string | `OPENHORSE_API_BASE_URL` | `(OpenAI 默认)` | API 地址 |
-| `defaultModel` | string | `OPENHORSE_MODEL` | `gpt-4o` | 默认模型，按当前 `apiBaseUrl` 的模型 ID 原样传给 provider。 |
-| `fallbackModel` | string | `OPENHORSE_FALLBACK_MODEL` | `(无)` | 备用模型（主模型过载时自动切换） |
-| `toolConfirmation` | `allow` \| `deny` \| `ask` | `OPENHORSE_TOOL_CONFIRMATION` | `allow` | 工具需要确认时的兜底策略；`ask` 通过统一 runtime permission protocol 交给当前 renderer 展示 |
-| `ui.confirmations` | `config` \| `interactive` | `OPENHORSE_UI_CONFIRMATIONS` | `config` | 工具确认由配置兜底，还是交给交互式 UI |
-| `webSearch.provider` | string | `OPENHORSE_WEBSEARCH_PROVIDER` | `auto` | WebSearch 模式或 provider。`auto` 先 MCP 后 adapter；可设 `native`、`bailian`、`zhipu`、`tavily-mcp`、`tavily`、`brave`、`custom`、`ddg` |
-| `webSearch.apiKey` | string | `OPENHORSE_WEBSEARCH_API_KEY` / provider env | 主 `apiKey` | WebSearch MCP 或 adapter API Key；未设置时 MCP 复用 OpenHorse 主 API Key |
-| `webSearch.endpoint` | string | `OPENHORSE_WEBSEARCH_MCP_ENDPOINT` | provider 默认值 | WebSearch MCP Streamable HTTP Endpoint |
-| `webSearch.toolName` | string | `OPENHORSE_WEBSEARCH_MCP_TOOL` | 自动发现 | MCP 服务暴露多个工具时指定搜索工具名 |
-| `webSearch.authType` | `bearer` \| `header` \| `query` \| `none` | `OPENHORSE_WEBSEARCH_AUTH_TYPE` | `bearer` | API Key 注入方式 |
-| `webSearch.apiKeyHeader` | string | `OPENHORSE_WEBSEARCH_API_KEY_HEADER` | `Authorization` | `bearer` / `header` 模式下使用的 header 名 |
-| `webSearch.apiKeyQueryParam` | string | `OPENHORSE_WEBSEARCH_API_KEY_QUERY_PARAM` | provider 默认值 | `query` 模式下使用的查询参数名 |
-| `skills.paths` | string[] | `OPENHORSE_SKILLS_PATHS` | `[]` | 额外加载的 skills 根目录或单个 skill 目录 |
+| `apiKey` | string | `ORION_CODE_API_KEY` | `""` | LLM API Key |
+| `apiBaseUrl` | string | `ORION_CODE_API_BASE_URL` | `(OpenAI 默认)` | API 地址 |
+| `defaultModel` | string | `ORION_CODE_MODEL` | `gpt-4o` | 默认模型，按当前 `apiBaseUrl` 的模型 ID 原样传给 provider。 |
+| `fallbackModel` | string | `ORION_CODE_FALLBACK_MODEL` | `(无)` | 备用模型（主模型过载时自动切换） |
+| `toolConfirmation` | `allow` \| `deny` \| `ask` | `ORION_CODE_TOOL_CONFIRMATION` | `allow` | 工具需要确认时的兜底策略；`ask` 通过统一 runtime permission protocol 交给当前 renderer 展示 |
+| `ui.confirmations` | `config` \| `interactive` | `ORION_CODE_UI_CONFIRMATIONS` | `config` | 工具确认由配置兜底，还是交给交互式 UI |
+| `webSearch.provider` | string | `ORION_CODE_WEBSEARCH_PROVIDER` | `auto` | WebSearch 模式或 provider。`auto` 先 MCP 后 adapter；可设 `native`、`bailian`、`zhipu`、`tavily-mcp`、`tavily`、`brave`、`custom`、`ddg` |
+| `webSearch.apiKey` | string | `ORION_CODE_WEBSEARCH_API_KEY` / provider env | 主 `apiKey` | WebSearch MCP 或 adapter API Key；未设置时 MCP 复用 Orion Code 主 API Key |
+| `webSearch.endpoint` | string | `ORION_CODE_WEBSEARCH_MCP_ENDPOINT` | provider 默认值 | WebSearch MCP Streamable HTTP Endpoint |
+| `webSearch.toolName` | string | `ORION_CODE_WEBSEARCH_MCP_TOOL` | 自动发现 | MCP 服务暴露多个工具时指定搜索工具名 |
+| `webSearch.authType` | `bearer` \| `header` \| `query` \| `none` | `ORION_CODE_WEBSEARCH_AUTH_TYPE` | `bearer` | API Key 注入方式 |
+| `webSearch.apiKeyHeader` | string | `ORION_CODE_WEBSEARCH_API_KEY_HEADER` | `Authorization` | `bearer` / `header` 模式下使用的 header 名 |
+| `webSearch.apiKeyQueryParam` | string | `ORION_CODE_WEBSEARCH_API_KEY_QUERY_PARAM` | provider 默认值 | `query` 模式下使用的查询参数名 |
+| `skills.paths` | string[] | `ORION_CODE_SKILLS_PATHS` | `[]` | 额外加载的 skills 根目录或单个 skill 目录 |
 
 ## Agent 内部控制（用户无需关心）
 
@@ -49,7 +49,7 @@
 
 ## 运行状态文件
 
-运行时统计不再写入 `openhorse.json`。它们由 OpenHorse 自动维护在 `~/.openhorse/usage.json`，避免用户配置和状态计数混在一起。
+运行时统计不再写入 `orion.json`。它们由 Orion Code 自动维护在 `~/.orion-code/usage.json`，避免用户配置和状态计数混在一起。
 
 | 文件 | 字段 | 说明 |
 |------|------|------|
@@ -78,12 +78,12 @@
 
 ## Skills
 
-OpenHorse 启动时会自动加载以下 skills 来源：
+Orion Code 启动时会自动加载以下 skills 来源：
 
 1. 内置 skills；
-2. 用户级 `~/.openhorse/skills/<name>/SKILL.md`；
-3. 配置项 `skills.paths` 或环境变量 `OPENHORSE_SKILLS_PATHS` 指定的额外路径；
-4. 项目级 `<project>/.openhorse/skills/<name>/SKILL.md`。
+2. 用户级 `~/.orion-code/skills/<name>/SKILL.md`；
+3. 配置项 `skills.paths` 或环境变量 `ORION_CODE_SKILLS_PATHS` 指定的额外路径；
+4. 项目级 `<project>/.orion-code/skills/<name>/SKILL.md`。
 
 优先级为：project > configured paths > user > builtin。
 
@@ -92,7 +92,7 @@ OpenHorse 启动时会自动加载以下 skills 来源：
 - skills 根目录，例如 `~/project-skills/agents`，其下包含多个 `<name>/SKILL.md`；
 - 单个 skill 目录，例如 `~/project-skills/agents/coding-squad`。
 
-`OPENHORSE_SKILLS_PATHS` 使用系统路径分隔符分隔多个路径；macOS/Linux 为 `:`，Windows 为 `;`。
+`ORION_CODE_SKILLS_PATHS` 使用系统路径分隔符分隔多个路径；macOS/Linux 为 `:`，Windows 为 `;`。
 
 ### OpenAI
 
@@ -106,11 +106,11 @@ OpenHorse 启动时会自动加载以下 skills 来源：
 
 ### Openclaw 风格（可选）
 
-你可参考本机 openclaw 的模型配置同步更新 OpenHorse 的本地配置。OpenHorse 不会自动读取 openclaw 的配置文件；仅作为迁移参考。
+你可参考本机 openclaw 的模型配置同步更新 Orion Code 的本地配置。Orion Code 不会自动读取 openclaw 的配置文件；仅作为迁移参考。
 
-注意：openclaw 的 `bailian` provider 当前使用 `anthropic-messages` 协议；OpenHorse 现有 LLM 客户端使用 OpenAI-compatible chat completions，所以应选择 openclaw 中 `api: "openai-completions"` 的 provider，例如 `astroncodingplan`。
+注意：openclaw 的 `bailian` provider 当前使用 `anthropic-messages` 协议；Orion Code 现有 LLM 客户端使用 OpenAI-compatible chat completions，所以应选择 openclaw 中 `api: "openai-completions"` 的 provider，例如 `astroncodingplan`。
 
-示例同步后的 OpenHorse 配置：
+示例同步后的 Orion Code 配置：
 
 ```json
 {
@@ -149,12 +149,12 @@ Tools that return `deny` from safety checks are still blocked regardless of this
 
 v0.2.9 起，默认启动路径是稳定的 scrollback terminal renderer。这是当前主力产品 UI。它使用轻量 raw editor 管理当前输入缓冲，但不进入 alternate screen，也不绘制会污染 shell scrollback 的全屏 overlay；中文提交文本、Backspace、运行中输入恢复、shell scrollback 和窗口历史都在普通终端窗口里工作。renderer-owned TUI 和 Ink/React UI 仍保留为显式 beta 实验模式。
 
-- 默认启动 `openhorse`：使用稳定 scrollback terminal UI。
-- `openhorse --ui terminal`：显式使用稳定 scrollback terminal UI。
-- `openhorse --ui tui`：显式启用 renderer-owned TUI。它使用单一 input parser、frame model 和 terminal writer 管理输入、输出、overlay、状态栏和光标，适合继续验证高级交互。
-- `openhorse --ui ink`：显式启用实验 Ink UI。中文 IME 场景请优先使用默认 terminal UI。
-- `openhorse --ui legacy` / `openhorse --ui v2`：仅作为旧参数兼容入口，会回退到稳定 terminal UI；它们不是可配置 renderer。
-- `OPENHORSE_UI` / `OPENHORSE_UI_RENDERER` 不再切换 renderer，避免 `.env` 或 `~/.openhorse.env` 遗留配置让默认启动误入实验 UI。
+- 默认启动 `orion`：使用稳定 scrollback terminal UI。
+- `orion --ui terminal`：显式使用稳定 scrollback terminal UI。
+- `orion --ui tui`：显式启用 renderer-owned TUI。它使用单一 input parser、frame model 和 terminal writer 管理输入、输出、overlay、状态栏和光标，适合继续验证高级交互。
+- `orion --ui ink`：显式启用实验 Ink UI。中文 IME 场景请优先使用默认 terminal UI。
+- `orion --ui legacy` / `orion --ui v2`：仅作为旧参数兼容入口，会回退到稳定 terminal UI；它们不是可配置 renderer。
+- `ORION_CODE_UI` / `ORION_CODE_UI_RENDERER` 不再切换 renderer，避免 `.env` 或 `~/.orion-code.env` 遗留配置让默认启动误入实验 UI。
 - `ui.confirmations: "config"`：工具确认沿用 `toolConfirmation` 兜底。
 - `ui.confirmations: "interactive"`：预留给后续 permission dialog。
 - `toolConfirmation: "ask"`：当前 renderer 通过统一 runtime permission protocol 处理确认；稳定 `terminal` 是主力验证路径，实验 `tui` / `ink` 仍只用于 beta 交互验证。
@@ -186,9 +186,9 @@ renderer-owned TUI 当前支持：
 启动示例：
 
 ```bash
-openhorse --ui terminal
-openhorse --ui tui
-openhorse --ui ink
+orion --ui terminal
+orion --ui tui
+orion --ui ink
 ```
 
 ## Print Mode
@@ -196,9 +196,9 @@ openhorse --ui ink
 `-p` / `--print` 是后续非交互 renderer 目标的早期实验入口，适合验证脚本、CI、远程 harness 和管道调用需要的事件协议。它复用同一套 agent runtime，因此 tools、MCP、skills、session、harness 与交互模式一致；但它不是当前主力交互 UI，也不作为 v0.2.9 的完整自动化/remote UI 交付范围。
 
 ```bash
-openhorse -p "review the current git diff"
-echo "summarize this project" | openhorse --print
-openhorse --print --output-format json "list next actions"
+orion -p "review the current git diff"
+echo "summarize this project" | orion --print
+orion --print --output-format json "list next actions"
 ```
 
 - 默认 `--output-format text`：assistant 内容输出到 stdout，状态和工具进度输出到 stderr。
@@ -208,11 +208,11 @@ openhorse --print --output-format json "list next actions"
 
 ## Doctor Diagnostics
 
-`openhorse doctor` 和 `/doctor` 会检查当前 coding-agent runtime 的关键能力，适合排查“模型不可用、MCP 工具没加载、skills 未触发、项目规则没入模、session 没恢复”等问题。
+`orion doctor` 和 `/doctor` 会检查当前 coding-agent runtime 的关键能力，适合排查“模型不可用、MCP 工具没加载、skills 未触发、项目规则没入模、session 没恢复”等问题。
 
 ```bash
-openhorse doctor
-openhorse doctor --output-format json
+orion doctor
+orion doctor --output-format json
 ```
 
 检查项包括：
@@ -220,18 +220,18 @@ openhorse doctor --output-format json
 - API key、模型和 LLM 初始化状态。
 - tool confirmation 与 UI confirmation 是否匹配。
 - built-in tools 与 MCP tools 数量。
-- `~/.openhorse/mcp.json` 是否存在、server 是否 connected/dead/disconnected。
+- `~/.orion-code/mcp.json` 是否存在、server 是否 connected/dead/disconnected。
 - skills 数量与 auto-trigger 数量。
-- `AGENTS.md`、`CLAUDE.md`、`.openhorse/instructions.md`、`.cursor/rules/*` 等项目规则是否加载。
+- `AGENTS.md`、`CLAUDE.md`、`.orion-code/instructions.md`、`.cursor/rules/*` 等项目规则是否加载。
 - 当前 project session、harness objective、context size。
 
 ## Workspace Diff
 
-`openhorse diff` 和 `/diff` 提供确定性的 Git 工作区摘要，不调用 LLM，不修改文件。它适合在 review、commit、PR、resume 后快速确认当前真实变更。
+`orion diff` 和 `/diff` 提供确定性的 Git 工作区摘要，不调用 LLM，不修改文件。它适合在 review、commit、PR、resume 后快速确认当前真实变更。
 
 ```bash
-openhorse diff
-openhorse diff --output-format json
+orion diff
+orion diff --output-format json
 /diff --max-files 80
 ```
 
@@ -244,11 +244,11 @@ openhorse diff --output-format json
 
 ## Commit Planning
 
-`openhorse commit` 和 `/commit` 基于同一份 workspace diff 生成只读 commit plan 和建议消息。默认不会 stage、commit 或 push，适合作为提交前检查或给 LLM review 提供事实基础。
+`orion commit` 和 `/commit` 基于同一份 workspace diff 生成只读 commit plan 和建议消息。默认不会 stage、commit 或 push，适合作为提交前检查或给 LLM review 提供事实基础。
 
 ```bash
-openhorse commit
-openhorse commit --output-format json
+orion commit
+orion commit --output-format json
 /commit --max-files 50
 ```
 
@@ -261,7 +261,7 @@ openhorse commit --output-format json
 
 ## MCP Servers
 
-通用 MCP server 配置放在 `~/.openhorse/mcp.json`。当前版本支持 stdio transport，并把已连接 server 的工具暴露为普通 agent tool，命名格式为 `mcp__<server>__<tool>`。
+通用 MCP server 配置放在 `~/.orion-code/mcp.json`。当前版本支持 stdio transport，并把已连接 server 的工具暴露为普通 agent tool，命名格式为 `mcp__<server>__<tool>`。
 
 ```json
 {
@@ -290,15 +290,15 @@ openhorse commit --output-format json
 
 ### MCP Profiles
 
-OpenHorse 内置 MCP provider profile，会根据 `apiBaseUrl` / model 自动推断：
+Orion Code 内置 MCP provider profile，会根据 `apiBaseUrl` / model 自动推断：
 
 | Provider | 匹配条件 | 默认 endpoint | 默认 Key |
 |----------|----------|---------------|----------|
-| `bailian` | `apiBaseUrl` 包含 `dashscope.aliyuncs.com` 或 `coding.dashscope.aliyuncs.com` | `https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp` | `OPENHORSE_WEBSEARCH_API_KEY` → `DASHSCOPE_API_KEY` → 主 `apiKey` |
-| `zhipu` | `apiBaseUrl` 包含 `bigmodel.cn`，或非 DashScope 的 `glm*` 模型 | `https://open.bigmodel.cn/api/mcp/web_search_prime/mcp` | `OPENHORSE_WEBSEARCH_API_KEY` → `GLM_API_KEY` / `ZHIPU_API_KEY` / `BIGMODEL_API_KEY` → 主 `apiKey` |
-| `tavily-mcp` | 显式设置 `webSearch.provider` / `OPENHORSE_WEBSEARCH_PROVIDER` | `https://mcp.tavily.com/mcp/` | `TAVILY_API_KEY`，通过 query 参数 `tavilyApiKey` |
+| `bailian` | `apiBaseUrl` 包含 `dashscope.aliyuncs.com` 或 `coding.dashscope.aliyuncs.com` | `https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp` | `ORION_CODE_WEBSEARCH_API_KEY` → `DASHSCOPE_API_KEY` → 主 `apiKey` |
+| `zhipu` | `apiBaseUrl` 包含 `bigmodel.cn`，或非 DashScope 的 `glm*` 模型 | `https://open.bigmodel.cn/api/mcp/web_search_prime/mcp` | `ORION_CODE_WEBSEARCH_API_KEY` → `GLM_API_KEY` / `ZHIPU_API_KEY` / `BIGMODEL_API_KEY` → 主 `apiKey` |
+| `tavily-mcp` | 显式设置 `webSearch.provider` / `ORION_CODE_WEBSEARCH_PROVIDER` | `https://mcp.tavily.com/mcp/` | `TAVILY_API_KEY`，通过 query 参数 `tavilyApiKey` |
 
-通常不需要在 `~/.openhorse/openhorse.json` 里写 `webSearch`。如果当前模型 provider 的 MCP 接受同一个 key，OpenHorse 会自动复用主 `apiKey`。
+通常不需要在 `~/.orion-code/orion.json` 里写 `webSearch`。如果当前模型 provider 的 MCP 接受同一个 key，Orion Code 会自动复用主 `apiKey`。
 
 百炼普通 Key 可以通过环境变量覆盖：
 
@@ -306,10 +306,10 @@ OpenHorse 内置 MCP provider profile，会根据 `apiBaseUrl` / model 自动推
 export DASHSCOPE_API_KEY=sk-xxx
 ```
 
-也可以使用 OpenHorse 专用环境变量：
+也可以使用 Orion Code 专用环境变量：
 
 ```bash
-export OPENHORSE_WEBSEARCH_API_KEY=sk-xxx
+export ORION_CODE_WEBSEARCH_API_KEY=sk-xxx
 ```
 
 ### Adapter Fallbacks
@@ -318,13 +318,13 @@ export OPENHORSE_WEBSEARCH_API_KEY=sk-xxx
 
 1. `tavily`：需要 `TAVILY_API_KEY`
 2. `brave`：需要 `BRAVE_API_KEY`
-3. `custom`：需要 `OPENHORSE_WEBSEARCH_API` 或 `WEB_SEARCH_API`
+3. `custom`：需要 `ORION_CODE_WEBSEARCH_API` 或 `WEB_SEARCH_API`
 4. `ddg`：DuckDuckGo HTML fallback，无需 key，但可能被限流或被网络环境阻断
 
 示例：
 
 ```bash
-export OPENHORSE_WEBSEARCH_PROVIDER=tavily
+export ORION_CODE_WEBSEARCH_PROVIDER=tavily
 export TAVILY_API_KEY=tvly-xxx
 ```
 
@@ -341,18 +341,18 @@ export TAVILY_API_KEY=tvly-xxx
 }
 ```
 
-实测：当前 `sk-sp` Coding Plan key 请求官方百炼 WebSearch MCP endpoint 返回 `401`，几个 `coding.dashscope.aliyuncs.com/.../WebSearch/mcp` 猜测路径返回 `404`。OpenHorse 不会本地拦截 `sk-sp`；如果 provider 后续支持同一个 key，会直接工作，否则会返回真实 HTTP 错误并提示覆盖 `webSearch.provider` / `endpoint` / `apiKey`。
+实测：当前 `sk-sp` Coding Plan key 请求官方百炼 WebSearch MCP endpoint 返回 `401`，几个 `coding.dashscope.aliyuncs.com/.../WebSearch/mcp` 猜测路径返回 `404`。Orion Code 不会本地拦截 `sk-sp`；如果 provider 后续支持同一个 key，会直接工作，否则会返回真实 HTTP 错误并提示覆盖 `webSearch.provider` / `endpoint` / `apiKey`。
 
 在默认 `auto` 模式下，上述 MCP 失败会继续走 adapter fallback；如果你希望严格只测 MCP，设置：
 
 ```bash
-export OPENHORSE_WEBSEARCH_PROVIDER=native
+export ORION_CODE_WEBSEARCH_PROVIDER=native
 ```
 
 ## 配置加载优先级
 
 ```
-命令行参数 > ~/.openhorse/openhorse.json > 环境变量 > Agent 内部默认值
+命令行参数 > ~/.orion-code/orion.json > 环境变量 > Agent 内部默认值
 ```
 
 ## OpenClaude 参考

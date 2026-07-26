@@ -1,5 +1,5 @@
 /**
- * openhorse - Auth 服务入口
+ * orion code - Auth 服务入口
  */
 
 export {

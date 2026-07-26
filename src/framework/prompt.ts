@@ -1,5 +1,5 @@
 /**
- * openhorse - System Prompt Builder (segment-based)
+ * orion code - System Prompt Builder (segment-based)
  *
  * Segment-based system prompt composition with static/dynamic separation.
  * Static sections are cacheable for API prompt caching.
@@ -46,7 +46,7 @@ const SECTIONS: PromptSection[] = [
   {
     name: 'intro',
     dynamic: false,
-    render: () => `You are OpenHorse, a universal AI agent powered by the OpenHorse Framework.
+    render: () => `You are Orion Code, a universal AI agent powered by the Orion Code Framework.
 Your core mission is to solve the user's problem — be concise, direct, and action-oriented.`,
   },
   {

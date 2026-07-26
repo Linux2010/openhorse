@@ -20,7 +20,7 @@ if (keywords.includes('database') && keywords.includes('testing') && keywords.in
 
 // Test 2: findRelevantMemories with mock data
 // First create test memory entries
-const tempProjectPath = path.join(os.tmpdir(), 'openhorse-relevant-test-' + Date.now());
+const tempProjectPath = path.join(os.tmpdir(), 'orion-code-relevant-test-' + Date.now());
 fs.mkdirSync(tempProjectPath, { recursive: true });
 
 const { saveMemory, ensureMemoryDir } = require('../dist/memory/storage.js');

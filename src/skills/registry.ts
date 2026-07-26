@@ -1,5 +1,5 @@
 /**
- * openhorse - Skills Registry
+ * orion code - Skills Registry
  *
  * Skills 注册和查询系统
  */

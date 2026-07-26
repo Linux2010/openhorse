@@ -39,7 +39,7 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
 
         if "permission probe" in last_user and not has_tool_result:
             payload = {
-                "id": "chatcmpl-openhorse-print",
+                "id": "chatcmpl-orion-code-print",
                 "object": "chat.completion.chunk",
                 "created": int(time.time()),
                 "model": "mock-print",
@@ -54,7 +54,7 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
                                     "type": "function",
                                     "function": {
                                         "name": "write_file",
-                                        "arguments": '{"path":"/tmp/openhorse-print-denied.txt","content":"nope"}',
+                                        "arguments": '{"path":"/tmp/orion-code-print-denied.txt","content":"nope"}',
                                     },
                                 }
                             ]
@@ -65,7 +65,7 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
             }
             self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode("utf-8"))
             done = {
-                "id": "chatcmpl-openhorse-print",
+                "id": "chatcmpl-orion-code-print",
                 "object": "chat.completion.chunk",
                 "created": int(time.time()),
                 "model": "mock-print",
@@ -84,7 +84,7 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
 
         for text in text_chunks:
             payload = {
-                "id": "chatcmpl-openhorse-print",
+                "id": "chatcmpl-orion-code-print",
                 "object": "chat.completion.chunk",
                 "created": int(time.time()),
                 "model": "mock-print",
@@ -94,7 +94,7 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
         done = {
-            "id": "chatcmpl-openhorse-print",
+            "id": "chatcmpl-orion-code-print",
             "object": "chat.completion.chunk",
             "created": int(time.time()),
             "model": "mock-print",
@@ -146,16 +146,16 @@ def assert_success(result: subprocess.CompletedProcess[str], label: str) -> None
 def main() -> int:
     repo = Path(__file__).resolve().parents[1]
     server, base_url = start_mock_server()
-    config_dir = tempfile.mkdtemp(prefix="openhorse-print-")
+    config_dir = tempfile.mkdtemp(prefix="orion-code-print-")
     env = os.environ.copy()
     env.update(
         {
-            "OPENHORSE_CONFIG_DIR": config_dir,
+            "ORION_CODE_CONFIG_DIR": config_dir,
             "NO_COLOR": "1",
             "FORCE_COLOR": "0",
-            "OPENHORSE_API_KEY": "sk-openhorse-print",
-            "OPENHORSE_API_BASE_URL": base_url,
-            "OPENHORSE_MODEL": "mock-print",
+            "ORION_CODE_API_KEY": "sk-orion-code-print",
+            "ORION_CODE_API_BASE_URL": base_url,
+            "ORION_CODE_MODEL": "mock-print",
         }
     )
 
@@ -164,7 +164,7 @@ def main() -> int:
         assert_success(text, "text print")
         if "print-mode ok: hello print" not in text.stdout:
             raise AssertionError(f"text print stdout missing answer:\n{text.stdout}\nSTDERR:\n{text.stderr}")
-        if "OPENHORSE" in text.stdout or "stable terminal UI" in text.stdout:
+        if "ORION_CODE" in text.stdout or "stable terminal UI" in text.stdout:
             raise AssertionError(f"text print leaked interactive banner:\n{text.stdout}")
 
         json_result = run_cli(repo, env, ["--print", "--output-format", "json", "json task"])
@@ -180,7 +180,7 @@ def main() -> int:
         if "print-mode ok: pipe task" not in piped.stdout:
             raise AssertionError(f"stdin print stdout missing answer:\n{piped.stdout}\nSTDERR:\n{piped.stderr}")
 
-        Path(config_dir, "openhorse.json").write_text(
+        Path(config_dir, "orion.json").write_text(
             json.dumps({"defaultModel": "mock-print", "toolConfirmation": "ask"}),
             encoding="utf-8",
         )

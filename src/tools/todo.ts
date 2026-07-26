@@ -1,5 +1,5 @@
 /**
- * openhorse - TodoWrite Tool
+ * orion code - TodoWrite Tool
  *
  * Manage task progress during coding sessions.
  *

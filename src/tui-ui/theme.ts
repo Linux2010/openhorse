@@ -29,7 +29,7 @@ export type ResolvedTuiTheme = TuiTheme & Required<Pick<TuiTheme, AddedThemeToke
 
 /** The built-in restrained dark theme used by the TUI transcript renderer. */
 export const DEFAULT_TUI_THEME = DEFAULT_THEME as ResolvedTuiTheme;
-export const DEFAULT_TUI_THEME_ID = 'openhorse-dark-v2';
+export const DEFAULT_TUI_THEME_ID = 'orion-code-dark-v2';
 
 /** Resolve an older or partial semantic theme without mutating the caller's object. */
 export function resolveTuiTheme(theme?: TuiTheme): ResolvedTuiTheme {

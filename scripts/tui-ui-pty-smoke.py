@@ -345,7 +345,7 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
 
     def write_chunk(self, delta: dict, finish_reason: str | None = None, usage: dict | None = None) -> None:
         payload = {
-            "id": "chatcmpl-openhorse-tui-pty",
+            "id": "chatcmpl-orion-code-tui-pty",
             "object": "chat.completion.chunk",
             "created": int(time.time()),
             "model": "mock-tui-stream",
@@ -513,22 +513,22 @@ def seed_resume_sessions(config_dir: str, repo: Path) -> list[str]:
     return session_ids
 
 
-def spawn_openhorse(repo: Path, base_url: str, config_dir: str, rows: int = 24, cols: int = 100) -> tuple[subprocess.Popen[bytes], int, int]:
+def spawn_orion(repo: Path, base_url: str, config_dir: str, rows: int = 24, cols: int = 100) -> tuple[subprocess.Popen[bytes], int, int]:
     master, slave = pty.openpty()
     set_window_size(slave, rows=rows, cols=cols)
     env = os.environ.copy()
     env.update(
         {
-            "OPENHORSE_CONFIG_DIR": config_dir,
+            "ORION_CODE_CONFIG_DIR": config_dir,
             "TERM": "xterm-256color",
             "NO_COLOR": "1",
             "FORCE_COLOR": "0",
-            "OPENHORSE_API_KEY": "sk-openhorse-tui-pty",
-            "OPENHORSE_API_BASE_URL": base_url,
-            "OPENHORSE_MODEL": "mock-tui-stream",
+            "ORION_CODE_API_KEY": "sk-orion-code-tui-pty",
+            "ORION_CODE_API_BASE_URL": base_url,
+            "ORION_CODE_MODEL": "mock-tui-stream",
             # Stale renderer env values must not override the explicit CLI selection.
-            "OPENHORSE_UI": "terminal",
-            "OPENHORSE_UI_RENDERER": "terminal",
+            "ORION_CODE_UI": "terminal",
+            "ORION_CODE_UI_RENDERER": "terminal",
         }
     )
     process = subprocess.Popen(
@@ -564,10 +564,10 @@ def stop_process(process: subprocess.Popen[bytes], master: int | None, slave: in
 def main() -> int:
     repo = Path(__file__).resolve().parents[1]
     mock_server, mock_base_url = start_mock_openai_server()
-    config_dir = tempfile.mkdtemp(prefix="openhorse-tui-pty-")
+    config_dir = tempfile.mkdtemp(prefix="orion-code-tui-pty-")
     resume_session_ids = seed_resume_sessions(config_dir, repo)
     target_resume_session_id = resume_session_ids[2]
-    process, master, slave = spawn_openhorse(repo, mock_base_url, config_dir)
+    process, master, slave = spawn_orion(repo, mock_base_url, config_dir)
     output: list[bytes] = []
     model = TerminalModel(rows=24, cols=100)
     consumed = 0
@@ -622,7 +622,7 @@ def main() -> int:
         )
 
     try:
-        wait_for(master, output, "OPENHORSE v", timeout=20)
+        wait_for(master, output, "ORION CODE v", timeout=20)
         wait_for(master, output, "/ commands", timeout=20)
         # v0.2.21: primary-screen inline surface - NO alternate screen.
         if b"\x1b[?1049h" in b"".join(output):

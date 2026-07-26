@@ -1,5 +1,5 @@
 /**
- * openhorse - Memory Prompts
+ * orion code - Memory Prompts
  *
  * Build system prompt sections for memory system.
  */
@@ -20,7 +20,7 @@ export function buildMemoryPrompt(): string {
   const lines: string[] = [
     '# Memory System',
     '',
-    `You have a persistent, file-based memory system at ~/.openhorse/memory/.`,
+    `You have a persistent, file-based memory system at ~/.orion-code/memory/.`,
     'This directory already exists — write to it directly with the Write tool.',
     '',
     'You should build up this memory system over time so that future conversations',

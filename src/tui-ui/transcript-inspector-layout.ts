@@ -13,7 +13,7 @@ export function renderTranscriptInspectorFrame(
   const theme = resolveTuiTheme(options.theme);
   const width = frame.width;
   const height = frame.height;
-  writeFrameText(frame, 0, 0, ' OpenHorse Tool Inspector', theme.heading);
+  writeFrameText(frame, 0, 0, ' Orion Code Tool Inspector', theme.heading);
   const search = view.searchQuery ? `search: ${view.searchQuery}` : `${view.entries.length} tools`;
   writeFrameText(frame, 1, 1, search, theme.toolMeta);
 

@@ -1,6 +1,6 @@
-# OpenHorse Docs Agent Guide
+# Orion Code Docs Agent Guide
 
-> Agent（Claude Code / Codex / Cursor 等）在 openhorse 项目中编写文档时必须遵循本规范。
+> Agent（Claude Code / Codex / Cursor 等）在 orion 项目中编写文档时必须遵循本规范。
 
 ---
 
@@ -33,7 +33,7 @@
 
 **规则：**
 - 用英文小写，简短精确
-- 不要写 `openhorse-` 前缀（已在项目内，冗余）
+- 不要写 `orion-` 前缀（已在项目内，冗余）
 - 不要写 `optimization` / `upgrade` 等泛词，写具体对象：`agent-loop-rate-limit` 而非 `agent-loop-optimization`
 - 多个主题用短横线连接：`harness-long-session`、`ink-ui-upgrade`
 
@@ -148,7 +148,7 @@ docs/
 3. **删除文档**：优先归档到 `old/`（改状态为 `archived`），而非直接删除
 4. **版本绑定**：文档描述的工作属于某个版本时，scope 必须是该版本号；跨版本或长期文档用 `general`
 5. **type 选择**：先做后写用 `report`，先写后做用 `plan`，描述结构用 `design`，审查用 `review`
-6. **不要**：不要在文件名中加 `openhorse-` 前缀、不要用泛词做 topic、不要省略 scope 或 type
+6. **不要**：不要在文件名中加 `orion-` 前缀、不要用泛词做 topic、不要省略 scope 或 type
 
 ---
 

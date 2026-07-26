@@ -2,7 +2,7 @@
 """PTY smoke test for the default scrollback terminal UI.
 
 The product default intentionally avoids alternate-screen/full-frame rendering.
-It uses a small raw editor so OpenHorse can restore in-progress CJK input while
+It uses a small raw editor so Orion Code can restore in-progress CJK input while
 assistant output streams, without putting prompt frames into shell scrollback.
 """
 
@@ -30,11 +30,11 @@ from pathlib import Path
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]")
-CONFIRM_APPROVE_TARGET = ".openhorse-terminal-confirm-approved.txt"
-CONFIRM_DENY_TARGET = ".openhorse-terminal-confirm-denied.txt"
-CONTEXT_FIXTURE = ".openhorse-terminal-context-fixture.txt"
-CONTEXT_FILE_MARKER = "OH_TERMINAL_CONTEXT_FILE_MARKER_20260619"
-CONTEXT_RULE_MARKER = "OH_TERMINAL_AGENT_RULE_MARKER_20260619"
+CONFIRM_APPROVE_TARGET = ".orion-code-terminal-confirm-approved.txt"
+CONFIRM_DENY_TARGET = ".orion-code-terminal-confirm-denied.txt"
+CONTEXT_FIXTURE = ".orion-code-terminal-context-fixture.txt"
+CONTEXT_FILE_MARKER = "OC_TERMINAL_CONTEXT_FILE_MARKER_20260619"
+CONTEXT_RULE_MARKER = "OC_TERMINAL_AGENT_RULE_MARKER_20260619"
 
 
 class TerminalModel:
@@ -301,7 +301,7 @@ class MockOpenAIHandler(BaseHTTPRequestHandler):
 
     def write_chunk(self, delta: dict, finish_reason: str | None = None, usage: dict | None = None) -> None:
         payload = {
-            "id": "chatcmpl-openhorse-terminal-pty",
+            "id": "chatcmpl-orion-code-terminal-pty",
             "object": "chat.completion.chunk",
             "created": int(time.time()),
             "model": "mock-terminal",
@@ -412,24 +412,24 @@ def seed_resume_sessions(config_dir: str, repo: Path) -> list[str]:
     return session_ids
 
 
-def spawn_openhorse(repo: Path, base_url: str, config_dir: str, rows: int = 24, cols: int = 100) -> tuple[subprocess.Popen[bytes], int]:
+def spawn_orion(repo: Path, base_url: str, config_dir: str, rows: int = 24, cols: int = 100) -> tuple[subprocess.Popen[bytes], int]:
     master, slave = pty.openpty()
     set_window_size(slave, rows=rows, cols=cols)
     env = os.environ.copy()
     env.update(
         {
-            "OPENHORSE_CONFIG_DIR": config_dir,
+            "ORION_CODE_CONFIG_DIR": config_dir,
             "TERM": "xterm-256color",
             "NO_COLOR": "1",
             "FORCE_COLOR": "0",
-            "OPENHORSE_API_KEY": "sk-openhorse-terminal-pty",
-            "OPENHORSE_API_BASE_URL": base_url,
-            "OPENHORSE_MODEL": "mock-terminal",
-            "OPENHORSE_TOOL_CONFIRMATION": "allow",
+            "ORION_CODE_API_KEY": "sk-orion-code-terminal-pty",
+            "ORION_CODE_API_BASE_URL": base_url,
+            "ORION_CODE_MODEL": "mock-terminal",
+            "ORION_CODE_TOOL_CONFIRMATION": "allow",
             # Renderer selection is command-line only. Stale .env values must
             # not pull the default startup path into a raw-mode renderer.
-            "OPENHORSE_UI": "ink",
-            "OPENHORSE_UI_RENDERER": "ink",
+            "ORION_CODE_UI": "ink",
+            "ORION_CODE_UI_RENDERER": "ink",
         }
     )
     process = subprocess.Popen(
@@ -491,8 +491,8 @@ def main() -> int:
         encoding="utf-8",
     )
     mock_server, mock_base_url = start_mock_openai_server()
-    config_dir = tempfile.mkdtemp(prefix="openhorse-terminal-pty-")
-    Path(config_dir, "openhorse.json").write_text(json.dumps({
+    config_dir = tempfile.mkdtemp(prefix="orion-code-terminal-pty-")
+    Path(config_dir, "orion.json").write_text(json.dumps({
         "defaultModel": "mock-terminal",
         "toolConfirmation": "ask",
         "totalSessions": 0,
@@ -500,7 +500,7 @@ def main() -> int:
         "totalCost": 0,
     }), encoding="utf-8")
     seed_resume_sessions(config_dir, repo)
-    process, master = spawn_openhorse(repo, mock_base_url, config_dir)
+    process, master = spawn_orion(repo, mock_base_url, config_dir)
     output: list[bytes] = []
     model = TerminalModel(rows=24, cols=100)
     consumed = 0

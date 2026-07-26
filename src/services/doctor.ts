@@ -18,7 +18,7 @@ import { listProjectSessions, resolveProjectPath, type SessionMeta } from './ses
 import { getSkillsRegistry } from '../skills';
 import type { Store } from '../framework/store';
 import type { LLMService } from './llm';
-import type { OpenHorseRuntime } from '../init';
+import type { OrionCodeRuntime } from '../init';
 import { getWarningState } from '../core/warn-dedup';
 import { getAutoCompact } from './compact/auto-compact';
 import type { CompactCoordinator } from './compact/coordinator';
@@ -49,7 +49,7 @@ export interface DoctorContext {
   config: OpenHorseCLIConfig;
   store: Store;
   llm: LLMService | null;
-  runtime: OpenHorseRuntime;
+  runtime: OrionCodeRuntime;
   compactCoordinator?: CompactCoordinator;
   getSession?: () => SessionMeta | null;
 }
@@ -193,7 +193,7 @@ function summarizeProjectInstructions(ctx: DoctorContext): DoctorCheck {
     label: 'Project Rules',
     summary: files.length > 0
       ? `${files.length} files, ${promptChars} prompt chars`
-      : 'No AGENTS.md / CLAUDE.md / .openhorse instructions found',
+      : 'No AGENTS.md / CLAUDE.md / .orion-code instructions found',
     detail: files.map(file => `${file.path}${file.truncated ? ' (truncated)' : ''}`).join('\n') || undefined,
   };
 }
@@ -448,7 +448,7 @@ export function hasDoctorFailures(report: DoctorReport): boolean {
 
 export function formatDoctorReport(report: DoctorReport): string {
   const lines: string[] = [
-    'OpenHorse Doctor',
+    'Orion Code Doctor',
     '─'.repeat(40),
     `Generated  ${report.generatedAt}`,
     `Project    ${report.projectPath}`,

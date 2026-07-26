@@ -1,10 +1,11 @@
 /**
- * openhorse - Embedding Service
+ * orion code - Embedding Service
  *
  * 支持 Ollama (nomic-embed-text) 和 OpenAI (text-embedding-3-small)
  */
 
 import axios from 'axios';
+import { ENV } from '../product/environment';
 
 // ============================================================================
 // Types
@@ -111,7 +112,7 @@ export class EmbeddingService {
 
   /** Embed using OpenAI */
   private async embedWithOpenAI(text: string): Promise<number[]> {
-    const apiKey = this.config.apiKey || process.env.OPENAI_API_KEY || process.env.OPENHORSE_API_KEY;
+    const apiKey = this.config.apiKey || process.env.OPENAI_API_KEY || process.env[ENV.API_KEY];
     const model = this.config.model || 'text-embedding-3-small';
 
     if (!apiKey) {
@@ -152,14 +153,14 @@ let defaultService: EmbeddingService | null = null;
 export function getEmbeddingService(config?: EmbeddingConfig): EmbeddingService {
   if (!defaultService) {
     // Auto-detect provider from environment
-    const provider = process.env.OPENHORSE_EMBEDDING_PROVIDER ||
+    const provider = process.env[ENV.EMBEDDING_PROVIDER] ||
       (process.env.OLLAMA_BASE_URL ? 'ollama' : 'openai');
 
     defaultService = new EmbeddingService({
       provider: provider as 'ollama' | 'openai',
-      model: process.env.OPENHORSE_EMBEDDING_MODEL,
+      model: process.env[ENV.EMBEDDING_MODEL],
       baseUrl: process.env.OLLAMA_BASE_URL,
-      apiKey: process.env.OPENHORSE_API_KEY,
+      apiKey: process.env[ENV.API_KEY],
       ...config,
     });
   }

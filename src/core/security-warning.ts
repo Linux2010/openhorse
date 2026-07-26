@@ -1,5 +1,5 @@
 /**
- * openhorse - Token 安全警告
+ * orion code - Token 安全警告
  *
  * v0.1.11: 检测对话中 Token/密钥暴露，提醒用户安全风险
  *

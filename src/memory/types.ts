@@ -1,5 +1,5 @@
 /**
- * openhorse - Memory System Types
+ * orion code - Memory System Types
  *
  * Typed memory system for user preferences, feedback, project context,
  * and external references. Based on OpenClaude's memory architecture.

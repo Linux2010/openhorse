@@ -79,7 +79,7 @@ export interface StorageCleanupResult {
 }
 
 const HASH_PROJECT_RE = /^[a-f0-9]{16}$/;
-const TEMP_PROJECT_RE = /^(private-tmp-|private-var-folders-.*openhorse-|tmp-openhorse-|test-project$)/;
+const TEMP_PROJECT_RE = /^(private-tmp-|private-var-folders-.*orion-code-|tmp-orion-code-|test-project$)/;
 
 export function collectStorageReport(): StorageReport {
   const configHome = getConfigHome();
@@ -275,7 +275,7 @@ export function repairProjectMetadata(): { repaired: string[]; skipped: string[]
 
 export function formatStorageReport(report: StorageReport): string {
   const lines = [
-    'OpenHorse Storage',
+    'Orion Code Storage',
     '─'.repeat(40),
     `Config     ${report.configHome}`,
     `Projects   ${report.projects.length}`,
@@ -308,7 +308,7 @@ export function formatStorageReport(report: StorageReport): string {
 
 export function formatStorageCleanupResult(result: StorageCleanupResult): string {
   const lines = [
-    result.dryRun ? 'OpenHorse Storage Cleanup (dry run)' : 'OpenHorse Storage Cleanup',
+    result.dryRun ? 'Orion Code Storage Cleanup (dry run)' : 'Orion Code Storage Cleanup',
     '─'.repeat(40),
     `Paths       ${result.deletedPaths.length}`,
     `Vector rows ${result.vectorDeletedRows}`,

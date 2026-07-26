@@ -15,12 +15,12 @@ import {
 } from '../src/services/config-dir';
 
 describe('storage-maintenance', () => {
-  const originalConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+  const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
   let configDir: string;
 
   beforeEach(() => {
     configDir = join(tmpdir(), `openhorse-storage-maintenance-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
     rmSync(configDir, { recursive: true, force: true });
     mkdirSync(configDir, { recursive: true });
   });
@@ -28,9 +28,9 @@ describe('storage-maintenance', () => {
   afterEach(() => {
     rmSync(configDir, { recursive: true, force: true });
     if (originalConfigDir === undefined) {
-      delete process.env.OPENHORSE_CONFIG_DIR;
+      delete process.env.ORION_CODE_CONFIG_DIR;
     } else {
-      process.env.OPENHORSE_CONFIG_DIR = originalConfigDir;
+      process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
     }
   });
 
@@ -38,7 +38,7 @@ describe('storage-maintenance', () => {
     mkdirSync(join(configDir, 'sessions'), { recursive: true });
     mkdirSync(join(configDir, 'memory'), { recursive: true });
     mkdirSync(join(getProjectsDir(), 'e2ca7dd6f2f0fc4b', 'memory'), { recursive: true });
-    mkdirSync(join(getProjectsDir(), 'tmp-openhorse-artifact-test'), { recursive: true });
+    mkdirSync(join(getProjectsDir(), 'tmp-orion-code-artifact-test'), { recursive: true });
 
     const report = collectStorageReport();
     const kinds = report.issues.map(issue => issue.kind);
@@ -61,7 +61,7 @@ describe('storage-maintenance', () => {
 
   test('cleanupStorage deletes legacy and temp paths', () => {
     const legacySessions = join(configDir, 'sessions');
-    const tempProject = join(getProjectsDir(), 'tmp-openhorse-artifact-test');
+    const tempProject = join(getProjectsDir(), 'tmp-orion-code-artifact-test');
     mkdirSync(legacySessions, { recursive: true });
     mkdirSync(tempProject, { recursive: true });
 

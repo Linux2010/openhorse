@@ -1,5 +1,5 @@
 /**
- * openhorse - MEMORY.md 入口管理
+ * orion code - MEMORY.md 入口管理
  *
  * v0.1.11: 限制 MEMORY.md 为 200行/25KB，自动截断 + 警告
  *

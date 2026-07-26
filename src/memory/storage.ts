@@ -1,7 +1,7 @@
 /**
- * openhorse - Memory Storage
+ * orion code - Memory Storage
  *
- * File-based memory system stored in ~/.openhorse/projects/<hash>/memory/
+ * File-based memory system stored in ~/.orion-code/projects/<hash>/memory/
  * - MEMORY.md: Index file (one-line hooks)
  * - *.md: Individual memory entries with frontmatter
  *

@@ -458,7 +458,7 @@ describe('tui-ui runner', () => {
   });
 
   it('opens the file picker and completes the active @ token', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'openhorse-tui-runner-'));
+    const dir = mkdtempSync(join(tmpdir(), 'orion-code-tui-runner-'));
     try {
       mkdirSync(join(dir, 'src'));
       writeFileSync(join(dir, 'src', 'cli.ts'), '');

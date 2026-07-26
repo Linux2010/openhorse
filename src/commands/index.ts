@@ -1,5 +1,5 @@
 /**
- * openhorse - Command Registry
+ * orion code - Command Registry
  *
  * 注册所有 slash 命令，提供查找和列表功能。
  */
@@ -99,6 +99,7 @@ import {
 import { agentStepStatus, compactStatus, runningToolsStatus } from '../runtime/agent-status';
 import { resolveRuntimeLoopBudget } from '../runtime/loop-budget';
 import { loadUsageState, summarizeUsageLedger } from '../services/usage-state';
+import { handleMigrateCommand } from '../migration/command';
 
 // ============================================================================
 // 颜色常量
@@ -1196,7 +1197,7 @@ async function handleMemoryReindex(_ctx: CommandContext): Promise<CommandResult>
   if (!isSemanticEnabled()) {
     console.log();
     console.log(WARN('⚠ Semantic search is not enabled.'));
-    console.log(DIM('  Set OPENHORSE_EMBEDDING_PROVIDER=ollama or openai to enable.'));
+    console.log(DIM('  Set ORION_CODE_EMBEDDING_PROVIDER=ollama or openai to enable.'));
     console.log();
     return { success: false };
   }
@@ -1503,7 +1504,7 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
       console.log(`  Source   ${DIM(`${contextInfo.source}${contextInfo.source === 'fuzzy' ? `:${contextInfo.matchedId}` : ''}`)}`);
       console.log(`  Compact  ${compactStats.enabled ? SUCCESS('auto') : WARN('off')} ${DIM(`predict ${formatThreshold(compactStats.predictiveCompactThreshold)}, hard ${formatThreshold(compactStats.threshold)}`)}`);
     } else {
-      console.log(ERROR('LLM not initialized. Set OPENHORSE_API_KEY first.'));
+      console.log(ERROR('LLM not initialized. Set ORION_CODE_API_KEY first.'));
     }
     console.log();
     return { success: true };
@@ -1559,7 +1560,7 @@ function handleModel(ctx: CommandContext, args: string): CommandResult {
 
   // 设置模型
   if (!ctx.llm) {
-    console.log(ERROR('LLM not initialized. Set OPENHORSE_API_KEY first.'));
+    console.log(ERROR('LLM not initialized. Set ORION_CODE_API_KEY first.'));
     console.log();
     return { success: false };
   }
@@ -1691,7 +1692,7 @@ async function handleRun(ctx: CommandContext, args: string): Promise<CommandResu
   }
 
   if (!ctx.llm || !isConfigured(ctx.config)) {
-    console.log(WARN('⚠ LLM not configured. Set OPENHORSE_API_KEY in .env to enable run mode.'));
+    console.log(WARN('⚠ LLM not configured. Set ORION_CODE_API_KEY in .env to enable run mode.'));
     console.log();
     return { success: false };
   }
@@ -1762,7 +1763,7 @@ async function handleChat(ctx: CommandContext, input: string): Promise<CommandRe
   }
 
   if (!ctx.llm || !isConfigured(ctx.config)) {
-    console.log(WARN('⚠ LLM not configured. Set OPENHORSE_API_KEY in .env to enable chat.'));
+    console.log(WARN('⚠ LLM not configured. Set ORION_CODE_API_KEY in .env to enable chat.'));
     console.log();
     return { success: false };
   }
@@ -2143,7 +2144,7 @@ function handleCost(ctx: CommandContext): CommandResult {
   if (ledger.bySource.fallback.count > 0) {
     console.log();
     console.log(WARN('  Unknown-model fallback pricing is an estimate.'));
-    console.log(DIM('  Configure cost.modelPricing in ~/.openhorse/openhorse.json for accuracy.'));
+    console.log(DIM('  Configure cost.modelPricing in ~/.orion-code/orion.json for accuracy.'));
   }
 
   // Budget
@@ -2173,7 +2174,7 @@ function handleSkills(_ctx: CommandContext): CommandResult {
     if (summary.count === 0) {
       console.log();
       console.log(DIM('  No skills loaded.'));
-      console.log(DIM('  Place SKILL.md files in ~/.openhorse/skills/<name>/ or .openhorse/skills/<name>/'));
+      console.log(DIM('  Place SKILL.md files in ~/.orion-code/skills/<name>/ or .orion-code/skills/<name>/'));
       console.log();
       return { success: true };
     }
@@ -2291,7 +2292,7 @@ function handleMcp(_ctx: CommandContext): CommandResult {
   const status = mcpManager.getStatus();
   if (status.length === 0) {
     console.log();
-    console.log(DIM('  No servers configured. Add to ~/.openhorse/mcp.json'));
+    console.log(DIM('  No servers configured. Add to ~/.orion-code/mcp.json'));
     console.log();
     return { success: true };
   }
@@ -2333,7 +2334,7 @@ function handleStorage(_ctx: CommandContext, args: string): CommandResult {
   if (action === 'repair') {
     const result = repairProjectMetadata();
     console.log();
-    console.log(HEADER('OpenHorse Storage Repair'));
+    console.log(HEADER('Orion Code Storage Repair'));
     console.log(DIM('─'.repeat(40)));
     console.log(`  Repaired ${ACCENT(String(result.repaired.length))}`);
     console.log(`  Skipped  ${DIM(String(result.skipped.length))}`);
@@ -3495,7 +3496,7 @@ const COMMANDS: SlashCommand[] = [
   },
   {
     name: 'storage',
-    description: 'Inspect, repair, or clean OpenHorse storage layout',
+    description: 'Inspect, repair, or clean Orion Code storage layout',
     argumentHint: '[doctor|repair|cleanup --dry-run]',
     category: 'diagnostics',
     priority: 8,
@@ -3573,6 +3574,15 @@ const COMMANDS: SlashCommand[] = [
     priority: 30,
     type: 'builtin',
     execute: (ctx) => showAgents(ctx),
+  },
+  {
+    name: 'migrate',
+    description: 'Migrate data from OpenHorse to Orion Code',
+    argumentHint: 'openhorse [--dry-run] [--include-env] [--include-project-files]',
+    category: 'diagnostics',
+    priority: 32,
+    type: 'builtin',
+    execute: (ctx, args) => handleMigrateCommand(ctx, args),
   },
 
   // Legacy commands kept executable for compatibility, but not shown in Ink help/palette.

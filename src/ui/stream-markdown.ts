@@ -1,5 +1,5 @@
 /**
- * openhorse - 流式 Markdown 渲染器
+ * orion code - 流式 Markdown 渲染器
  *
  * 支持流式渲染：标题、粗体、斜体、行内代码、列表、引用、链接、分割线、代码块
  */

@@ -1,5 +1,5 @@
 /**
- * openhorse - Team Memory 路径安全
+ * orion code - Team Memory 路径安全
  *
  * v0.1.11: 检测路径遍历攻击，确保 Team Memory 路径安全
  *

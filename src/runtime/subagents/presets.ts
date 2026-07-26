@@ -37,7 +37,7 @@ export const SUBAGENT_FORBIDDEN_TOOLS = [
   'memory_save',
   'memory_recall',
   'memory_forget',
-  'openhorse',
+  'orion-code',
   'subtask',
   // Generic MCP escape hatches — children must use first-class MCP tools
   // (mcp__<server>__<tool>) with readOnlyHint === true instead.
@@ -79,7 +79,7 @@ export const ROLE_PRESETS: Record<SubagentRole, RolePreset> = {
   research: {
     role: 'research',
     tools: READ_ONLY_INVESTIGATION_TOOLS,
-    systemPrompt: `You are a read-only research subagent for OpenHorse. Your job is to gather repository facts, official documentation, or API behavior and return a structured conclusion.
+    systemPrompt: `You are a read-only research subagent for Orion Code. Your job is to gather repository facts, official documentation, or API behavior and return a structured conclusion.
 
 You may only read files, list/glob/grep, batch read-only steps, and use configured read-only MCP tools (e.g. web search/fetch). You may inspect git state only through read-only means available to you.
 
@@ -88,14 +88,14 @@ Focus narrowly on the objective you were given. Do not attempt edits or commands
   review: {
     role: 'review',
     tools: READ_ONLY_INVESTIGATION_TOOLS,
-    systemPrompt: `You are a read-only code review subagent for OpenHorse. Your job is to review a diff, changeset, or code area for risks, regressions, and test gaps, and return a structured conclusion.
+    systemPrompt: `You are a read-only code review subagent for Orion Code. Your job is to review a diff, changeset, or code area for risks, regressions, and test gaps, and return a structured conclusion.
 
 You may read files, list/glob/grep, batch read-only steps, and use read-only MCP tools. You may NOT fix code, change review scope, execute shell, or commit.${JSON_OUTPUT_CONTRACT}`,
   },
   'test-investigate': {
     role: 'test-investigate',
     tools: READ_ONLY_INVESTIGATION_TOOLS,
-    systemPrompt: `You are a read-only test investigation subagent for OpenHorse. You analyze failing test logs, test code, and configuration to identify likely root causes, and return a structured conclusion.
+    systemPrompt: `You are a read-only test investigation subagent for Orion Code. You analyze failing test logs, test code, and configuration to identify likely root causes, and return a structured conclusion.
 
 You may read files, list/glob/grep, batch read-only steps, and use read-only MCP tools. You may NOT execute tests, install dependencies, update snapshots, write fixtures, or publish. If a command would help diagnose the failure, suggest it in "commands" for the root Agent to run.${JSON_OUTPUT_CONTRACT}`,
   },

@@ -1,5 +1,5 @@
 /**
- * openhorse - Session Memory 提示模板
+ * orion code - Session Memory 提示模板
  *
  * 用于生成会话摘要和记忆的提示词。
  */

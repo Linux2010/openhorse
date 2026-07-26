@@ -17,7 +17,7 @@ import { tmpdir } from 'os';
 const TOOLS = require('../src/tools').TOOLS;
 const readFileTool = TOOLS.find((t: any) => t.name === 'read_file');
 
-const ctx = { cwd: process.cwd(), config: { name: 'openhorse', mode: 'development' } };
+const ctx = { cwd: process.cwd(), config: { name: 'orion-code', mode: 'development' } };
 const MAX_BYTES = 51200; // 50KB, the limit baked into readFileSync_
 
 describe('read_file byte limit (bug-hunt round 6)', () => {

@@ -383,7 +383,7 @@ export function wrapForSandbox(cmd: string, options: SandboxOptions): string {
   }
 
   if (options.mode === 'docker') {
-    const container = options.container || 'openhorse-sandbox';
+    const container = options.container || 'orion-code-sandbox';
     const networkFlag = options.network ? '' : '--network none';
     return `docker exec ${networkFlag} ${container} sh -c '${cmd.replace(/'/g, "'\\''")}'`;
   }

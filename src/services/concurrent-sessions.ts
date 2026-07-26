@@ -1,5 +1,5 @@
 /**
- * openhorse - Concurrent Sessions
+ * orion code - Concurrent Sessions
  *
  * 管理多个并发 CLI 会话，防止冲突。
  */

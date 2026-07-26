@@ -1,12 +1,12 @@
-# OpenHorse
+# Orion Code
 
-> **OpenHorse — 通用 Agent 驾驭框架**
+> **Orion Code — 通用 Agent 驾驭框架**
 > 一个 CLI 驱动的编码 Agent，具备安全边界、工具编排、记忆系统和上下文管理。
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0-green.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/typescript-5.0-blue.svg)](https://www.typescriptlang.org)
-[![npm](https://img.shields.io/npm/v/openhorse.svg)](https://www.npmjs.com/package/openhorse)
+[![npm](https://img.shields.io/npm/v/orion-code.svg)](https://www.npmjs.com/package/orion-code)
 
 ---
 
@@ -16,14 +16,14 @@
 
 ## 概览
 
-**OpenHorse** 是一个终端编码 Agent，它将 LLM API 封装在安全检查、工具编排、会话管理和上下文感知的驾驭层中。
+**Orion Code** 是一个终端编码 Agent，它将 LLM API 封装在安全检查、工具编排、会话管理和上下文感知的驾驭层中。
 
 ### 核心理念
 
 | 维度 | 说明 |
 |------|------|
 | **AI 如马** | 强大的模型需要引导和约束 |
-| **OpenHorse 如缰** | 精准控制方向，防止跑偏失控 |
+| **Orion Code 如缰** | 精准控制方向，防止跑偏失控 |
 | **Harness 系统** | 安全边界、任务约束、结果验证 |
 | **工具调用** | LLM 自动调用工具完成任务 |
 | **记忆系统** | 分层记忆：工作 / 短期 / 长期 / 语义搜索 |
@@ -62,8 +62,8 @@
 
 ```bash
 # 克隆
-git clone https://github.com/Linux2010/openhorse.git
-cd openhorse
+git clone https://github.com/Linux2010/orion-code.git
+cd orion-code
 
 # 安装依赖
 npm install
@@ -73,12 +73,12 @@ npm run build
 
 # 配置 API Key（任选一种）
 # 方式 1: 环境变量
-export OPENHORSE_API_KEY=your-api-key
+export ORION_CODE_API_KEY=your-api-key
 
 # 方式 2: .env 文件
 cp .env.example .env
 
-# 方式 3: ~/.openhorse/openhorse.json（推荐）
+# 方式 3: ~/.orion-code/orion-code.json（推荐）
 # 首次运行时自动创建
 
 # 启动默认稳定 terminal UI
@@ -97,14 +97,14 @@ npm start -- --print "review the current git diff"
 ```bash
 npm link
 # 任意目录运行
-openhorse
+orion-code
 ```
 
 ---
 
 ## 配置
 
-### 用户配置 (`~/.openhorse/openhorse.json`)
+### 用户配置 (`~/.orion-code/orion-code.json`)
 
 仅 **4 个字段** 对用户开放，其余由 Agent 内部管理：
 
@@ -136,19 +136,19 @@ openhorse
 ### 配置优先级
 
 ```
-CLI 参数 > ~/.openhorse/openhorse.json > 环境变量 > 内部默认
+CLI 参数 > ~/.orion-code/orion-code.json > 环境变量 > 内部默认
 ```
 
 ### 环境变量
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `OPENHORSE_API_KEY` | - | LLM API 密钥 |
-| `OPENHORSE_API_BASE_URL` | - | API 基础 URL |
-| `OPENHORSE_MODEL` | `glm-5` | 默认模型 |
-| `OPENHORSE_MODE` | `development` | 运行模式 |
-| `OPENHORSE_LOG_LEVEL` | `info` | 日志级别 |
-| `OPENHORSE_EMBEDDING_PROVIDER` | - | Embedding 服务（ollama/openai） |
+| `ORION_CODE_API_KEY` | - | LLM API 密钥 |
+| `ORION_CODE_API_BASE_URL` | - | API 基础 URL |
+| `ORION_CODE_MODEL` | `glm-5` | 默认模型 |
+| `ORION_CODE_MODE` | `development` | 运行模式 |
+| `ORION_CODE_LOG_LEVEL` | `info` | 日志级别 |
+| `ORION_CODE_EMBEDDING_PROVIDER` | - | Embedding 服务（ollama/openai） |
 
 详见 [docs/config.md](docs/config.md)。
 
@@ -168,7 +168,7 @@ CLI 参数 > ~/.openhorse/openhorse.json > 环境变量 > 内部默认
 
 ### 上下文窗口
 
-OpenHorse 跟踪每个模型的上下文窗口，在 **95% 用量时自动压缩**：
+Orion Code 跟踪每个模型的上下文窗口，在 **95% 用量时自动压缩**：
 
 | 模型 | 上下文 | 最大输出 |
 |------|--------|----------|
@@ -183,7 +183,7 @@ OpenHorse 跟踪每个模型的上下文窗口，在 **95% 用量时自动压缩
 
 ### 动态发现
 
-启动时 OpenHorse 会查询 `/models` 端点获取上下文数据。若端点不支持（如 DashScope coding 返回 404），则静默回退到内置数据库。
+启动时 Orion Code 会查询 `/models` 端点获取上下文数据。若端点不支持（如 DashScope coding 返回 404），则静默回退到内置数据库。
 
 ### 模型命令
 
@@ -243,7 +243,7 @@ OpenHorse 跟踪每个模型的上下文窗口，在 **95% 用量时自动压缩
 
 ### 自动压缩 (Auto-Compact)
 
-当上下文使用量达到 **95%** 时，OpenHorse 自动压缩对话历史：
+当上下文使用量达到 **95%** 时，Orion Code 自动压缩对话历史：
 
 1. **生成摘要** — 通过 LLM 对早期消息生成摘要
 2. **替换旧消息** — 用 `[Context Summary]` 块替代
@@ -256,7 +256,7 @@ Compact: 30 → 8 messages | Context: 45% → 12%
 
 ### 基于 Token 的阈值
 
-与基于消息数量的方案不同，OpenHorse 使用 API 返回的 **实际 Token 数** 进行精确的上下文感知：
+与基于消息数量的方案不同，Orion Code 使用 API 返回的 **实际 Token 数** 进行精确的上下文感知：
 
 ```
 ctxPercent = (promptTokens / 模型上下文窗口) × 100
@@ -276,7 +276,7 @@ ctxPercent = (promptTokens / 模型上下文窗口) × 100
 
 ### 配置 MCP Server
 
-创建 `~/.openhorse/mcp.json`：
+创建 `~/.orion-code/mcp.json`：
 
 ```json
 {
@@ -333,9 +333,9 @@ ctxPercent = (promptTokens / 模型上下文窗口) × 100
 ## 项目结构
 
 ```
-openhorse/
+orion-code/
 ├── bin/
-│   └── openhorse                  # CLI 入口
+│   └── orion-code                  # CLI 入口
 ├── src/
 │   ├── cli.ts                     # CLI 交互入口
 │   ├── commands/                  # 斜杠命令
@@ -491,6 +491,6 @@ MIT License — 详见 [LICENSE](LICENSE)
 
 ---
 
-**OpenHorse — Universal Agent Harness Framework.**
+**Orion Code — Universal Agent Harness Framework.**
 
-*"AI 如马，OpenHorse 如缰。"*
+*"AI 如马，Orion Code 如缰。"*

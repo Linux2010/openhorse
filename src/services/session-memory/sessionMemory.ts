@@ -1,5 +1,5 @@
 /**
- * openhorse - Session Memory 服务
+ * orion code - Session Memory 服务
  *
  * 自动维护会话笔记 SESSION_MEMORY.md 文件。
  * 参考 OpenClaude 的 sessionMemory.ts 实现。

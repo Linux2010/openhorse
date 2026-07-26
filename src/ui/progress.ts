@@ -1,5 +1,5 @@
 /**
- * openhorse - 进度显示组件
+ * orion code - 进度显示组件
  *
  * Issue #22 修复：批量工具调用进度显示
  * 提供 showProgress/hideProgress 函数，每秒更新一次进度指示。

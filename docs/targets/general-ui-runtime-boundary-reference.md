@@ -2,9 +2,9 @@
 
 ## Target
 
-OpenHorse should support multiple UI renderers without changing coding-agent behavior.
+Orion Code should support multiple UI renderers without changing coding-agent behavior.
 The primary product UI is the stable `terminal` renderer. This is the mainline
-daily-use interface and the release-quality target for near-term OpenHorse work.
+daily-use interface and the release-quality target for near-term Orion Code work.
 
 `ink` and `tui` are experimental beta renderers. They are useful for validating
 component models, fullscreen interaction, cursor handling, resize behavior, and

@@ -115,7 +115,7 @@ export function createSubagentBundleForTurn(inputs: SubagentTurnInputs): Subagen
     if (!tool || tool.isReadOnly?.(args) !== true) {
       return JSON.stringify({ success: false, error: `Tool ${name} is not read-only and cannot run in a subagent.` });
     }
-    const toolContext: ToolContext = { cwd, config: { name: 'openhorse-subagent', mode: 'subagent' }, abortSignal: signal };
+    const toolContext: ToolContext = { cwd, config: { name: 'orion-code-subagent', mode: 'subagent' }, abortSignal: signal };
     return executeTool(name, args, signal, toolContext);
   };
 

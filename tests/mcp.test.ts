@@ -7,7 +7,7 @@ import type { ToolContext } from '../src/framework/tool';
 const testRoot = path.join(process.cwd(), 'tests', 'tmp-mcp');
 const configDir = path.join(testRoot, 'config');
 const serverPath = path.join(testRoot, 'fake-mcp-server.js');
-const originalConfigDir = process.env.OPENHORSE_CONFIG_DIR;
+const originalConfigDir = process.env.ORION_CODE_CONFIG_DIR;
 const originalSuffix = process.env.MCP_TEST_SUFFIX;
 
 const ctx: ToolContext = {
@@ -94,7 +94,7 @@ describe('MCP integration', () => {
   beforeEach(() => {
     fs.rmSync(testRoot, { recursive: true, force: true });
     writeFakeMcpServer();
-    process.env.OPENHORSE_CONFIG_DIR = configDir;
+    process.env.ORION_CODE_CONFIG_DIR = configDir;
     process.env.MCP_TEST_SUFFIX = 'ok';
     mcpManager.disconnectAll();
   });
@@ -102,9 +102,9 @@ describe('MCP integration', () => {
   afterEach(() => {
     mcpManager.disconnectAll();
     if (originalConfigDir === undefined) {
-      delete process.env.OPENHORSE_CONFIG_DIR;
+      delete process.env.ORION_CODE_CONFIG_DIR;
     } else {
-      process.env.OPENHORSE_CONFIG_DIR = originalConfigDir;
+      process.env.ORION_CODE_CONFIG_DIR = originalConfigDir;
     }
     if (originalSuffix === undefined) {
       delete process.env.MCP_TEST_SUFFIX;

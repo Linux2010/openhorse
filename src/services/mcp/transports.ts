@@ -1,5 +1,5 @@
 /**
- * openhorse - MCP Transport Layer
+ * orion code - MCP Transport Layer
  *
  * 支持 SSE、WebSocket、HTTP 多协议传输。
  */

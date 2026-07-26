@@ -1,5 +1,5 @@
 /**
- * openhorse — Model Registry v0.2.26
+ * orion code — Model Registry v0.2.26
  *
  * Provider + ModelProfile configuration types, validation, and registry.
  * Replaces the legacy 4-field config (apiKey/apiBaseUrl/defaultModel/fallbackModel).
@@ -120,7 +120,7 @@ export function isLegacyConfig(config: Record<string, unknown>): boolean {
 export function getLegacyMigrationHint(): string {
   return [
     'v0.2.26 requires the new providers+models configuration format.',
-    'Your openhorse.json uses the legacy 4-field format (apiKey/apiBaseUrl/defaultModel/fallbackModel).',
+    'Your orion.json uses the legacy 4-field format (apiKey/apiBaseUrl/defaultModel/fallbackModel).',
     '',
     'Migration example:',
     '{',

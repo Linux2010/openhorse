@@ -1,5 +1,5 @@
 /**
- * openhorse - Tool State
+ * orion code - Tool State
  *
  * Shared state for tools that need persistence across calls within a session
  * (todos, plan mode, current plan). Tools update this state; the CLI mirrors

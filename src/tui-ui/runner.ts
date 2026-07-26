@@ -1221,7 +1221,7 @@ export class TuiRunner {
     this.closeToolInspector();
     this.modalTransition = this.modalTransition
       .then(async () => {
-        const directory = await mkdtemp(join(tmpdir(), 'openhorse-tool-'));
+        const directory = await mkdtemp(join(tmpdir(), 'orion-code-tool-'));
         const filePath = join(
           directory,
           `${selected.sequence}-${safeFileName(selected.toolName)}.txt`

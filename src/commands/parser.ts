@@ -1,5 +1,5 @@
 /**
- * openhorse - Command Parser
+ * orion code - Command Parser
  *
  * 解析输入，区分 `/` 前缀命令和非命令 chat 输入。
  * 提供命令建议功能。

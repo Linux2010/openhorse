@@ -8,7 +8,7 @@ function cliConfig(overrides: Partial<OpenHorseCLIConfig> = {}): OpenHorseCLICon
     model: 'gpt-4o',
     fallbackModel: 'gpt-4o-mini',
     toolConfirmation: 'allow',
-    name: 'openhorse',
+    name: 'orion-code',
     mode: 'development',
     logLevel: 'info',
     subagents: { ...DEFAULT_SUBAGENT_CONFIG },

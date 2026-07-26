@@ -44,7 +44,7 @@ const askTool: OpenHorseTool = buildTool({
 
 const toolContext: ToolContext = {
   cwd: '/test',
-  config: { name: 'openhorse', mode: 'development' },
+  config: { name: 'orion-code', mode: 'development' },
 };
 
 const toolCalls = (names: string[]): NonNullable<Message['tool_calls']> =>

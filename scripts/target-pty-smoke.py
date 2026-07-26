@@ -39,12 +39,12 @@ def kill(proc: subprocess.Popen, master: int) -> None:
 
 def main() -> int:
     repo = Path(__file__).resolve().parents[1]
-    binary = subprocess.check_output(["which", "openhorse"], text=True).strip()
+    binary = subprocess.check_output(["which", "orion"], text=True).strip()
 
     master, slave = pty.openpty()
     env = os.environ.copy()
     env.update({"NO_COLOR": "1", "TERM": "xterm-256color",
-                "OPENHORSE_API_KEY": "sk-test-pty-goal", "OPENHORSE_MODEL": "mock-noop"})
+                "ORION_CODE_API_KEY": "sk-test-pty-goal", "ORION_CODE_MODEL": "mock-noop"})
 
     proc = subprocess.Popen([binary, "--ui", "terminal"], stdin=slave, stdout=slave,
                             stderr=slave, env=env, start_new_session=True, cwd=str(repo))
